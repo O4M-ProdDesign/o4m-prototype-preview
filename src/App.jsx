@@ -98,6 +98,47 @@ const INITIAL_PATIENT_STATE = {
 // Starts empty — populated as user acts on suggestions
 const INITIAL_USER_DECISIONS = []
 
+// ─── PROVIDER DATABASE ────────────────────────────────────────────
+const PROVIDERS = [
+  { name: 'Dr. Sarah Chen',      subtitle: 'Medical Oncologist',            searchTerms: ['sarah', 'chen', 'oncologist', 'medical oncologist', 'kidney', 'rcc'], location: '300 Longwood Ave Boston MA',       avatar: 'SC' },
+  { name: 'Dr. Michael Torres',  subtitle: 'Surgical Oncologist',           searchTerms: ['michael', 'torres', 'surgical', 'surgery', 'surgeon'],              location: '55 Fruit St Boston MA',            avatar: 'MT' },
+  { name: 'Dr. Amanda Park',     subtitle: 'Radiation Oncologist',          searchTerms: ['amanda', 'park', 'radiation', 'radiotherapy', 'sbrt'],              location: '1400 Pelham Pkwy S Bronx NY',      avatar: 'AP' },
+  { name: 'Dr. Lisa Nguyen',     subtitle: 'Hematologist',                  searchTerms: ['lisa', 'nguyen', 'hematologist', 'blood', 'hematology'],            location: '221 Longwood Ave Boston MA',       avatar: 'LN' },
+  { name: 'Dr. Robert Kim',      subtitle: 'Radiologist',                   searchTerms: ['robert', 'kim', 'radiologist', 'radiology', 'imaging'],             location: '75 Francis St Boston MA',          avatar: 'RK' },
+  { name: 'Dr. James Wilson',    subtitle: 'Palliative Care Specialist',    searchTerms: ['james', 'wilson', 'palliative', 'comfort', 'hospice'],              location: '',                                 avatar: 'JW' },
+  { name: 'Dr. Emily Rodriguez', subtitle: 'Oncology Nurse Practitioner',   searchTerms: ['emily', 'rodriguez', 'nurse', 'np', 'practitioner'],               location: '300 Longwood Ave Boston MA',       avatar: 'ER' },
+  { name: 'Dr. David Patel',     subtitle: 'Oncology Pharmacist',           searchTerms: ['david', 'patel', 'pharmacist', 'pharmacy', 'medication'],           location: '',                                 avatar: 'DP' },
+  { name: 'Dr. Jennifer Lee',    subtitle: 'Clinical Nutritionist Oncology',searchTerms: ['jennifer', 'lee', 'nutritionist', 'dietitian', 'nutrition', 'diet'],location: '1 Medical Center Blvd',            avatar: 'JL' },
+  { name: 'Dr. Marcus Brown',    subtitle: 'Pain Management Specialist',    searchTerms: ['marcus', 'brown', 'pain', 'management', 'analgesic'],               location: '500 University Ave',               avatar: 'MB' },
+  { name: 'Dr. Aisha Johnson',   subtitle: 'Oncology Social Worker',        searchTerms: ['aisha', 'johnson', 'social', 'worker', 'support'],                 location: '',                                 avatar: 'AJ' },
+]
+const CARE_TEAM = PROVIDERS.slice(0, 3)
+const APPOINTMENT_TYPES = ['In Office', 'Virtual', 'Phone Call', 'Lab Work', 'Imaging', 'Other']
+const LOCATION_REQUIRED_TYPES = ['In Office', 'Lab Work', 'Imaging']
+
+// ─── HELPERS ─────────────────────────────────────────────────────
+const fmtTime12 = (t) => {
+  if (!t) return ''
+  const [h, m] = t.split(':').map(Number)
+  const ampm = h >= 12 ? 'PM' : 'AM'
+  const h12 = h % 12 || 12
+  return `${h12}:${m.toString().padStart(2, '0')} ${ampm}`
+}
+const shortDrName = (fullName) => {
+  if (!fullName) return ''
+  const parts = fullName.trim().split(' ')
+  if (parts[0] === 'Dr.' && parts.length >= 3) return `Dr. ${parts[parts.length - 1]}`
+  return fullName
+}
+const relativeApptDate = (dateStr) => {
+  const d = new Date(dateStr + 'T12:00:00')
+  const today = new Date(); today.setHours(12, 0, 0, 0)
+  const diffDays = Math.round((d - today) / (1000 * 60 * 60 * 24))
+  if (diffDays === 1) return 'tomorrow'
+  if (diffDays >= 2 && diffDays <= 6) return `next ${d.toLocaleDateString('en-US', { weekday: 'long' })}`
+  return `on ${d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}`
+}
+
 const fmtDate = (d, opts = {}) => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...opts }) : ''
 const dayLabel = (dateStr, isToday) => {
   if (isToday) return null  // handled separately
@@ -175,14 +216,15 @@ const Ico = {
 }
 
 const RAIL_ICONS = {
-  procedure: 'local_hospital',
-  medication: 'pill',
-  scan:       'person_search',
-  diagnosis:  'clinical_notes',
+  procedure:   'local_hospital',
+  medication:  'pill',
+  scan:        'person_search',
+  diagnosis:   'clinical_notes',
+  appointment: 'event',
 }
 const railIcon = (type, size = 40) => {
   const name = RAIL_ICONS[type] || 'stethoscope'
-  const fill = type === 'medication' ? 0 : 1
+  const fill = (type === 'medication' || type === 'appointment') ? 0 : 1
   const fvs = `'FILL' ${fill}, 'wght' 400`
   return (
     <div style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: C.bgApp, border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -291,6 +333,32 @@ const NotesTextarea = ({ value, onChange, placeholder }) => {
   const [on, setOn] = useState(false)
   return (
     <textarea value={value} onChange={e => onChange(e.target.value)} onFocus={() => setOn(true)} onBlur={() => setOn(false)} placeholder={placeholder} rows={5} style={{ width: '100%', border: on ? `2px solid ${C.primary}` : `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: 12, fontSize: 16, color: C.textPrimary, fontFamily: 'Inter,sans-serif', resize: 'none', outline: 'none', backgroundColor: C.bgCard, lineHeight: 1.55 }}/>
+  )
+}
+
+const TimeInputField = ({ label, value, onChange }) => {
+  const [on, setOn] = useState(false)
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 5 }}>{label}</div>
+      <div style={{ border: on ? `2px solid ${C.primary}` : `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: '12px', display: 'flex', alignItems: 'center', backgroundColor: C.bgCard }}>
+        <input type="time" value={value} onChange={e => onChange(e.target.value)} onFocus={() => setOn(true)} onBlur={() => setOn(false)}
+          style={{ fontSize: 16, color: value ? C.textPrimary : C.textTertiary, border: 'none', outline: 'none', background: 'transparent', fontFamily: 'Inter,sans-serif', flex: 1 }}/>
+      </div>
+    </div>
+  )
+}
+
+const TextInputField = ({ label, value, onChange, placeholder }) => {
+  const [on, setOn] = useState(false)
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 5 }}>{label}</div>
+      <div style={{ border: on ? `2px solid ${C.primary}` : `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: '12px', backgroundColor: C.bgCard }}>
+        <input type="text" value={value} onChange={e => onChange(e.target.value)} onFocus={() => setOn(true)} onBlur={() => setOn(false)} placeholder={placeholder}
+          style={{ fontSize: 16, color: C.textPrimary, border: 'none', outline: 'none', background: 'transparent', fontFamily: 'Inter,sans-serif', width: '100%' }}/>
+      </div>
+    </div>
   )
 }
 
@@ -997,6 +1065,422 @@ const AddMedicationFlow = ({ onClose, onComplete, preload, fromDetail, planItems
   )
 }
 
+// ─── PROVIDER AVATAR ──────────────────────────────────────────────
+const ProviderAvatar = ({ avatar }) => (
+  <div style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: C.primaryLight, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+    <span style={{ fontSize: 12, fontWeight: 700, color: C.primary, fontFamily: 'Inter,sans-serif' }}>{avatar}</span>
+  </div>
+)
+
+// ─── PROVIDER SEARCH STEP ─────────────────────────────────────────
+const ProviderSearchStep = ({ onSelect, setNav, dismiss, careTeam }) => {
+  const [q, setQ] = useState('')
+  const lower = q.toLowerCase().trim()
+
+  useEffect(() => {
+    setNav({ title: 'Add Appointment', subtitle: null, onBack: null })
+  }, [])
+
+  const filtered = lower
+    ? PROVIDERS.filter(p =>
+        p.name.toLowerCase().includes(lower) ||
+        p.subtitle.toLowerCase().includes(lower) ||
+        p.searchTerms.some(t => t.includes(lower))
+      )
+    : []
+
+  const isCareTeamMember = (p) => careTeam.some(ct => ct.name === p.name)
+
+  const CareTeamBadge = () => (
+    <span style={{ fontSize: 10, fontWeight: 700, color: C.primary, backgroundColor: C.primaryLight, borderRadius: 6, padding: '2px 7px', letterSpacing: '0.03em', flexShrink: 0 }}>Care team</span>
+  )
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', backgroundColor: C.bgCard }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 16px 32px' }}>
+        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, marginBottom: 16, lineHeight: '28px' }}>Who is this appointment with?</div>
+        <div style={{ position: 'relative', marginBottom: 20 }}>
+          <div style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}><Ico.search on={!!lower}/></div>
+          <input type="text" value={q} onChange={e => setQ(e.target.value)} placeholder="Search for a provider"
+            style={{ width: '100%', height: 44, border: `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: '0 12px 0 38px', fontSize: 16, color: C.textPrimary, backgroundColor: C.bgCard, outline: 'none', fontFamily: 'Inter, sans-serif', boxSizing: 'border-box' }}/>
+        </div>
+
+        {/* Care team (no search query) */}
+        {!lower && (
+          <>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.textTertiary, marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.07em' }}>Your care team</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {careTeam.map((p, i) => (
+                <button key={i} onClick={() => onSelect(p)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, cursor: 'pointer', textAlign: 'left', width: '100%' }}>
+                  <ProviderAvatar avatar={p.avatar}/>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary }}>{p.name}</div>
+                    <div style={{ fontSize: 13, color: C.textSecondary, marginTop: 1 }}>{p.subtitle}</div>
+                  </div>
+                  <Ico.chevRight/>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* Search results */}
+        {lower && filtered.length > 0 && (
+          <div style={{ backgroundColor: C.bgCard, borderRadius: 12, overflow: 'hidden', border: `1px solid ${C.border}` }}>
+            {filtered.map((p, i) => (
+              <button key={i} onClick={() => onSelect(p)}
+                style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', width: '100%', background: 'none', border: 'none', borderBottom: i < filtered.length - 1 ? `1px solid ${C.border}` : 'none', cursor: 'pointer', textAlign: 'left' }}>
+                <ProviderAvatar avatar={p.avatar}/>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 1 }}>
+                    <span style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary }}>{p.name}</span>
+                    {isCareTeamMember(p) && <CareTeamBadge/>}
+                  </div>
+                  <div style={{ fontSize: 13, color: C.textSecondary }}>{p.subtitle}</div>
+                </div>
+                <Ico.chevRight/>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* No results */}
+        {lower && filtered.length === 0 && (
+          <div style={{ textAlign: 'center', paddingTop: 32 }}>
+            <div style={{ fontSize: 14, color: C.textSecondary, marginBottom: 16 }}>No results for "{q}"</div>
+            <button onClick={() => onSelect({ name: q, custom: true, location: '', avatar: q.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase() })}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 20px', backgroundColor: C.primaryLight, border: `1px solid rgba(255,121,88,0.3)`, borderRadius: 9999, cursor: 'pointer', fontSize: 14, fontWeight: 600, color: C.primary }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 18, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>add</span>
+              Add "{q}"
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── ADD APPOINTMENT FLOW ─────────────────────────────────────────
+const parseProviderLocation = (loc) => {
+  if (!loc) return { street: '', city: '', stateAbbr: '' }
+  const parts = loc.trim().split(' ')
+  const last = parts[parts.length - 1]
+  if (parts.length >= 3 && last.length === 2 && /^[A-Z]+$/.test(last)) {
+    return { street: parts.slice(0, parts.length - 2).join(' '), city: parts[parts.length - 2], stateAbbr: last }
+  }
+  return { street: loc, city: '', stateAbbr: '' }
+}
+
+const AddAppointmentFlow = ({ onClose, onComplete }) => {
+  const [careTeam, setCareTeam] = useState(() => {
+    try { const s = localStorage.getItem('o4m_care_team'); return s ? JSON.parse(s) : PROVIDERS.slice(0, 3) } catch { return PROVIDERS.slice(0, 3) }
+  })
+  const addProviderToCareTeam = (p) => {
+    setCareTeam(prev => {
+      if (prev.some(ct => ct.name === p.name)) return prev
+      const next = [...prev, p]
+      try { localStorage.setItem('o4m_care_team', JSON.stringify(next)) } catch {}
+      return next
+    })
+  }
+  // Care team prompt sheet
+  const [ctPromptOpen, setCtPromptOpen] = useState(false)
+  const [ctPromptVisible, setCtPromptVisible] = useState(false)
+  const [ctPendingProvider, setCtPendingProvider] = useState(null)
+  const openCtPrompt = (p) => {
+    setCtPendingProvider(p)
+    setCtPromptOpen(true)
+    requestAnimationFrame(() => requestAnimationFrame(() => setCtPromptVisible(true)))
+  }
+  const closeCtPrompt = (andProceed) => {
+    setCtPromptVisible(false)
+    setTimeout(() => { setCtPromptOpen(false); setCtPendingProvider(null); if (andProceed) andProceed() }, 360)
+  }
+
+  const [provider, setProvider] = useState(null)
+  const [apptDate, setApptDate] = useState('')
+  const [apptTime, setApptTime] = useState('')
+  const [apptType, setApptType] = useState('')
+  const [street, setStreet] = useState('')
+  const [city, setCity] = useState('')
+  const [stateAbbr, setStateAbbr] = useState('')
+  const [zip, setZip] = useState('')
+  const [zipLoading, setZipLoading] = useState(false)
+  const [zipError, setZipError] = useState('')
+  const [notes, setNotes] = useState('')
+  // Edit-address sheet (temp state so cancel reverts)
+  const [locationSheetOpen, setLocationSheetOpen] = useState(false)
+  const [locationSheetVisible, setLocationSheetVisible] = useState(false)
+  const [editStreet, setEditStreet] = useState('')
+  const [editCity, setEditCity] = useState('')
+  const [editStateAbbr, setEditStateAbbr] = useState('')
+  const [editZip, setEditZip] = useState('')
+  const [editZipLoading, setEditZipLoading] = useState(false)
+  const [editZipError, setEditZipError] = useState('')
+
+  const hasAnyInput = !!(provider || apptDate || apptTime || apptType || street || city || zip || notes)
+
+  const lookupZip = async (z, setCityFn, setStateFn, setErrFn, setLoadFn) => {
+    if (z.length !== 5 || !/^\d{5}$/.test(z)) return
+    setLoadFn(true); setErrFn('')
+    try {
+      const res = await fetch(`https://api.zippopotam.us/us/${z}`)
+      if (!res.ok) throw new Error()
+      const data = await res.json()
+      const place = data.places?.[0]
+      if (place) { setCityFn(place['place name']); setStateFn(place['state abbreviation']) }
+    } catch { setErrFn('ZIP not found') }
+    finally { setLoadFn(false) }
+  }
+
+  const openLocationSheet = () => {
+    setEditStreet(street); setEditCity(city); setEditStateAbbr(stateAbbr); setEditZip(zip)
+    setEditZipError('')
+    setLocationSheetOpen(true)
+    requestAnimationFrame(() => requestAnimationFrame(() => setLocationSheetVisible(true)))
+  }
+  const closeLocationSheet = () => {
+    setLocationSheetVisible(false)
+    setTimeout(() => setLocationSheetOpen(false), 380)
+  }
+  const saveLocationSheet = () => {
+    setStreet(editStreet); setCity(editCity); setStateAbbr(editStateAbbr); setZip(editZip)
+    closeLocationSheet()
+  }
+
+  return (
+    <FlowShell onClose={onClose} confirmClose={hasAnyInput}>
+      {(dismiss, setNav) => {
+        const [step, setStep] = useState(0)
+        const locationRequired = LOCATION_REQUIRED_TYPES.includes(apptType)
+        const hasPrefilledLocation = !!(street || city || stateAbbr)
+
+        const handleProviderSelect = (p) => {
+          setProvider(p)
+          if (p.location) {
+            const parsed = parseProviderLocation(p.location)
+            setStreet(parsed.street); setCity(parsed.city); setStateAbbr(parsed.stateAbbr)
+          } else {
+            setStreet(''); setCity(''); setStateAbbr(''); setZip('')
+          }
+          const inCareTeam = careTeam.some(ct => ct.name === p.name)
+          if (!inCareTeam && !p.custom) {
+            openCtPrompt(p)
+          } else {
+            setStep(1)
+          }
+        }
+
+        const handleTypeSelect = (type) => {
+          setApptType(type)
+          const needsLocation = LOCATION_REQUIRED_TYPES.includes(type)
+          setTimeout(() => setStep(needsLocation ? 4 : 5), 220)
+        }
+
+        const finish = () => {
+          const providerName = provider?.name || ''
+          const locationStr = [street, [city, stateAbbr].filter(Boolean).join(' '), zip].filter(Boolean).join(', ')
+          onComplete({
+            id: `appt-${Date.now()}`,
+            type: 'appointment',
+            name: providerName,
+            provider: providerName,
+            date: apptDate,
+            time: apptTime || null,
+            appointmentType: apptType,
+            location: locationStr || null,
+            notes: notes || null,
+          })
+          dismiss()
+        }
+
+        const navConfigs = [
+          { title: 'Add Appointment', subtitle: null, onBack: null },
+          { title: 'Add Appointment', subtitle: provider?.name || null, onBack: () => setStep(0) },
+          { title: 'Add Appointment', subtitle: provider?.name || null, onBack: () => setStep(1) },
+          { title: 'Add Appointment', subtitle: provider?.name || null, onBack: () => setStep(2) },
+          { title: 'Add Appointment', subtitle: provider?.name || null, onBack: () => setStep(3) },
+          { title: 'Add Appointment', subtitle: provider?.name || null, onBack: () => setStep(locationRequired ? 4 : 3) },
+        ]
+
+        const steps = [
+          // Step 0: Provider search
+          () => (
+            <ProviderSearchStep
+              onSelect={handleProviderSelect}
+              setNav={setNav}
+              dismiss={dismiss}
+              careTeam={careTeam}
+            />
+          ),
+          // Step 1: Date
+          () => (
+            <StepView>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '32px 20px 120px' }}>
+                <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 24, lineHeight: 1.15 }}>What day?</div>
+                <DateInputField label="Date" value={apptDate} onChange={setApptDate} required/>
+              </div>
+              <DockedButton label="Next" onClick={() => setStep(2)} disabled={!apptDate}/>
+            </StepView>
+          ),
+          // Step 2: Time (optional)
+          () => (
+            <StepView>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '32px 20px 120px' }}>
+                <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 24, lineHeight: 1.15 }}>What time?</div>
+                <TimeInputField label="Time" value={apptTime} onChange={setApptTime}/>
+              </div>
+              <DockedButton label="Next" onClick={() => setStep(3)}/>
+            </StepView>
+          ),
+          // Step 3: Appointment type (auto-advance on tap)
+          () => (
+            <StepView>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '32px 20px 32px' }}>
+                <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 24, lineHeight: 1.15 }}>What type of appointment?</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {APPOINTMENT_TYPES.map(type => (
+                    <button key={type} onClick={() => handleTypeSelect(type)}
+                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '15px 16px', backgroundColor: apptType === type ? C.primaryLight : C.bgCard, border: `1.5px solid ${apptType === type ? C.primary : C.border}`, borderRadius: 13, cursor: 'pointer', textAlign: 'left', width: '100%', transition: 'background-color 0.15s, border-color 0.15s' }}>
+                      <span style={{ fontSize: 15, fontWeight: 500, color: apptType === type ? C.primary : C.textPrimary }}>{type}</span>
+                      <Ico.chevRight/>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </StepView>
+          ),
+          // Step 4: Location — confirm pre-filled or enter; edit via slide-up sheet
+          () => (
+            <StepView>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '32px 20px 120px' }}>
+                <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 6, lineHeight: 1.15 }}>Location</div>
+                {hasPrefilledLocation ? (
+                  <>
+                    <div style={{ fontSize: 14, color: C.textSecondary, marginBottom: 20 }}>From {shortDrName(provider?.name)}'s profile</div>
+                    <button onClick={openLocationSheet} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, backgroundColor: C.bgCard, border: `1.5px solid ${C.border}`, borderRadius: 14, padding: '14px 16px', cursor: 'pointer', textAlign: 'left' }}>
+                      <div style={{ flex: 1 }}>
+                        {street && <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary, marginBottom: 2 }}>{street}</div>}
+                        <div style={{ fontSize: 14, color: C.textSecondary }}>{[city, stateAbbr].filter(Boolean).join(', ')}{zip ? ` ${zip}` : ''}</div>
+                      </div>
+                      <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary, fontVariationSettings: "'FILL' 0, 'wght' 400", flexShrink: 0 }}>edit</span>
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 14, color: C.textSecondary, marginBottom: 20 }}>Optional</div>
+                    <TextInputField label="Street address" value={street} onChange={setStreet} placeholder="e.g. 300 Longwood Ave"/>
+                    <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+                      <div style={{ flex: '0 0 110px', position: 'relative' }}>
+                        <TextInputField label="ZIP code" value={zip} onChange={v => { setZip(v); if (v.length === 5) lookupZip(v, setCity, setStateAbbr, setZipError, setZipLoading) }} placeholder="02115"/>
+                        {zipLoading && <div style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: C.textSecondary }}>…</div>}
+                        {zipError && <div style={{ fontSize: 11, color: '#ef4444', marginTop: 3 }}>{zipError}</div>}
+                      </div>
+                      <div style={{ flex: 1 }}><TextInputField label="City" value={city} onChange={setCity} placeholder="Boston"/></div>
+                      <div style={{ flex: '0 0 64px' }}><TextInputField label="State" value={stateAbbr} onChange={setStateAbbr} placeholder="MA"/></div>
+                    </div>
+                  </>
+                )}
+              </div>
+              <DockedButton label="Next" onClick={() => setStep(5)}/>
+
+              {/* Edit address slide-up sheet */}
+              {locationSheetOpen && (
+                <div style={{ position: 'absolute', inset: 0, zIndex: 50 }}>
+                  {/* Backdrop */}
+                  <div onClick={closeLocationSheet} style={{ position: 'absolute', inset: 0, backgroundColor: locationSheetVisible ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0)', transition: 'background-color 0.35s ease' }}/>
+                  {/* Sheet */}
+                  <div style={{
+                    position: 'absolute', bottom: 0, left: 0, right: 0,
+                    backgroundColor: C.bgApp, borderRadius: '20px 20px 0 0',
+                    padding: '0 0 32px',
+                    transform: locationSheetVisible ? 'translateY(0)' : 'translateY(100%)',
+                    transition: 'transform 0.38s cubic-bezier(0.32,0.72,0,1)',
+                    boxShadow: '0 -4px 32px rgba(0,0,0,0.12)'
+                  }}>
+                    {/* Sheet header */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 20px 16px' }}>
+                      <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary }}>Edit address</div>
+                      <button onClick={closeLocationSheet} style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(0,0,0,0.07)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>close</span>
+                      </button>
+                    </div>
+                    {/* Form */}
+                    <div style={{ padding: '0 20px 20px' }}>
+                      <TextInputField label="Street address" value={editStreet} onChange={setEditStreet} placeholder="e.g. 300 Longwood Ave"/>
+                      <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+                        <div style={{ flex: '0 0 110px', position: 'relative' }}>
+                          <TextInputField label="ZIP code" value={editZip} onChange={v => { setEditZip(v); setEditZipError(''); if (v.length === 5) lookupZip(v, setEditCity, setEditStateAbbr, setEditZipError, setEditZipLoading) }} placeholder="02115"/>
+                          {editZipLoading && <div style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: C.textSecondary }}>…</div>}
+                          {editZipError && <div style={{ fontSize: 11, color: '#ef4444', marginTop: 3 }}>{editZipError}</div>}
+                        </div>
+                        <div style={{ flex: 1 }}><TextInputField label="City" value={editCity} onChange={setEditCity} placeholder="Boston"/></div>
+                        <div style={{ flex: '0 0 64px' }}><TextInputField label="State" value={editStateAbbr} onChange={setEditStateAbbr} placeholder="MA"/></div>
+                      </div>
+                    </div>
+                    {/* Save button */}
+                    <div style={{ padding: '0 20px' }}>
+                      <button onClick={saveLocationSheet} style={{ width: '100%', padding: '16px', backgroundColor: C.primary, color: '#fff', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 700, cursor: 'pointer' }}>
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </StepView>
+          ),
+          // Step 5: Notes + Save
+          () => (
+            <StepView>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '32px 20px 160px' }}>
+                <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 24, lineHeight: 1.15 }}>Add notes</div>
+                <NotesTextarea value={notes} onChange={setNotes} placeholder="e.g. Bring insurance card. Fasting required."/>
+              </div>
+              <DockedButton label="Save" onClick={finish}/>
+            </StepView>
+          ),
+        ]
+
+        return (
+          <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column' }}>
+            <FlowStack step={step} setNav={setNav} navConfigs={navConfigs} steps={steps}/>
+            {/* Add to care team prompt */}
+            {ctPromptOpen && (
+              <div style={{ position: 'absolute', inset: 0, zIndex: 60 }}>
+                <div onClick={() => closeCtPrompt(() => setStep(1))} style={{ position: 'absolute', inset: 0, backgroundColor: ctPromptVisible ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0)', transition: 'background-color 0.36s ease' }}/>
+                <div style={{
+                  position: 'absolute', bottom: 0, left: 0, right: 0,
+                  backgroundColor: C.bgApp, borderRadius: '20px 20px 0 0',
+                  padding: '28px 20px 36px',
+                  transform: ctPromptVisible ? 'translateY(0)' : 'translateY(100%)',
+                  transition: 'transform 0.38s cubic-bezier(0.32,0.72,0,1)',
+                  boxShadow: '0 -4px 32px rgba(0,0,0,0.12)'
+                }}>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: C.textPrimary, marginBottom: 8, letterSpacing: '-0.3px' }}>Add to your care team?</div>
+                  <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5, marginBottom: 28 }}>
+                    Add {shortDrName(ctPendingProvider?.name)} to make scheduling future appointments quicker.
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <button onClick={() => { addProviderToCareTeam(ctPendingProvider); closeCtPrompt(() => setStep(1)) }}
+                      style={{ width: '100%', padding: '15px', backgroundColor: C.primary, color: '#fff', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 700, cursor: 'pointer' }}>
+                      Yes, add {shortDrName(ctPendingProvider?.name)}
+                    </button>
+                    <button onClick={() => closeCtPrompt(() => setStep(1))}
+                      style={{ width: '100%', padding: '15px', backgroundColor: 'transparent', color: C.textSecondary, border: 'none', borderRadius: 14, fontSize: 15, fontWeight: 500, cursor: 'pointer' }}>
+                      No thanks
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      }}
+    </FlowShell>
+  )
+}
+
 const DailySummaryCard = ({ summary, isToday }) => {
   const [open, setOpen] = useState(true)
   const [vote, setVote] = useState(null)  // 'up' | 'down' | null
@@ -1005,6 +1489,7 @@ const DailySummaryCard = ({ summary, isToday }) => {
   const [shownText, setShownText] = useState(summary.text)
   const [generating, setGenerating] = useState(false)
   const [textOpacity, setTextOpacity] = useState(1)
+  const [lastUpdated, setLastUpdated] = useState(() => new Date())
   const prevTextRef = useRef(summary.text)
   const pendingRef = useRef(null)
   const genStartRef = useRef(0)
@@ -1046,6 +1531,7 @@ const DailySummaryCard = ({ summary, isToday }) => {
     resolvingRef.current = false
     genStartRef.current = Date.now()
     setGenerating(true)
+    setLastUpdated(new Date())
     tryDeliver()
   }, [summary.text, tryDeliver])
 
@@ -1093,10 +1579,66 @@ const DailySummaryCard = ({ summary, isToday }) => {
               <svg width="15" height="15" viewBox="0 0 15 15" fill={vote === 'down' ? C.primary : 'none'}><path d="M13.5 7.5h-2V2h2zM11.5 7.5L9.5 12l-1.5-.5V8H4L5 3h6.5z" stroke={vote === 'down' ? C.primary : C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>
             </button>
           </div>
-          <div style={{ fontSize: 12, color: C.textSecondary, lineHeight: 1.4 }}>AI-generated from your cancer health plan and recent clinical activity, accuracy may vary.</div>
+          <div style={{ fontSize: 12, color: C.textSecondary, lineHeight: 1.4 }}>AI-generated from your cancer health plan and recent clinical activity, accuracy may vary. Last updated {lastUpdated.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.</div>
         </div>
       </div>
     </button>
+  )
+}
+
+// ─── APPOINTMENT CARD ─────────────────────────────────────────────
+const AppointmentCard = ({ event, highlightId, onRemove }) => {
+  const [showRemove, setShowRemove] = useState(false)
+  const [notesOpen, setNotesOpen] = useState(false)
+  const isHighlighted = highlightId === event.id
+
+  const dateStr = event.date
+    ? new Date(event.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+    : ''
+  const timeStr = fmtTime12(event.time)
+  const dateTimeLine = [dateStr, timeStr].filter(Boolean).join(' · ')
+  const typeLocLine = [event.appointmentType, event.location].filter(Boolean).join(' · ')
+
+  return (
+    <div
+      style={{ width: '100%', backgroundColor: isHighlighted ? '#E4EEFA' : C.bgCard, border: `1px solid ${isHighlighted ? '#A3B8C9' : 'transparent'}`, borderRadius: 14, padding: '12px 16px', transition: 'background 1.8s ease, border-color 1.8s ease', position: 'relative' }}
+      onClick={() => setShowRemove(false)}>
+      {showRemove && onRemove && (
+        <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 2, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
+          <button onClick={e => { e.stopPropagation(); onRemove(); setShowRemove(false) }}
+            style={{ display: 'block', width: '100%', padding: '10px 16px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 500, color: '#ef4444', textAlign: 'left', whiteSpace: 'nowrap' }}>
+            Remove from plan
+          </button>
+        </div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+        <div style={{ flexShrink: 0, alignSelf: 'center' }}>{railIcon('appointment', 40)}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 2 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Appointment</span>
+            {onRemove && (
+              <button onClick={e => { e.stopPropagation(); setShowRemove(v => !v) }}
+                style={{ padding: '0 2px', background: 'none', border: 'none', cursor: 'pointer', color: C.textSecondary, fontSize: 14, fontWeight: 700, lineHeight: 1 }}>⋮</button>
+            )}
+          </div>
+          <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.3, marginBottom: dateTimeLine ? 3 : 0 }}>
+            {event.name || 'Appointment'}
+          </div>
+          {dateTimeLine && (
+            <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.45, marginBottom: typeLocLine ? 2 : 0 }}>{dateTimeLine}</div>
+          )}
+          {typeLocLine && (
+            <div style={{ fontSize: 13, color: C.textTertiary, lineHeight: 1.45, marginBottom: event.notes ? 4 : 0 }}>{typeLocLine}</div>
+          )}
+          {event.notes && (
+            <div onClick={e => { e.stopPropagation(); setNotesOpen(v => !v) }} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, cursor: 'pointer' }}>
+              <span style={{ marginTop: 2, flexShrink: 0, display: 'flex' }}><Ico.notes/></span>
+              <span style={{ fontSize: 13, color: C.textTertiary, lineHeight: 1.45, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: notesOpen ? 999 : 1, overflow: 'hidden' }}>{event.notes}</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -1175,11 +1717,44 @@ const buildDailySummary = (ps, timeline = [], recs = null) => {
   const dx = [stageLabel, `${hist}${cancerName}`].filter(Boolean).join(' ')
   const fmt = d => { try { return new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) } catch { return null } }
 
+  const todayStr = new Date().toISOString().split('T')[0]
   const events = (timeline || []).flatMap(day => (day.events || []).map(e => ({ ...e, _date: day.date, _isToday: !!day.isToday })))
   const nonDx = events.filter(e => e.type !== 'diagnosis')
   const surg = nonDx.find(e => /nephrectomy|prostatectomy|mastectomy|resection|ablation|surgery/i.test(e.name || ''))
   const path = nonDx.find(e => /patholog/i.test(e.name || ''))
   const todayEvents = nonDx.filter(e => e._isToday)
+
+  // Appointment awareness
+  const todayAppts = todayEvents.filter(e => e.type === 'appointment')
+  const futureAppts = nonDx
+    .filter(e => e.type === 'appointment' && !e._isToday && e._date > todayStr)
+    .sort((a, b) => a._date.localeCompare(b._date))
+  const nextAppt = futureAppts[0] || null
+
+  // Appointment sentences
+  const apptSentences = (() => {
+    const parts = []
+    if (todayAppts.length > 0) {
+      const appt = todayAppts[0]
+      const dr = shortDrName(appt.provider || appt.name)
+      if (appt.appointmentType === 'Virtual') {
+        parts.push(`Virtual visit with ${dr} today.`)
+      } else if (appt.appointmentType === 'Phone Call') {
+        parts.push(`${dr} has a call scheduled today.`)
+      } else {
+        parts.push(`You're seeing ${dr} today.`)
+      }
+    }
+    if (nextAppt) {
+      const name = shortDrName(nextAppt.provider || nextAppt.name)
+      if (name) {
+        parts.push(`Your next appointment with ${name} is ${relativeApptDate(nextAppt._date)}.`)
+      } else {
+        parts.push(`Your next appointment is ${relativeApptDate(nextAppt._date)}.`)
+      }
+    }
+    return parts
+  })()
 
   // Treatments the user has added from recommendations — this is what makes the summary react to adds.
   const added = nonDx.filter(e => e.createdFromRecommendationId)
@@ -1190,13 +1765,13 @@ const buildDailySummary = (ps, timeline = [], recs = null) => {
 
   const surgName = surg ? surg.name.replace(/\s*\(surgery\)/i, '').toLowerCase() : null
   const surgWhen = surg ? fmt(surg._date) : null
-  const todayOther = todayEvents.filter(e => e !== surg && e !== path && !e.createdFromRecommendationId)
+  const todayOther = todayEvents.filter(e => e !== surg && e !== path && !e.createdFromRecommendationId && e.type !== 'appointment')
 
   // Assemble from clauses. `opts` toggles the optional pieces so we can drop them
   // (never truncate mid-word) until the whole thought fits the soft budget.
   const assemble = (opts) => {
     const parts = []
-    // Past → present
+    // 1. Surgery/pathology context
     if (surg && opts.surg) {
       parts.push(`Following your ${surgWhen ? surgWhen + ' ' : ''}${surgName}${path ? ' and pathology review' : ''}, your ${dx || 'care'} plan is active.`)
     } else if (dx) {
@@ -1204,17 +1779,21 @@ const buildDailySummary = (ps, timeline = [], recs = null) => {
     } else {
       parts.push('Your care plan is active.')
     }
-    // Present (optional): today's clinical activity not already covered
+    // 2. Today's non-appointment clinical events
     if (opts.today && todayOther.length) {
       const names = todayOther.slice(0, 2).map(e => e.name.toLowerCase())
       parts.push(`Today includes ${names.join(' and ')}.`)
     }
-    // Committed plan: treatments the user has added
+    // 3. Today's appointment
+    if (opts.todayAppt && apptSentences[0]) parts.push(apptSentences[0])
+    // 4. Next upcoming appointment
+    if (opts.nextAppt && apptSentences[1]) parts.push(apptSentences[1])
+    // 5. Committed plan: treatments the user has added
     if (added.length && opts.added) {
       const desc = added.length === 1 ? added[0].name.toLowerCase() : `${added.length} treatments`
       parts.push(`Your plan now includes ${desc}.`)
     }
-    // Future (recommendations)
+    // 6. Future (recommendations)
     if (opts.next) {
       if (added.length) {
         parts.push('More treatment options are available to review below.')
@@ -1228,22 +1807,24 @@ const buildDailySummary = (ps, timeline = [], recs = null) => {
     return parts.join(' ')
   }
 
-  const BUDGET = 200
+  const BUDGET = 350
   // Progressively drop optional clauses; first full thought that fits wins.
   const variants = [
-    { surg: true, today: true, added: true, next: true, count: true },
-    { surg: true, today: false, added: true, next: true, count: true },
-    { surg: true, today: false, added: true, next: true, count: false },
-    { surg: true, today: false, added: true, next: false, count: false },
-    { surg: false, today: false, added: true, next: false, count: false },
-    { surg: false, today: false, added: false, next: false, count: false },
+    { surg: true,  today: true,  todayAppt: true,  nextAppt: true,  added: true,  next: true,  count: true  },
+    { surg: true,  today: false, todayAppt: true,  nextAppt: true,  added: true,  next: true,  count: true  },
+    { surg: true,  today: false, todayAppt: true,  nextAppt: true,  added: true,  next: true,  count: false },
+    { surg: true,  today: false, todayAppt: true,  nextAppt: false, added: true,  next: true,  count: false },
+    { surg: true,  today: false, todayAppt: true,  nextAppt: false, added: true,  next: false, count: false },
+    { surg: true,  today: false, todayAppt: false, nextAppt: false, added: true,  next: false, count: false },
+    { surg: false, today: false, todayAppt: false, nextAppt: false, added: true,  next: false, count: false },
+    { surg: false, today: false, todayAppt: false, nextAppt: false, added: false, next: false, count: false },
   ]
   for (const v of variants) {
     const s = assemble(v)
     if (s.length <= BUDGET) return s
   }
   // Shortest complete form — returned whole even if it exceeds the soft budget (never cut mid-word).
-  return assemble({ surg: false, today: false, added: false, next: false, count: false })
+  return assemble({ surg: false, today: false, todayAppt: false, nextAppt: false, added: false, next: false, count: false })
 }
 
 // ─── QUESTION CARD ────────────────────────────────────────────────
@@ -1495,7 +2076,12 @@ const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFla
   // Today right after the scroll-to-Today settles.
   const showSummary = day.summary && (!day.isToday || summaryShown)
   if (showSummary) allItems.push({ key: 'summary', icon: null, card: <DailySummaryCard summary={day.summary} isToday={day.isToday}/> })
-  day.events.forEach(ev => allItems.push({ key: ev.id, icon: null, card: <EventCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent && ev.type !== 'diagnosis' ? () => onRemoveEvent(ev.id, day.date) : null} visibleRecs={visibleRecs}/> }))
+  day.events.forEach(ev => allItems.push({
+    key: ev.id, icon: null,
+    card: ev.type === 'appointment'
+      ? <AppointmentCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent ? () => onRemoveEvent(ev.id, day.date) : null}/>
+      : <EventCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent && ev.type !== 'diagnosis' ? () => onRemoveEvent(ev.id, day.date) : null} visibleRecs={visibleRecs}/>
+  }))
   ;(day.suggested || []).forEach((blk, i) => allItems.push({ key: blk.id, isSugBlock: true, icon: <div style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: C.bgCard, border: `1.5px solid ${C.primary}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.primary, fontVariationSettings: "'FILL' 0, 'wght' 300" }}>kid_star</span></div>, card: genBlockId === blk.id
               ? <div style={{ padding: '12px 16px' }}>
                   <span style={{ fontSize: 13, color: C.textSecondary }}>{genText}</span>
@@ -1582,7 +2168,7 @@ const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFla
     </div>
   )
 }
-const AddEventSheet = ({ onClose, onSelectProcedure, onSelectScan, onSelectMedication }) => {
+const AddEventSheet = ({ onClose, onSelectProcedure, onSelectScan, onSelectMedication, onSelectAppointment }) => {
   const [vis, setVis] = useState(false)
   useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
 
@@ -1594,6 +2180,7 @@ const AddEventSheet = ({ onClose, onSelectProcedure, onSelectScan, onSelectMedic
   const dismiss = () => dismissThen(null)
 
   const opts = [
+    { type: 'appointment', label: 'Appointment', desc: 'A doctor visit, virtual visit, lab, or other scheduled appointment', fn: onSelectAppointment },
     { type: 'procedure', label: 'Procedure or Surgery', desc: 'A procedure or surgery you had or have scheduled', fn: onSelectProcedure },
     { type: 'medication', label: 'Medication Treatment', desc: 'Start, stop, or adjust a medication', fn: onSelectMedication },
     { type: 'scan', label: 'Scan, Lab, or Pathology Test', desc: 'A scan, lab, or pathology test that was ordered, completed, or scheduled', fn: onSelectScan },
@@ -2558,8 +3145,19 @@ const OnboardingScreen = ({ onComplete, onAddMedication, onExit }) => {
       ].filter(Boolean),
     }})
 
-    // Surgery seeding removed — users add surgery via the add event flow.
-    // Seeding surgery would suppress primary treatment recommendations incorrectly.
+    // Surgery seeding: if the user indicated they've had surgery, seed procedure events
+    if (hadSurgery) {
+      events.push({ date: daysAgo(10), event: {
+        id: 'seed_surgery', type: 'procedure',
+        name: 'Surgery',
+        date: daysAgo(10),
+      }})
+      events.push({ date: daysAgo(4), event: {
+        id: 'seed_pathology', type: 'procedure',
+        name: 'Pathology review',
+        date: daysAgo(4),
+      }})
+    }
 
     // Stage IV: add staging scan
     if (stage === 'IV') {
@@ -4266,13 +4864,9 @@ export default function App() {
     const container = scrollRef.current
     if (!container) return
     const onScroll = () => {
-      // Scroll direction: hide the Today pill while scrolling down (browsing away),
-      // bring it back while scrolling up (heading back toward today). Runs before the
-      // existing today-in-view check below, which still governs whether it's eligible.
       const st = container.scrollTop
       const last = lastScrollTopRef.current
-      if (st > last + 4) setHidePillOnScroll(true)
-      else if (st < last - 4) setHidePillOnScroll(false)
+      const delta = st - last
       lastScrollTopRef.current = st
 
       const todayDay = timelineWithRecs.find(d => d.isToday)
@@ -4286,6 +4880,19 @@ export default function App() {
       // Today is below the fold
       const isBelowFold = rect.top > cRect.bottom
       setShowTodayPill(isPinned || isBelowFold)
+
+      // Directional awareness — hide pill when scrolling TOWARD today, show when scrolling away.
+      // Use 4px deadband to avoid flickering from momentum/deceleration.
+      if (Math.abs(delta) > 4) {
+        const scrollingDown = delta > 0
+        if (isPinned) {
+          // Today is ABOVE viewport: scrolling UP (delta<0) = toward today → hide
+          setHidePillOnScroll(!scrollingDown)
+        } else if (isBelowFold) {
+          // Today is BELOW viewport: scrolling DOWN (delta>0) = toward today → hide
+          setHidePillOnScroll(scrollingDown)
+        }
+      }
     }
     container.addEventListener('scroll', onScroll, { passive: true })
     return () => container.removeEventListener('scroll', onScroll)
@@ -4646,10 +5253,11 @@ export default function App() {
           }}
         />
       )}
-      {sheetOpen && <AddEventSheet onClose={() => setSheetOpen(false)} onSelectProcedure={() => openFlow('procedure')} onSelectScan={() => openFlow('scan')} onSelectMedication={() => openFlow('medication')}/>}
+      {sheetOpen && <AddEventSheet onClose={() => setSheetOpen(false)} onSelectProcedure={() => openFlow('procedure')} onSelectScan={() => openFlow('scan')} onSelectMedication={() => openFlow('medication')} onSelectAppointment={() => openFlow('appointment')}/>}
       {flow === 'procedure' && <AddProcedureFlow onClose={() => { setFlow(null); setFlowPreload(null) }} onComplete={handleComplete} preload={flowPreload?.type === 'procedure' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
       {flow === 'scan' && <AddScanFlow onClose={() => { setFlow(null); setFlowPreload(null) }} onComplete={handleComplete} preload={flowPreload?.type === 'scan' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
       {flow === 'medication' && <AddMedicationFlow onClose={() => { setFlow(null); setFlowPreload(null) }} onComplete={handleComplete} preload={flowPreload?.type === 'medication' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
+      {flow === 'appointment' && <AddAppointmentFlow onClose={() => setFlow(null)} onComplete={handleComplete}/>}
       {onboarded && !anyDrillInOpen && activeTab === 'careplan' && showTodayPill && (
         <div style={{
           position: 'fixed', bottom: 90, left: 0, right: 0, zIndex: 30,
