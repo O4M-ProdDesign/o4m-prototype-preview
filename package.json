@@ -1,7 +1,7 @@
 {
   "name": "o4m-prototype",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@fontsource-variable/inter": "^5.0.0",
+    "@fontsource-variable/inter": "^5.3.0",
     "@material-symbols/font-400": "^0.45.8",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

@@ -1,0 +1,1195 @@
+import { useState, useEffect, useRef } from 'react'
+
+// ─── DESIGN TOKENS ────────────────────────────────────────────────
+const C = {
+  primary: '#ff7958',
+  primaryLight: '#faeae9',
+  bgApp: '#f0eff2',
+  bgCard: '#ffffff',
+  textPrimary: 'rgba(0,0,0,0.87)',
+  textSecondary: 'rgba(0,0,0,0.55)',
+  textTertiary: 'rgba(0,0,0,0.35)',
+  textIcon: '#535353',
+  border: 'rgba(0,0,0,0.10)',
+  borderMid: 'rgba(0,0,0,0.14)',
+  timelineLine: '#d8d7da',
+  timelineLineToday: '#ffb8a6',
+}
+
+// ─── DATA ─────────────────────────────────────────────────────────
+const INITIAL_TIMELINE = [
+  {
+    date: '2024-06-02',
+    label: 'June 2',
+    isToday: false,
+    summary: { text: 'Chemotherapy session completed. Bloodwork drawn for CBC and metabolic panel. Vitals stable throughout infusion. No acute adverse reactions noted.' },
+    events: [
+      { id: 'e1', type: 'procedure', name: 'FOLFOX Chemotherapy Infusion', date: '2024-06-02', notes: 'Session 4 of 8. Tolerated well. Port accessed without issue.' },
+      { id: 'e2', type: 'scan', name: 'CBC with Differential', date: '2024-06-02', notes: 'WBC 3.2, Hgb 10.8, Plt 142' },
+    ],
+    suggested: null,
+  },
+  {
+    date: '2024-06-07',
+    label: 'June 7',
+    isToday: false,
+    summary: { text: 'Oncology follow-up visit. Nausea managed with ondansetron. Dose adjustment discussion deferred to next cycle review.' },
+    events: [
+      {
+        id: 'e4',
+        type: 'diagnosis',
+        name: 'Stage III Colorectal Adenocarcinoma',
+        date: '2024-01-15',
+        details: ['T3N1M0', 'MSS · KRAS wild-type · HER2 negative'],
+        notes: 'Confirmed via surgical pathology. Referred to oncology same day.',
+      },
+    ],
+    suggested: null,
+  },
+  {
+    date: '2024-06-08',
+    label: 'June 8',
+    isToday: true,
+    summary: { text: 'Rest day. Monitoring for side effects from cycle 4. Peripheral neuropathy reported in hands and feet — documented for dose modification review at next visit. Fatigue score 5/10.' },
+    events: [
+      { id: 'e5', type: 'procedure', name: 'FOLFOX Infusion — Cycle 4', date: '2024-06-08', notes: 'Tolerated well. No acute reactions.' },
+      { id: 'e6', type: 'medication', name: 'Oxaliplatin 85mg/m²', date: '2024-06-08', dose: '85mg/m² IV q2w', startDate: '2024-03-10', notes: 'Part of FOLFOX regimen. Monitor for cumulative neuropathy.' },
+    ],
+    suggested: [
+      { id: 'sug1', stepLabel: 'Treatment Step',
+      stepBody: 'Based on your diagnosis and current treatment response, your care team may consider the following next steps.',
+      options: [
+        { id: 's1', title: 'Add Bevacizumab (Avastin)', description: 'VEGF inhibitor — may extend progression-free survival in MSS tumors after 4–6 FOLFOX cycles' },
+        { id: 's2', title: 'Dose Reduction Review', description: 'Grade 2 neuropathy threshold reached — consider oxaliplatin dose modification' },
+        { id: 's3', title: 'Restaging CT Scan', description: 'Recommended after 4 cycles to assess tumor response before continuing' },
+      ],
+    },
+    { id: 'sug2', stepLabel: 'Supportive Care Step', stepBody: 'Managing treatment side effects is part of your care plan.', options: [
+        { id: 's4', title: 'Neuropathy Management', description: 'Duloxetine 30-60mg daily shown to reduce oxaliplatin-induced peripheral neuropathy symptoms' },
+        { id: 's5', title: 'Nutritional Support Referral', description: 'Dietitian consult - weight and appetite changes noted over the last two cycles' },
+        { id: 's6', title: 'Fatigue Assessment', description: 'Structured fatigue scoring and activity pacing may improve energy between cycles' },
+      ]},
+  ],
+  },
+]
+
+const PROCEDURE_CATALOG = [
+  { name: 'Lumpectomy', subtitle: 'Breast', searchTerms: ['bcs', 'breast-conserving surgery', 'lumpectomy', 'partial mastectomy', 'tumor removal', 'wide local excision'] },
+  { name: 'Mastectomy', subtitle: 'Breast', searchTerms: ['bilateral mastectomy', 'breast removal', 'double mastectomy', 'mastectomy', 'nipple-sparing', 'radical mastectomy', 'simple mastectomy', 'single mastectomy', 'skin-sparing', 'total mastectomy'] },
+  { name: 'Prophylactic mastectomy', subtitle: 'Breast', searchTerms: ['brca mastectomy', 'preventive mastectomy', 'prophylactic mastectomy', 'risk-reducing mastectomy'] },
+  { name: 'Lymph node surgery (breast)', subtitle: 'Breast', searchTerms: ['alnd', 'armpit surgery', 'axillary lymph node dissection', 'lymph node removal', 'lymph node surgery (breast)', 'sentinel lymph node biopsy', 'sentinel node biopsy', 'slnb'] },
+  { name: 'Breast reconstruction', subtitle: 'Breast', searchTerms: ['breast reconstruction', 'diep', 'expander', 'flap reconstruction', 'implant reconstruction', 'latissimus flap', 'tissue expander', 'tram'] },
+  { name: 'Prostatectomy', subtitle: 'Prostate', searchTerms: ['da vinci surgery', 'laparoscopic prostatectomy', 'open prostatectomy', 'prostate removal', 'prostatectomy', 'radical prostatectomy', 'ralp', 'robotic prostatectomy', 'robotic surgery', 'rp'] },
+  { name: 'Transurethral resection of prostate (TURP)', subtitle: 'Prostate', searchTerms: ['transurethral resection', 'transurethral resection of prostate (turp)', 'turp'] },
+  { name: 'Pelvic lymph node dissection', subtitle: 'Prostate', searchTerms: ['pelvic lymph node dissection', 'pelvic node dissection', 'plnd'] },
+  { name: 'Orchiectomy', subtitle: 'Prostate', searchTerms: ['bilateral orchiectomy', 'orchiectomy', 'surgical castration', 'testicle removal'] },
+  { name: 'Lung surgery', subtitle: 'Multiple', searchTerms: ['lobectomy', 'lung removal', 'lung resection', 'lung surgery', 'pneumonectomy', 'segmentectomy', 'sleeve resection', 'wedge resection'] },
+  { name: 'Mediastinal lymph node dissection', subtitle: 'Multiple', searchTerms: ['chest lymph node removal', 'mediastinal lymph node dissection', 'mediastinal node dissection', 'mlnd'] },
+  { name: 'TURBT', subtitle: 'Bladder', searchTerms: ['bladder scrape', 'bladder tumor resection', 'transurethral resection of bladder tumor', 'turbt'] },
+  { name: 'Cystectomy', subtitle: 'Bladder', searchTerms: ['bladder removal', 'cystectomy', 'partial cystectomy', 'radical cystectomy', 'rc'] },
+  { name: 'Urinary diversion (ileal conduit)', subtitle: 'Bladder', searchTerms: ['ileal conduit', 'stoma', 'urinary diversion', 'urinary diversion (ileal conduit)', 'urostomy'] },
+  { name: 'Neobladder construction', subtitle: 'Bladder', searchTerms: ['continent diversion', 'internal bladder reconstruction', 'neobladder construction', 'orthotopic neobladder'] },
+  { name: 'Intravesical therapy administration', subtitle: 'Bladder', searchTerms: ['bcg instillation', 'bladder wash', 'intravesical bcg', 'intravesical chemo', 'intravesical gemcitabine', 'intravesical therapy administration'] },
+  { name: 'Nephrectomy', subtitle: 'Kidney (RCC)', searchTerms: ['kidney removal', 'laparoscopic nephrectomy', 'nephrectomy', 'partial nephrectomy', 'radical nephrectomy', 'robotic nephrectomy'] },
+  { name: 'Renal mass ablation', subtitle: 'Kidney (RCC)', searchTerms: ['cryoablation', 'kidney ablation', 'microwave ablation', 'radiofrequency ablation', 'renal mass ablation', 'rfa'] },
+  { name: 'Colectomy', subtitle: 'CRC', searchTerms: ['bowel resection', 'colectomy', 'colon resection', 'left hemicolectomy', 'partial colectomy', 'right hemicolectomy', 'sigmoid colectomy', 'subtotal colectomy', 'total colectomy'] },
+  { name: 'Low anterior resection (LAR)', subtitle: 'CRC', searchTerms: ['anterior resection', 'lar', 'low anterior resection (lar)', 'rectal resection', 'sphincter-sparing'] },
+  { name: 'Abdominoperineal resection (APR)', subtitle: 'CRC', searchTerms: ['abdominoperineal resection (apr)', 'apr', 'miles procedure'] },
+  { name: 'Polypectomy', subtitle: 'CRC', searchTerms: ['emr', 'endoscopic mucosal resection', 'endoscopic polypectomy', 'polyp removal', 'polypectomy'] },
+  { name: 'Ostomy creation', subtitle: 'CRC', searchTerms: ['colostomy', 'diverting ostomy', 'end ostomy', 'ileostomy', 'loop ostomy', 'ostomy creation', 'stoma'] },
+  { name: 'Ostomy reversal', subtitle: 'CRC', searchTerms: ['colostomy reversal', 'ileostomy reversal', 'ostomy reversal', 'ostomy takedown', 'stoma reversal'] },
+  { name: 'Liver metastasis resection', subtitle: 'CRC', searchTerms: ['hepatic resection', 'liver met removal', 'liver metastasis resection', 'liver resection', 'metastasectomy', 'partial hepatectomy'] },
+  { name: 'Hysterectomy', subtitle: 'Multiple', searchTerms: ['abdominal hysterectomy', 'hysterectomy', 'radical hysterectomy', 'robotic hysterectomy', 'tah', 'tlh', 'total hysterectomy', 'uterus removal', 'vaginal hysterectomy'] },
+  { name: 'Bilateral salpingo-oophorectomy (BSO)', subtitle: 'Multiple', searchTerms: ['bilateral salpingo-oophorectomy (bso)', 'bso', 'fallopian tube removal', 'oophorectomy', 'ovarian ablation', 'ovary removal'] },
+  { name: 'Debulking / cytoreductive surgery', subtitle: 'Ovarian', searchTerms: ['cytoreduction', 'debulking / cytoreductive surgery', 'interval debulking', 'optimal debulking', 'primary debulking', 'r0 resection', 'suboptimal debulking'] },
+  { name: 'Omentectomy', subtitle: 'Multiple', searchTerms: ['omental removal', 'omental resection', 'omentectomy'] },
+  { name: 'Pelvic / para-aortic lymphadenectomy', subtitle: 'Multiple', searchTerms: ['lymphadenectomy', 'para-aortic node dissection', 'pelvic / para-aortic lymphadenectomy', 'pelvic lymph node dissection'] },
+  { name: 'Ovarian suppression / oophorectomy (breast)', subtitle: 'Breast', searchTerms: ['bso for breast', 'oophorectomy for breast cancer', 'ovarian ablation', 'ovarian suppression / oophorectomy (breast)'] },
+  { name: 'Stem cell collection (apheresis)', subtitle: 'Multiple myeloma', searchTerms: ['apheresis', 'autologous stem cell collection', 'pbsc', 'peripheral blood stem cell collection', 'stem cell collection (apheresis)', 'stem cell harvest'] },
+  { name: 'Autologous stem cell transplant', subtitle: 'Multiple myeloma', searchTerms: ['asct', 'auto sct', 'autologous stem cell transplant', 'autologous transplant', 'bmt', 'bone marrow transplant', 'high-dose chemo transplant'] },
+  { name: 'Allogeneic stem cell transplant', subtitle: 'Multiple', searchTerms: ['allo sct', 'allogeneic stem cell transplant', 'allogeneic transplant', 'allosct', 'bone marrow transplant from donor', 'donor transplant'] },
+  { name: 'CAR-T cell therapy', subtitle: 'Multiple', searchTerms: ['abecma', 'bcma car-t', 'brexucabtagene', 'breyanzi', 'car t-cell', 'car-t', 'car-t cell therapy', 'carvykti', 'cilta-cel', 'ide-cel', 'lisocabtagene', 'tecartus'] },
+  { name: 'Leukapheresis (for CAR-T)', subtitle: 'Multiple', searchTerms: ['apheresis', 'leukapheresis (for car-t)', 'leukapheresis for car-t', 't-cell collection'] },
+  { name: 'Needle biopsy', subtitle: 'All solid tumors', searchTerms: ['core biopsy', 'core needle', 'ct-guided biopsy', 'fine needle aspiration', 'fna', 'image-guided biopsy', 'mammotome', 'needle aspiration', 'needle biopsy', 'stereotactic biopsy', 'ultrasound-guided biopsy', 'vacuum-assisted biopsy'] },
+  { name: 'Surgical biopsy', subtitle: 'All solid tumors', searchTerms: ['excisional biopsy', 'incisional biopsy', 'open biopsy', 'surgical biopsy', 'surgical removal of lump'] },
+  { name: 'Prostate biopsy', subtitle: 'Prostate', searchTerms: ['mri fusion biopsy', 'mri-guided biopsy', 'prostate biopsy', 'prostate needle biopsy', 'transperineal biopsy', 'transrectal ultrasound biopsy', 'trus biopsy'] },
+  { name: 'Lung biopsy (bronchoscopy)', subtitle: 'Multiple', searchTerms: ['bronch', 'bronchoscopy', 'ebus', 'endobronchial ultrasound', 'lung biopsy (bronchoscopy)', 'transbronchial biopsy'] },
+  { name: 'Lung biopsy (needle through chest)', subtitle: 'Multiple', searchTerms: ['ct-guided lung biopsy', 'lung biopsy (needle through chest)', 'needle through chest', 'percutaneous lung biopsy', 'transthoracic needle biopsy'] },
+  { name: 'Bladder biopsy', subtitle: 'Bladder', searchTerms: ['bladder biopsy', 'cystoscopic biopsy'] },
+  { name: 'Endometrial biopsy', subtitle: 'Endometrial', searchTerms: ['d&c', 'dilation and curettage', 'emb', 'endometrial biopsy', 'endometrial sampling', 'pipelle biopsy', 'uterine biopsy'] },
+  { name: 'Colon / rectal biopsy', subtitle: 'CRC', searchTerms: ['colon / rectal biopsy', 'colonoscopy biopsy', 'endoscopic biopsy', 'polyp biopsy', 'rectal biopsy'] },
+  { name: 'Lymph node biopsy', subtitle: '', searchTerms: ['excisional lymph node biopsy', 'fna of lymph node', 'lymph node biopsy', 'lymph node sampling', 'sentinel node biopsy'] },
+  { name: 'Bone marrow biopsy', subtitle: '', searchTerms: ['bma', 'bmb', 'bone marrow aspiration', 'bone marrow biopsy', 'hip biopsy', 'iliac crest biopsy'] },
+  { name: 'Bone biopsy', subtitle: 'All solid tumors', searchTerms: ['bone biopsy', 'bone lesion biopsy', 'bone met biopsy'] },
+  { name: 'Liquid biopsy', subtitle: '', searchTerms: ['blood-based biopsy', 'circulating tumor dna', 'ctdna', 'foundationone liquid', 'guardant', 'liquid biopsy', 'signatera'] },
+  { name: 'Port placement', subtitle: '', searchTerms: ['central line port', 'chemo port', 'implanted port', 'mediport', 'port placement', 'port surgery', 'port-a-cath'] },
+  { name: 'Port removal', subtitle: '', searchTerms: ['port explant', 'port removal', 'port-a-cath removal'] },
+  { name: 'Central line placement (PICC)', subtitle: '', searchTerms: ['central line placement (picc)', 'hickman line', 'peripherally inserted central catheter', 'picc line', 'tunneled catheter'] },
+  { name: 'Lumbar puncture (spinal tap)', subtitle: '', searchTerms: ['csf sampling', 'intrathecal', 'lp', 'lumbar puncture (spinal tap)', 'spinal tap'] },
+  { name: 'Fluid drainage', subtitle: 'All solid tumors', searchTerms: ['abdominal tap', 'ascites drainage', 'chest tap', 'fluid drainage', 'paracentesis', 'pleural drainage', 'thoracentesis'] },
+  { name: 'Plasmapheresis', subtitle: 'Multiple myeloma', searchTerms: ['plasma exchange', 'plasmapheresis', 'plasmapheresis for hyperviscosity', 'plex'] },
+  { name: 'Vertebroplasty / kyphoplasty', subtitle: 'Multiple myeloma', searchTerms: ['kyphoplasty', 'spinal cement', 'vertebral augmentation', 'vertebroplasty', 'vertebroplasty / kyphoplasty'] },
+  { name: 'Fertility preservation', subtitle: '', searchTerms: ['egg retrieval', 'embryo retrieval', 'fertility preservation', 'fertility preservation surgery', 'ivf before chemo', 'oocyte cryopreservation', 'sperm banking'] },
+]
+
+const SCAN_CATALOG = [
+  { name: 'Tumor pathology report', subtitle: 'All solid tumors', searchTerms: ['biopsy result', 'path report', 'pathology result', 'tumor pathology', 'tumor pathology report'] },
+  { name: 'Hormone receptor test (ER/PR)', subtitle: 'Breast', searchTerms: ['er positive', 'er pr', 'estrogen receptor', 'hormone receptor status', 'hormone receptor test (er/pr)', 'pr positive', 'progesterone receptor'] },
+  { name: 'HER2 test', subtitle: 'Multiple', searchTerms: ['her-2', 'her2 fish', 'her2 ihc', 'her2 low', 'her2 negative', 'her2 positive', 'her2 status', 'her2 test', 'her2-neu', 'in situ hybridization'] },
+  { name: 'Ki-67', subtitle: 'Breast', searchTerms: ['ki-67', 'ki67', 'mib-1', 'proliferation index'] },
+  { name: 'PD-L1', subtitle: 'Multiple', searchTerms: ['cps', 'pd-l1', 'pd-l1 expression', 'pd-l1 ihc', 'pd-l1 tps', 'pdl1', 'tumor proportion score'] },
+  { name: 'Oncotype DX', subtitle: 'Multiple', searchTerms: ['21-gene assay', 'oncotype', 'oncotype dx', 'oncotype dx colon', 'recurrence score', 'rs'] },
+  { name: 'MammaPrint', subtitle: 'Breast', searchTerms: ['70-gene assay', 'agendia test', 'mamma print', 'mammaprint'] },
+  { name: 'Prosigna / PAM50', subtitle: 'Breast', searchTerms: ['intrinsic subtype', 'pam50', 'prosigna / pam50', 'prosigna assay', 'ror score'] },
+  { name: 'Decipher', subtitle: 'Prostate', searchTerms: ['decipher', 'decipher genomic classifier', 'genomedx', 'prostate genomic test'] },
+  { name: 'Prolaris', subtitle: 'Prostate', searchTerms: ['cell cycle progression score', 'myriad prostate test', 'prolaris', 'prolaris ccp'] },
+  { name: 'Tumor genomic sequencing (NGS)', subtitle: '', searchTerms: ['caris', 'foundation medicine', 'foundationone', 'genomic profiling', 'guardant tissue', 'mutation testing', 'next-generation sequencing', 'ngs', 'tempus', 'tumor genomic sequencing (ngs)', 'tumor profiling'] },
+  { name: 'Germline genetic testing', subtitle: '', searchTerms: ['atm', 'brca testing', 'brca1', 'brca2', 'chek2', 'color test', 'germline genetic testing', 'hereditary cancer panel', 'hereditary genetic test', 'invitae', 'lynch syndrome testing', 'mlh1', 'msh2', 'multi-gene panel', 'myriad myrisk', 'palb2'] },
+  { name: 'MSI / MMR test', subtitle: 'Multiple', searchTerms: ['dmmr', 'lynch syndrome screening', 'microsatellite instability', 'mismatch repair', 'mmr', 'msi', 'msi / mmr test', 'msi-high'] },
+  { name: 'TMB', subtitle: '', searchTerms: ['mutations per megabase', 'tmb', 'tmb-high', 'tumor mutational burden'] },
+  { name: 'FGFR test (bladder)', subtitle: 'Bladder', searchTerms: ['fgfr alteration', 'fgfr test (bladder)', 'fgfr2 fusion', 'fgfr3 mutation'] },
+  { name: 'KRAS / NRAS / BRAF testing (CRC)', subtitle: 'CRC', searchTerms: ['braf testing', 'braf v600e', 'kras / nras / braf testing (crc)', 'kras test', 'nras test', 'ras testing'] },
+  { name: 'Bone marrow biopsy results', subtitle: 'Multiple', searchTerms: ['bmb results', 'bone marrow biopsy results', 'bone marrow pathology', 'bone marrow report'] },
+  { name: 'FISH (myeloma cytogenetics)', subtitle: 'Multiple myeloma', searchTerms: ['1q gain', 'del(17p)', 'fish (myeloma cytogenetics)', 'fish mm', 'high-risk cytogenetics', 'myeloma fish', 't(14;16)', 't(4;14)'] },
+  { name: 'Flow cytometry', subtitle: 'Multiple', searchTerms: ['flow', 'flow cytometry', 'immunophenotyping', 'peripheral flow'] },
+  { name: 'Minimal residual disease (MRD)', subtitle: 'Multiple', searchTerms: ['clonoseq', 'measurable residual disease', 'minimal residual disease (mrd)', 'mrd', 'mrd negative', 'mrd positive', 'ngs mrd'] },
+  { name: 'IGHV mutation status', subtitle: 'CLL', searchTerms: ['ighv', 'ighv mutation status', 'igvh mutation', 'mutated cll', 'unmutated cll'] },
+  { name: 'TP53 / del(17p) test', subtitle: 'CLL', searchTerms: ['17p deletion', 'del 17p', 'p53', 'tp53 / del(17p) test', 'tp53 mutation'] },
+  { name: 'CT scan', subtitle: '', searchTerms: ['cap', 'cat scan', 'computed tomography', 'ct', 'ct abdomen', 'ct chest', 'ct chest abdomen pelvis', 'ct pelvis', 'ct scan'] },
+  { name: 'CT head / brain', subtitle: '', searchTerms: ['brain ct', 'ct brain', 'ct head / brain', 'head ct'] },
+  { name: 'CT urogram', subtitle: 'Multiple', searchTerms: ['ct ivp', 'ct urogram', 'ctu'] },
+  { name: 'MRI (brain)', subtitle: '', searchTerms: ['brain mri', 'magnetic resonance imaging brain', 'mr brain', 'mri (brain)'] },
+  { name: 'MRI (breast)', subtitle: 'Breast', searchTerms: ['breast mr', 'breast mri', 'mri (breast)', 'mri of breast'] },
+  { name: 'MRI (prostate)', subtitle: 'Prostate', searchTerms: ['mpmri', 'mr prostate', 'mri (prostate)', 'multiparametric mri', 'prostate mri'] },
+  { name: 'MRI (pelvis)', subtitle: 'Multiple', searchTerms: ['mr pelvis', 'mri (pelvis)', 'pelvic mri'] },
+  { name: 'MRI (other)', subtitle: '', searchTerms: ['abdominal mri', 'liver mri', 'mr spine', 'mri (other)', 'mri bone', 'spine mri'] },
+  { name: 'PET scan', subtitle: '', searchTerms: ['fdg pet', 'pet', 'pet scan', 'pet-ct', 'positron emission tomography', 'whole body pet'] },
+  { name: 'PSMA PET scan', subtitle: 'Prostate', searchTerms: ['f-18 dcfpyl', 'gallium pet', 'illuccix', 'locametz', 'psma pet', 'psma pet scan', 'pylarify scan'] },
+  { name: 'Bone scan', subtitle: 'All solid tumors', searchTerms: ['bone scan', 'full body bone scan', 'nuclear bone scan', 'tc-99 scan', 'technetium scan'] },
+  { name: 'Skeletal survey (X-ray series)', subtitle: 'Multiple myeloma', searchTerms: ['bone survey', 'skeletal survey', 'skeletal survey (x-ray series)', 'x-ray series'] },
+  { name: 'Whole-body MRI', subtitle: 'Multiple myeloma', searchTerms: ['total body mri', 'wbmri', 'whole-body mri'] },
+  { name: 'Mammogram (screening)', subtitle: 'Breast', searchTerms: ['3d mammogram', 'annual mammogram', 'dbt', 'mammogram (screening)', 'routine mammogram', 'screening mammo', 'tomosynthesis'] },
+  { name: 'Mammogram (diagnostic)', subtitle: 'Breast', searchTerms: ['callback mammogram', 'diagnostic mammo', 'follow-up mammogram', 'mammogram (diagnostic)'] },
+  { name: 'Breast ultrasound', subtitle: 'Breast', searchTerms: ['breast ultrasound', 'breast us', 'sonogram', 'ultrasound of breast'] },
+  { name: 'Transrectal ultrasound (TRUS)', subtitle: 'Prostate', searchTerms: ['prostate ultrasound', 'rectal ultrasound', 'transrectal ultrasound (trus)', 'trus'] },
+  { name: 'Transvaginal ultrasound', subtitle: 'Multiple', searchTerms: ['gynecologic ultrasound', 'pelvic ultrasound', 'transvaginal ultrasound', 'tvus'] },
+  { name: 'Cystoscopy', subtitle: 'Bladder', searchTerms: ['bladder scope', 'cysto', 'cystoscopic exam', 'cystoscopy', 'surveillance cystoscopy'] },
+  { name: 'Colonoscopy', subtitle: 'CRC', searchTerms: ['colonoscopy', 'scope', 'screening colonoscopy', 'surveillance colonoscopy'] },
+  { name: 'Sigmoidoscopy', subtitle: 'CRC', searchTerms: ['flex sig', 'flexible sigmoidoscopy', 'sigmoidoscopy'] },
+  { name: 'Chest X-ray', subtitle: '', searchTerms: ['chest film', 'chest x-ray', 'cxr', 'x-ray'] },
+  { name: 'Echocardiogram', subtitle: '', searchTerms: ['cardiac ultrasound', 'echo', 'echocardiogram', 'ef measurement', 'ejection fraction', 'heart ultrasound'] },
+  { name: 'MUGA scan', subtitle: '', searchTerms: ['muga', 'muga scan', 'multigated acquisition scan', 'radionuclide ventriculography', 'rnv'] },
+  { name: 'Complete blood count (CBC)', subtitle: '', searchTerms: ['absolute neutrophil', 'anc', 'blood count', 'blood test', 'cbc', 'complete blood count (cbc)', 'hematocrit', 'hemoglobin', 'platelet count', 'wbc count', 'white count'] },
+  { name: 'Comprehensive metabolic panel (CMP)', subtitle: '', searchTerms: ['basic metabolic panel', 'bmp', 'chem panel', 'cmp', 'comprehensive metabolic panel (cmp)', 'creatinine', 'kidney function', 'lfts', 'liver function tests', 'metabolic panel'] },
+  { name: 'Liquid biopsy (ctDNA)', subtitle: '', searchTerms: ['blood-based genomic test', 'circulating tumor dna', 'ctdna', 'foundationone liquid', 'guardant360', 'liquid biopsy (ctdna)', 'signatera'] },
+  { name: 'LDH', subtitle: '', searchTerms: ['lactate dehydrogenase', 'ldh', 'ldh level'] },
+  { name: 'Alkaline phosphatase', subtitle: '', searchTerms: ['alk phos', 'alkaline phos', 'alkaline phosphatase', 'alp'] },
+  { name: 'Calcium', subtitle: '', searchTerms: ['blood calcium', 'calcium', 'corrected calcium', 'ionized calcium', 'serum calcium'] },
+  { name: 'Vitamin D', subtitle: '', searchTerms: ['25-oh vitamin d', 'calcidiol', 'vit d', 'vitamin d'] },
+  { name: 'Coagulation studies', subtitle: '', searchTerms: ['coagulation studies', 'd-dimer', 'fibrinogen', 'inr', 'pt', 'ptt'] },
+  { name: 'PSA', subtitle: 'Prostate', searchTerms: ['prostate specific antigen', 'psa', 'psa blood test', 'psa level', 'psa test'] },
+  { name: 'Testosterone level', subtitle: 'Prostate', searchTerms: ['free testosterone', 't level', 'testosterone level', 'total testosterone'] },
+  { name: 'Breast cancer tumor marker', subtitle: 'Breast', searchTerms: ['breast cancer tumor marker', 'ca 15-3', 'ca 27-29', 'ca 27.29', 'ca15-3', 'tumor marker'] },
+  { name: 'CEA', subtitle: 'Multiple', searchTerms: ['carcinoembryonic antigen', 'cea', 'cea blood test'] },
+  { name: 'CA 125', subtitle: 'Multiple', searchTerms: ['ca 125', 'ca125', 'cancer antigen 125', 'ovarian marker'] },
+  { name: 'CA 19-9', subtitle: 'CRC', searchTerms: ['ca 19-9', 'ca 19.9', 'cancer antigen 19-9'] },
+  { name: 'HE4', subtitle: 'Ovarian', searchTerms: ['he-4', 'he4', 'human epididymis protein 4'] },
+  { name: 'Beta-2 microglobulin', subtitle: 'Multiple myeloma', searchTerms: ['b2m', 'beta 2 microglobulin', 'beta-2 microglobulin'] },
+  { name: 'Serum protein electrophoresis (SPEP)', subtitle: 'Multiple myeloma', searchTerms: ['m-protein', 'm-spike', 'monoclonal protein', 'protein electrophoresis', 'serum protein electrophoresis (spep)', 'spep'] },
+  { name: 'Immunofixation (IFE)', subtitle: 'Multiple myeloma', searchTerms: ['ife', 'immunofixation (ife)', 'immunofixation electrophoresis', 'serum immunofixation'] },
+  { name: 'Serum free light chains', subtitle: 'Multiple myeloma', searchTerms: ['flc', 'free light chains', 'kappa lambda ratio', 'serum free light chains', 'sflc'] },
+  { name: 'Urine protein electrophoresis (UPEP)', subtitle: 'Multiple myeloma', searchTerms: ['24-hour urine protein', 'bence jones protein', 'upep', 'urine m-protein', 'urine protein electrophoresis (upep)'] },
+  { name: 'Quantitative immunoglobulins', subtitle: 'Multiple', searchTerms: ['ig levels', 'iga', 'igg', 'igm', 'quantitative immunoglobulins'] },
+  { name: 'Pulmonary function test', subtitle: '', searchTerms: ['breathing test', 'dlco', 'lung function test', 'pft', 'pulmonary function test', 'spirometry'] },
+  { name: 'Bone density scan (DEXA)', subtitle: '', searchTerms: ['bone density', 'bone density scan (dexa)', 'bone mineral density', 'dexa', 'dxa scan', 'osteoporosis screening'] },
+  { name: 'EKG / ECG', subtitle: '', searchTerms: ['ecg', 'ekg', 'ekg / ecg', 'electrocardiogram', 'heart rhythm test'] },
+  { name: 'Urinalysis', subtitle: '', searchTerms: ['ua', 'urinalysis', 'urine analysis', 'urine cytology', 'urine test'] },
+  { name: 'Pregnancy test', subtitle: '', searchTerms: ['beta hcg', 'hcg', 'pregnancy blood test', 'pregnancy test'] },
+]
+
+const MEDICATION_CATALOG = [
+  { name: 'Systemic therapy (drug class — when specific drug unknown)', subtitle: '', searchTerms: ['systemic therapy (drug class — when specific drug unknown)'] },
+  { name: 'LHRH agonist', subtitle: 'Prostate', searchTerms: ['eligard', 'goserelin', 'histrelin', 'hormone implant', 'hormone shot', 'leuprolide', 'lhrh agonist', 'lupron', 'trelstar', 'triptorelin', 'vantas', 'zoladex'] },
+  { name: 'GnRH antagonist', subtitle: 'Prostate', searchTerms: ['degarelix', 'firmagon', 'gnrh antagonist', 'oral adt', 'orgovyx', 'relugolix'] },
+  { name: 'Rituximab', subtitle: 'CLL', searchTerms: ['anti-cd20', 'rituxan', 'rituximab', 'truxima'] },
+  { name: 'Obinutuzumab', subtitle: 'CLL', searchTerms: ['anti-cd20', 'gazyva', 'obinutuzumab'] },
+  { name: 'Ofatumumab', subtitle: 'CLL', searchTerms: ['anti-cd20', 'arzerra', 'ofatumumab'] },
+  { name: 'Daratumumab', subtitle: 'Multiple myeloma', searchTerms: ['anti-cd38', 'd-vrd', 'dara', 'daratumumab', 'darzalex', 'drd'] },
+  { name: 'Isatuximab', subtitle: 'Multiple myeloma', searchTerms: ['anti-cd38', 'isa', 'isatuximab', 'sarclisa'] },
+  { name: 'Elotuzumab', subtitle: 'Multiple myeloma', searchTerms: ['elotuzumab', 'empliciti', 'slamf7 antibody'] },
+  { name: 'Trastuzumab deruxtecan (T-DXd)', subtitle: 'Multiple', searchTerms: ['ds-8201', 'enhertu', 't-dxd', 'trastuzumab deruxtecan (t-dxd)'] },
+  { name: 'Ado-trastuzumab emtansine (T-DM1)', subtitle: 'Breast', searchTerms: ['ado-trastuzumab emtansine (t-dm1)', 'kadcyla', 't-dm1'] },
+  { name: 'Sacituzumab govitecan', subtitle: 'Breast', searchTerms: ['sacituzumab govitecan', 'trodelvy'] },
+  { name: 'Datopotamab deruxtecan', subtitle: 'Multiple', searchTerms: ['dato-dxd', 'datopotamab deruxtecan', 'datroway'] },
+  { name: 'Enfortumab vedotin', subtitle: 'Bladder', searchTerms: ['enfortumab vedotin', 'ev', 'padcev'] },
+  { name: 'Belantamab mafodotin', subtitle: 'Multiple myeloma', searchTerms: ['bcma adc', 'belantamab mafodotin', 'blenrep'] },
+  { name: 'Teclistamab', subtitle: 'Multiple myeloma', searchTerms: ['bcma bispecific', 'teclistamab', 'tecvayli'] },
+  { name: 'Elranatamab', subtitle: 'Multiple myeloma', searchTerms: ['bcma bispecific', 'elranatamab', 'elrexfio'] },
+  { name: 'Talquetamab', subtitle: 'Multiple myeloma', searchTerms: ['gprc5d bispecific', 'talquetamab', 'talvey'] },
+  { name: 'Epcoritamab', subtitle: 'Multiple', searchTerms: ['cd20 bispecific', 'epcoritamab', 'epkinly'] },
+  { name: 'Denosumab', subtitle: '', searchTerms: ['bone shot', 'denosumab', 'prolia', 'xgeva'] },
+  { name: 'Zoledronic acid', subtitle: '', searchTerms: ['bisphosphonate', 'reclast', 'zol', 'zoledronic acid', 'zometa'] },
+  { name: 'Pamidronate', subtitle: '', searchTerms: ['aredia', 'pamidronate'] },
+  { name: 'Idecabtagene vicleucel (ide-cel)', subtitle: 'Multiple myeloma', searchTerms: ['abecma', 'bcma car-t', 'ide-cel', 'idecabtagene vicleucel (ide-cel)'] },
+  { name: 'Ciltacabtagene autoleucel (cilta-cel)', subtitle: 'Multiple myeloma', searchTerms: ['bcma car-t', 'carvykti', 'cilta-cel', 'ciltacabtagene autoleucel (cilta-cel)'] },
+  { name: 'Lisocabtagene maraleucel (liso-cel)', subtitle: 'CLL', searchTerms: ['breyanzi', 'cd19 car-t', 'liso-cel', 'lisocabtagene maraleucel (liso-cel)'] },
+  { name: 'Brexucabtagene autoleucel', subtitle: 'CLL', searchTerms: ['brexu-cel', 'brexucabtagene autoleucel', 'cd19 car-t', 'tecartus'] },
+  { name: 'Doxorubicin', subtitle: 'Multiple', searchTerms: ['a in ac', 'adriamycin', 'doxil', 'doxorubicin', 'liposomal doxorubicin', 'the red devil'] },
+  { name: 'Cyclophosphamide', subtitle: 'Multiple', searchTerms: ['c in ac', 'ctx', 'cyclophosphamide', 'cytoxan'] },
+  { name: 'Paclitaxel', subtitle: 'Multiple', searchTerms: ['abraxane', 'nab-paclitaxel', 'paclitaxel', 't in ac-t', 'taxol'] },
+  { name: 'Docetaxel', subtitle: 'Multiple', searchTerms: ['docetaxel', 'taxotere'] },
+  { name: 'Carboplatin', subtitle: 'Multiple', searchTerms: ['carbo', 'carboplatin', 'paraplatin'] },
+  { name: 'Cisplatin', subtitle: 'Multiple', searchTerms: ['cddp', 'cisplatin', 'platinol'] },
+  { name: 'Oxaliplatin', subtitle: 'CRC', searchTerms: ['capox', 'eloxatin', 'folfirinox', 'folfox', 'folfoxiri', 'oxali', 'oxaliplatin', 'xelox'] },
+  { name: 'Irinotecan', subtitle: 'CRC', searchTerms: ['camptosar', 'cpt-11', 'folfiri', 'folfirinox', 'irinotecan'] },
+  { name: 'Pemetrexed', subtitle: 'NSCLC', searchTerms: ['alimta', 'pemetrexed'] },
+  { name: 'Gemcitabine', subtitle: 'Multiple', searchTerms: ['gemcitabine', 'gemzar'] },
+  { name: 'Etoposide', subtitle: 'Multiple', searchTerms: ['etopophos', 'etoposide', 'vepesid', 'vp-16'] },
+  { name: 'Topotecan', subtitle: 'Multiple', searchTerms: ['hycamtin', 'topotecan'] },
+  { name: 'Lurbinectedin', subtitle: 'SCLC', searchTerms: ['lurbinectedin', 'zepzelca'] },
+  { name: 'Vinorelbine', subtitle: 'Multiple', searchTerms: ['navelbine', 'vinorelbine'] },
+  { name: 'Capecitabine', subtitle: 'Multiple', searchTerms: ['capecitabine', 'capeox', 'capox', 'oral 5-fu', 'xeloda'] },
+  { name: 'Eribulin', subtitle: 'Breast', searchTerms: ['eribulin', 'halaven'] },
+  { name: 'Cabazitaxel', subtitle: 'Prostate', searchTerms: ['cabazitaxel', 'jevtana'] },
+  { name: '5-Fluorouracil (5-FU)', subtitle: 'Multiple', searchTerms: ['5-fluorouracil (5-fu)', '5-fu', 'adrucil', 'fluorouracil', 'folfiri', 'folfirinox', 'folfox'] },
+  { name: 'Methotrexate', subtitle: 'Multiple', searchTerms: ['methotrexate', 'mtx', 'otrexup', 'trexall'] },
+  { name: 'Mitoxantrone', subtitle: 'Prostate', searchTerms: ['mitoxantrone', 'novantrone'] },
+  { name: 'Ixabepilone', subtitle: 'Breast', searchTerms: ['ixabepilone', 'ixempra'] },
+  { name: 'Bendamustine', subtitle: 'Multiple', searchTerms: ['bendamustine', 'bendeka', 'treanda'] },
+  { name: 'Fludarabine', subtitle: 'CLL', searchTerms: ['fcr regimen', 'fludara', 'fludarabine'] },
+  { name: 'Pegylated liposomal doxorubicin', subtitle: 'Multiple', searchTerms: ['caelyx', 'doxil', 'pegylated liposomal doxorubicin', 'pld'] },
+  { name: 'Trabectedin', subtitle: 'Ovarian', searchTerms: ['trabectedin', 'yondelis'] },
+  { name: 'Investigational drug', subtitle: '', searchTerms: ['blinded drug', 'experimental drug', 'investigational drug', 'placebo', 'randomization', 'study drug', 'trial drug'] },
+  { name: 'Tamoxifen', subtitle: 'Breast', searchTerms: ['nolvadex', 'soltamox', 'tamox', 'tamoxifen'] },
+  { name: 'Aromatase inhibitor', subtitle: 'Breast', searchTerms: ['ai', 'anastrozole', 'arimidex', 'aromasin', 'aromatase inhibitor', 'exemestane', 'femara', 'letrozole'] },
+  { name: 'Fulvestrant', subtitle: 'Breast', searchTerms: ['faslodex', 'fulvestrant', 'serd injection'] },
+  { name: 'Elacestrant', subtitle: 'Breast', searchTerms: ['elacestrant', 'oral serd', 'orserdu'] },
+  { name: 'Toremifene', subtitle: 'Breast', searchTerms: ['fareston', 'toremifene'] },
+  { name: 'Progestin therapy', subtitle: 'Endometrial', searchTerms: ['medroxyprogesterone', 'megace', 'megestrol', 'progestin', 'progestin therapy', 'provera'] },
+  { name: 'Abiraterone', subtitle: 'Prostate', searchTerms: ['abi', 'abiraterone', 'cyp17 inhibitor', 'zytiga'] },
+  { name: 'First-generation anti-androgen', subtitle: 'Prostate', searchTerms: ['bicalutamide', 'casodex', 'eulexin', 'first-generation anti-androgen', 'flutamide', 'nilandron', 'nilutamide'] },
+  { name: 'Pembrolizumab', subtitle: 'Multiple', searchTerms: ['immunotherapy', 'keytruda', 'pd-1 inhibitor', 'pembro', 'pembrolizumab'] },
+  { name: 'Nivolumab', subtitle: 'Multiple', searchTerms: ['nivo', 'nivolumab', 'opdivo', 'pd-1 inhibitor'] },
+  { name: 'Atezolizumab', subtitle: 'Multiple', searchTerms: ['atezolizumab', 'pd-l1 inhibitor', 'tecentriq'] },
+  { name: 'Durvalumab', subtitle: 'Multiple', searchTerms: ['durvalumab', 'imfinzi', 'pd-l1 inhibitor'] },
+  { name: 'Cemiplimab', subtitle: 'NSCLC', searchTerms: ['cemiplimab', 'libtayo', 'pd-1 inhibitor'] },
+  { name: 'Ipilimumab', subtitle: 'Multiple', searchTerms: ['ctla-4 inhibitor', 'ipi', 'ipilimumab', 'yervoy'] },
+  { name: 'Avelumab', subtitle: 'Bladder', searchTerms: ['avelumab', 'bavencio', 'pd-l1 inhibitor'] },
+  { name: 'Dostarlimab', subtitle: 'Endometrial', searchTerms: ['dostarlimab', 'jemperli', 'pd-1 inhibitor'] },
+  { name: 'Tremelimumab', subtitle: 'NSCLC', searchTerms: ['ctla-4 inhibitor', 'imjudo', 'tremelimumab'] },
+  { name: 'BCG (intravesical)', subtitle: 'Bladder', searchTerms: ['bacillus calmette-guerin', 'bcg (intravesical)', 'bcg instillation', 'intravesical bcg'] },
+  { name: 'Intravesical chemotherapy', subtitle: 'Bladder', searchTerms: ['gem-doce', 'intravesical chemo', 'intravesical chemotherapy', 'intravesical gemcitabine', 'intravesical mitomycin'] },
+  { name: 'Nadofaragene firadenovec', subtitle: 'Bladder', searchTerms: ['adstiladrin', 'gene therapy', 'nadofaragene firadenovec'] },
+  { name: 'Lutetium-177 PSMA', subtitle: 'Prostate', searchTerms: ['177lu-psma', 'lutetium psma', 'lutetium-177 psma', 'pluvicto', 'psma therapy'] },
+  { name: 'Radium-223', subtitle: 'Prostate', searchTerms: ['radium therapy', 'radium-223', 'xofigo'] },
+  { name: 'Anti-nausea medication', subtitle: '', searchTerms: ['aloxi', 'anti-nausea medication', 'antiemetic', 'granisetron', 'kytril', 'ondansetron', 'palonosetron', 'zofran'] },
+  { name: 'Steroid', subtitle: '', searchTerms: ['decadron', 'dex', 'dexamethasone', 'methylprednisolone', 'prednisone', 'steroid', 'steroids'] },
+  { name: 'Growth factor', subtitle: '', searchTerms: ['filgrastim', 'g-csf', 'growth factor', 'neulasta', 'neupogen', 'pegfilgrastim', 'wbc shot', 'white blood cell shot'] },
+  { name: 'Erythropoietin (ESA)', subtitle: '', searchTerms: ['anemia shot', 'aranesp', 'darbepoetin', 'epoetin', 'epogen', 'erythropoietin (esa)', 'procrit'] },
+  { name: 'Antiviral prophylaxis', subtitle: 'Multiple', searchTerms: ['acyclovir', 'antiviral prophylaxis', 'shingles prevention', 'valacyclovir', 'valtrex', 'zovirax'] },
+  { name: 'Antibiotic prophylaxis', subtitle: 'Multiple', searchTerms: ['antibiotic prophylaxis', 'bactrim', 'levofloxacin', 'pjp prophylaxis', 'sulfamethoxazole', 'tmp-smx'] },
+  { name: 'IVIG (immunoglobulin)', subtitle: 'Multiple', searchTerms: ['antibody replacement', 'igg infusion', 'intravenous immunoglobulin', 'ivig (immunoglobulin)'] },
+  { name: 'Pain medication', subtitle: '', searchTerms: ['acetaminophen', 'fentanyl', 'gabapentin', 'hydrocodone', 'ibuprofen', 'morphine', 'nsaids', 'opioid', 'oxycodone', 'pain medication', 'tylenol'] },
+  { name: 'Anti-anxiety / sleep aid', subtitle: '', searchTerms: ['alprazolam', 'ambien', 'anti-anxiety / sleep aid', 'ativan', 'benzodiazepine', 'lorazepam', 'xanax', 'zolpidem'] },
+  { name: 'Anticoagulant', subtitle: 'Multiple', searchTerms: ['anticoagulant', 'apixaban', 'blood thinner', 'eliquis', 'enoxaparin', 'lovenox', 'rivaroxaban', 'warfarin', 'xarelto'] },
+  { name: 'Trastuzumab', subtitle: 'Multiple', searchTerms: ['herceptin', 'trastuzumab'] },
+  { name: 'Pertuzumab', subtitle: 'Breast', searchTerms: ['perjeta', 'pertuzumab'] },
+  { name: 'Lapatinib', subtitle: 'Breast', searchTerms: ['lapatinib', 'tykerb'] },
+  { name: 'Neratinib', subtitle: 'Breast', searchTerms: ['neratinib', 'nerlynx'] },
+  { name: 'Tucatinib', subtitle: 'Breast', searchTerms: ['tucatinib', 'tukysa'] },
+  { name: 'Palbociclib', subtitle: 'Breast', searchTerms: ['cdk inhibitor', 'ibrance', 'palbociclib'] },
+  { name: 'Ribociclib', subtitle: 'Breast', searchTerms: ['cdk inhibitor', 'kisqali', 'ribociclib'] },
+  { name: 'Abemaciclib', subtitle: 'Breast', searchTerms: ['abemaciclib', 'cdk inhibitor', 'verzenio'] },
+  { name: 'Alpelisib', subtitle: 'Breast', searchTerms: ['alpelisib', 'pi3k inhibitor', 'piqray'] },
+  { name: 'Capivasertib', subtitle: 'Breast', searchTerms: ['akt inhibitor', 'capivasertib', 'truqap'] },
+  { name: 'Everolimus', subtitle: 'Multiple', searchTerms: ['afinitor', 'everolimus', 'mtor inhibitor'] },
+  { name: 'Olaparib', subtitle: 'Multiple', searchTerms: ['lynparza', 'olaparib', 'parp inhibitor'] },
+  { name: 'Talazoparib', subtitle: 'Multiple', searchTerms: ['parp inhibitor', 'talazoparib', 'talzenna'] },
+  { name: 'Rucaparib', subtitle: 'Multiple', searchTerms: ['parp inhibitor', 'rubraca', 'rucaparib'] },
+  { name: 'Niraparib', subtitle: 'Multiple', searchTerms: ['niraparib', 'parp inhibitor', 'zejula'] },
+  { name: 'Osimertinib', subtitle: 'NSCLC', searchTerms: ['egfr inhibitor', 'osimertinib', 'tagrisso'] },
+  { name: 'Erlotinib', subtitle: 'NSCLC', searchTerms: ['egfr inhibitor', 'erlotinib', 'tarceva'] },
+  { name: 'Gefitinib', subtitle: 'NSCLC', searchTerms: ['egfr inhibitor', 'gefitinib', 'iressa'] },
+  { name: 'Afatinib', subtitle: 'NSCLC', searchTerms: ['afatinib', 'egfr inhibitor', 'gilotrif'] },
+  { name: 'Dacomitinib', subtitle: 'NSCLC', searchTerms: ['dacomitinib', 'vizimpro'] },
+  { name: 'Alectinib', subtitle: 'NSCLC', searchTerms: ['alecensa', 'alectinib', 'alk inhibitor'] },
+  { name: 'Crizotinib', subtitle: 'NSCLC', searchTerms: ['alk inhibitor', 'crizotinib', 'xalkori'] },
+  { name: 'Brigatinib', subtitle: 'NSCLC', searchTerms: ['alk inhibitor', 'alunbrig', 'brigatinib'] },
+  { name: 'Lorlatinib', subtitle: 'NSCLC', searchTerms: ['alk inhibitor', 'lorbrena', 'lorlatinib'] },
+  { name: 'Ceritinib', subtitle: 'NSCLC', searchTerms: ['alk inhibitor', 'ceritinib', 'zykadia'] },
+  { name: 'Sotorasib', subtitle: 'NSCLC', searchTerms: ['kras inhibitor', 'lumakras', 'sotorasib'] },
+  { name: 'Adagrasib', subtitle: 'Multiple', searchTerms: ['adagrasib', 'kras inhibitor', 'krazati'] },
+  { name: 'Selpercatinib', subtitle: 'Multiple', searchTerms: ['ret inhibitor', 'retevmo', 'selpercatinib'] },
+  { name: 'Capmatinib', subtitle: 'NSCLC', searchTerms: ['capmatinib', 'met inhibitor', 'tabrecta'] },
+  { name: 'Tepotinib', subtitle: 'NSCLC', searchTerms: ['met inhibitor', 'tepmetko', 'tepotinib'] },
+  { name: 'Entrectinib', subtitle: 'Multiple', searchTerms: ['entrectinib', 'ntrk', 'ros1 inhibitor', 'rozlytrek'] },
+  { name: 'Larotrectinib', subtitle: 'Multiple', searchTerms: ['larotrectinib', 'ntrk inhibitor', 'vitrakvi'] },
+  { name: 'Apalutamide', subtitle: 'Prostate', searchTerms: ['anti-androgen', 'apalutamide', 'erleada'] },
+  { name: 'Darolutamide', subtitle: 'Prostate', searchTerms: ['anti-androgen', 'darolutamide', 'nubeqa'] },
+  { name: 'Enzalutamide', subtitle: 'Prostate', searchTerms: ['anti-androgen', 'enzalutamide', 'xtandi'] },
+  { name: 'Erdafitinib', subtitle: 'Bladder', searchTerms: ['balversa', 'erdafitinib', 'fgfr inhibitor'] },
+  { name: 'Cetuximab', subtitle: 'CRC', searchTerms: ['anti-egfr', 'cetuximab', 'erbitux'] },
+  { name: 'Panitumumab', subtitle: 'CRC', searchTerms: ['anti-egfr', 'panitumumab', 'vectibix'] },
+  { name: 'Bevacizumab', subtitle: 'Multiple', searchTerms: ['anti-vegf', 'avastin', 'bevacizumab'] },
+  { name: 'Ramucirumab', subtitle: 'Multiple', searchTerms: ['anti-vegfr2', 'cyramza', 'ramucirumab'] },
+  { name: 'Regorafenib', subtitle: 'CRC', searchTerms: ['regorafenib', 'stivarga'] },
+  { name: 'Trifluridine-tipiracil', subtitle: 'CRC', searchTerms: ['lonsurf', 'tas-102', 'trifluridine-tipiracil'] },
+  { name: 'Encorafenib', subtitle: 'CRC', searchTerms: ['braf inhibitor', 'braftovi', 'encorafenib'] },
+  { name: 'Sunitinib', subtitle: 'Kidney (RCC)', searchTerms: ['sunitinib', 'sutent', 'tki'] },
+  { name: 'Pazopanib', subtitle: 'Kidney (RCC)', searchTerms: ['pazopanib', 'tki', 'votrient'] },
+  { name: 'Cabozantinib', subtitle: 'Multiple', searchTerms: ['cabometyx', 'cabozantinib', 'cometriq', 'tki'] },
+  { name: 'Axitinib', subtitle: 'Kidney (RCC)', searchTerms: ['axitinib', 'inlyta', 'tki'] },
+  { name: 'Lenvatinib', subtitle: 'Multiple', searchTerms: ['lenvatinib', 'lenvima', 'tki'] },
+  { name: 'Tivozanib', subtitle: 'Kidney (RCC)', searchTerms: ['fotivda', 'tivozanib', 'tki'] },
+  { name: 'Belzutifan', subtitle: 'Kidney (RCC)', searchTerms: ['belzutifan', 'hif-2α inhibitor', 'welireg'] },
+  { name: 'Ibrutinib', subtitle: 'CLL', searchTerms: ['btk inhibitor', 'ibrutinib', 'imbruvica'] },
+  { name: 'Acalabrutinib', subtitle: 'CLL', searchTerms: ['acalabrutinib', 'btk inhibitor', 'calquence'] },
+  { name: 'Zanubrutinib', subtitle: 'CLL', searchTerms: ['brukinsa', 'btk inhibitor', 'zanubrutinib'] },
+  { name: 'Pirtobrutinib', subtitle: 'CLL', searchTerms: ['jaypirca', 'non-covalent btk inhibitor', 'pirtobrutinib'] },
+  { name: 'Venetoclax', subtitle: 'CLL', searchTerms: ['bcl2 inhibitor', 'venclexta', 'venetoclax'] },
+  { name: 'Idelalisib', subtitle: 'CLL', searchTerms: ['idelalisib', 'pi3k inhibitor', 'zydelig'] },
+  { name: 'Duvelisib', subtitle: 'CLL', searchTerms: ['copiktra', 'duvelisib', 'pi3k inhibitor'] },
+  { name: 'Bortezomib', subtitle: 'Multiple myeloma', searchTerms: ['bortezomib', 'proteasome inhibitor', 'v in vrd', 'velcade'] },
+  { name: 'Carfilzomib', subtitle: 'Multiple myeloma', searchTerms: ['carfilzomib', 'k in krd', 'kyprolis', 'proteasome inhibitor'] },
+  { name: 'Ixazomib', subtitle: 'Multiple myeloma', searchTerms: ['ixazomib', 'ninlaro', 'oral proteasome inhibitor'] },
+  { name: 'Lenalidomide', subtitle: 'Multiple myeloma', searchTerms: ['imid', 'lenalidomide', 'r in vrd', 'revlimid'] },
+  { name: 'Pomalidomide', subtitle: 'Multiple myeloma', searchTerms: ['imid', 'pomalidomide', 'pomalyst'] },
+  { name: 'Thalidomide', subtitle: 'Multiple myeloma', searchTerms: ['imid', 'thalidomide', 'thalomid'] },
+  { name: 'Selinexor', subtitle: 'Multiple myeloma', searchTerms: ['selinexor', 'xpo1 inhibitor', 'xpovio'] },
+]
+
+const PROC_SUGGESTED = [
+  { name: 'Colectomy', subtitle: 'CRC', searchTerms: ['bowel resection', 'colectomy', 'colon resection', 'left hemicolectomy', 'partial colectomy', 'right hemicolectomy', 'sigmoid colectomy', 'subtotal colectomy', 'total colectomy'] },
+  { name: 'Low anterior resection (LAR)', subtitle: 'CRC', searchTerms: ['anterior resection', 'lar', 'low anterior resection (lar)', 'rectal resection', 'sphincter-sparing'] },
+  { name: 'Abdominoperineal resection (APR)', subtitle: 'CRC', searchTerms: ['abdominoperineal resection (apr)', 'apr', 'miles procedure'] },
+  { name: 'Polypectomy', subtitle: 'CRC', searchTerms: ['emr', 'endoscopic mucosal resection', 'endoscopic polypectomy', 'polyp removal', 'polypectomy'] },
+  { name: 'Ostomy creation', subtitle: 'CRC', searchTerms: ['colostomy', 'diverting ostomy', 'end ostomy', 'ileostomy', 'loop ostomy', 'ostomy creation', 'stoma'] },
+  { name: 'Ostomy reversal', subtitle: 'CRC', searchTerms: ['colostomy reversal', 'ileostomy reversal', 'ostomy reversal', 'ostomy takedown', 'stoma reversal'] },
+  { name: 'Liver metastasis resection', subtitle: 'CRC', searchTerms: ['hepatic resection', 'liver met removal', 'liver metastasis resection', 'liver resection', 'metastasectomy', 'partial hepatectomy'] }
+]
+
+const SCAN_SUGGESTED = [
+  { name: 'KRAS / NRAS / BRAF testing (CRC)', subtitle: 'CRC', searchTerms: ['braf testing', 'braf v600e', 'kras / nras / braf testing (crc)', 'kras test', 'nras test', 'ras testing'] },
+  { name: 'Colonoscopy', subtitle: 'CRC', searchTerms: ['colonoscopy', 'scope', 'screening colonoscopy', 'surveillance colonoscopy'] },
+  { name: 'Sigmoidoscopy', subtitle: 'CRC', searchTerms: ['flex sig', 'flexible sigmoidoscopy', 'sigmoidoscopy'] },
+  { name: 'CA 19-9', subtitle: 'CRC', searchTerms: ['ca 19-9', 'ca 19.9', 'cancer antigen 19-9'] },
+  { name: 'Tumor pathology report', subtitle: 'All solid tumors', searchTerms: ['biopsy result', 'path report', 'pathology result', 'tumor pathology', 'tumor pathology report'] },
+  { name: 'Bone scan', subtitle: 'All solid tumors', searchTerms: ['bone scan', 'full body bone scan', 'nuclear bone scan', 'tc-99 scan', 'technetium scan'] },
+  { name: 'HER2 test', subtitle: 'Multiple', searchTerms: ['her-2', 'her2 fish', 'her2 ihc', 'her2 low', 'her2 negative', 'her2 positive', 'her2 status', 'her2 test', 'her2-neu', 'in situ hybridization'] }
+]
+
+const MED_SUGGESTED = [
+  { name: 'Oxaliplatin', subtitle: 'CRC', searchTerms: ['capox', 'eloxatin', 'folfirinox', 'folfox', 'folfoxiri', 'oxali', 'oxaliplatin', 'xelox'] },
+  { name: 'Irinotecan', subtitle: 'CRC', searchTerms: ['camptosar', 'cpt-11', 'folfiri', 'folfirinox', 'irinotecan'] },
+  { name: 'Cetuximab', subtitle: 'CRC', searchTerms: ['anti-egfr', 'cetuximab', 'erbitux'] },
+  { name: 'Panitumumab', subtitle: 'CRC', searchTerms: ['anti-egfr', 'panitumumab', 'vectibix'] },
+  { name: 'Regorafenib', subtitle: 'CRC', searchTerms: ['regorafenib', 'stivarga'] },
+  { name: 'Trifluridine-tipiracil', subtitle: 'CRC', searchTerms: ['lonsurf', 'tas-102', 'trifluridine-tipiracil'] },
+  { name: 'Encorafenib', subtitle: 'CRC', searchTerms: ['braf inhibitor', 'braftovi', 'encorafenib'] }
+]
+
+const fmtDate = (d, opts = {}) => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...opts }) : ''
+const fmtDateRange = (s, e) => {
+  if (!s) return ''
+  if (!e) return fmtDate(s)
+  const sd = new Date(s + 'T12:00:00'), ed = new Date(e + 'T12:00:00')
+  const sameYear = sd.getFullYear() === ed.getFullYear()
+  const sameMonth = sameYear && sd.getMonth() === ed.getMonth()
+  const thisYear = sd.getFullYear() === new Date().getFullYear()
+  // Start: always show month+day, show year only if not this year
+  const startStr = fmtDate(s, thisYear && sameYear ? {} : { year: 'numeric' })
+  // End: omit month if same month, omit year if same year as start and this year
+  const endDay = ed.getDate()
+  if (sameMonth) return `${startStr} – ${endDay}`
+  const endStr = fmtDate(e, thisYear && sameYear ? {} : { year: 'numeric' })
+  return `${startStr} – ${endStr}`
+}
+const cardRefs = new Map()
+
+// ─── ICONS ────────────────────────────────────────────────────────
+const Ico = {
+  back: () => <svg width="10" height="17" viewBox="0 0 10 17" fill="none"><path d="M9 1.5L1.5 8.5L9 15.5" stroke={C.textIcon} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+  close: () => <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1 1L12 12M12 1L1 12" stroke={C.textIcon} strokeWidth="1.8" strokeLinecap="round"/></svg>,
+  search: ({ on }) => <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="5.5" stroke={on ? C.primary : '#888'} strokeWidth="1.5"/><path d="M11 11L14 14" stroke={on ? C.primary : '#888'} strokeWidth="1.5" strokeLinecap="round"/></svg>,
+  chevRight: () => <svg width="7" height="11" viewBox="0 0 7 11" fill="none"><path d="M1 1.5L5.5 5.5L1 9.5" stroke="rgba(0,0,0,0.3)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+  chevDown: ({ open }) => <svg width="13" height="8" viewBox="0 0 13 8" fill="none" style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.22s ease', flexShrink: 0 }}><path d="M1.5 1.5L6.5 6.5L11.5 1.5" stroke="rgba(0,0,0,0.35)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+  plus: () => <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 3V17M3 10H17" stroke="white" strokeWidth="2.2" strokeLinecap="round"/></svg>,
+  spark: () => <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 1L9.1 5.6L14 7.5L9.1 9.4L7.5 14L5.9 9.4L1 7.5L5.9 5.6L7.5 1Z" fill={C.primary} stroke={C.primary} strokeWidth="0.4" strokeLinejoin="round"/></svg>,
+  thumbUp: () => <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M1.5 7.5h2v5.5h-2zM3.5 7.5L5.5 3l1.5.5V6.5H11L10 12H3.5z" stroke={C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>,
+  thumbDown: () => <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M13.5 7.5h-2V2h2zM11.5 7.5L9.5 12l-1.5-.5V8H4L5 3h6.5z" stroke={C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>,
+  cal: () => <svg width="15" height="16" viewBox="0 0 15 16" fill="none"><rect x="1" y="2" width="13" height="12.5" rx="2" stroke="#888" strokeWidth="1.3"/><path d="M5 1V3M10 1V3M1 6H14" stroke="#888" strokeWidth="1.3" strokeLinecap="round"/></svg>,
+  notes: () => <svg width="14" height="12" viewBox="0 0 14 12" fill="none"><path d="M1 1H13M1 5H10M1 9H8" stroke="rgba(0,0,0,0.3)" strokeWidth="1.3" strokeLinecap="round"/></svg>,
+
+  // Timeline rail icons — square badges matching design
+  diagnosisRail: () => (
+    <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+      <rect x="0.5" y="0.5" width="35" height="35" rx="17.5" fill="white" stroke={C.border}/>
+      <rect x="9" y="9" width="18" height="18" rx="2" stroke={C.textIcon} strokeWidth="1.4"/>
+      <path d="M12 14h6M12 17.5h4M12 21h7" stroke={C.textIcon} strokeWidth="1.3" strokeLinecap="round"/>
+      <path d="M19 13v4h4" stroke={C.textIcon} strokeWidth="1.3" strokeLinecap="round"/>
+    </svg>
+  ),
+  procedureRail: () => (
+    <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+      <rect x="0.5" y="0.5" width="35" height="35" rx="17.5" fill="white" stroke={C.border}/>
+      <circle cx="18" cy="15" r="4" stroke={C.textIcon} strokeWidth="1.4"/>
+      <path d="M14 24c0-2.2 1.8-4 4-4s4 1.8 4 4" stroke={C.textIcon} strokeWidth="1.4" strokeLinecap="round"/>
+      <path d="M18 13v4M16 15h4" stroke={C.textIcon} strokeWidth="1.3" strokeLinecap="round"/>
+    </svg>
+  ),
+  medicationRail: () => (
+    <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+      <rect x="0.5" y="0.5" width="35" height="35" rx="17.5" fill="white" stroke={C.border}/>
+      <rect x="13" y="10" width="10" height="16" rx="5" stroke={C.textIcon} strokeWidth="1.4"/>
+      <path d="M13 18h10" stroke={C.textIcon} strokeWidth="1.3"/>
+    </svg>
+  ),
+  scanRail: () => (
+    <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+      <rect x="0.5" y="0.5" width="35" height="35" rx="17.5" fill="white" stroke={C.border}/>
+      <rect x="9" y="12" width="18" height="12" rx="2" stroke={C.textIcon} strokeWidth="1.4"/>
+      <path d="M13 16h10M13 19h7" stroke={C.textIcon} strokeWidth="1.3" strokeLinecap="round"/>
+    </svg>
+  ),
+  suggestedRail: () => (
+    <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+      <rect x="0.5" y="0.5" width="35" height="35" rx="17.5" fill="white" stroke="rgba(255,121,88,0.3)"/>
+      <path d="M18 11l1.6 3.3 3.6.5-2.6 2.5.6 3.6L18 19.5l-3.2 1.4.6-3.6L13 14.8l3.6-.5L18 11z" stroke={C.primary} strokeWidth="1.3" strokeLinejoin="round" fill="none"/>
+    </svg>
+  ),
+}
+
+const RAIL_ICONS = {
+  procedure: 'stethoscope',
+  medication: 'pill',
+  scan:       'science',
+  diagnosis:  'vital_signs',
+}
+const railIcon = (type) => {
+  const name = RAIL_ICONS[type] || 'stethoscope'
+  return (
+    <div style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: C.bgCard, border: `1.5px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+      <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textIcon, fontVariationSettings: "'FILL' 0, 'wght' 300" }}>{name}</span>
+    </div>
+  )
+}
+
+const typeLabel = { procedure: 'Procedure/Surgery', medication: 'Medication', scan: 'Scan/Lab', diagnosis: 'Diagnosis' }
+const typeColor = { procedure: C.textSecondary, medication: C.textSecondary, scan: C.textSecondary, diagnosis: C.textSecondary }
+
+// ─── PRIMITIVES ───────────────────────────────────────────────────
+const StatusBar = ({ light }) => (
+  <div style={{ height: 44, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 22px', flexShrink: 0, backgroundColor: '#ffffff' }}>
+    <span style={{ fontSize: 15, fontWeight: 700, fontFamily: "-apple-system, 'SF Pro Display', sans-serif", color: light ? 'white' : C.textPrimary }}>9:41</span>
+    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+      <svg width="17" height="12" viewBox="0 0 17 12"><rect x="0" y="4" width="3" height="8" rx="0.5" fill={light ? 'white' : C.textPrimary}/><rect x="4.5" y="2.5" width="3" height="9.5" rx="0.5" fill={light ? 'white' : C.textPrimary}/><rect x="9" y="0.5" width="3" height="11.5" rx="0.5" fill={light ? 'white' : C.textPrimary}/><rect x="13.5" y="0" width="3.5" height="12" rx="0.5" fill={light ? 'white' : C.textPrimary} opacity="0.3"/></svg>
+      <svg width="16" height="12" viewBox="0 0 16 12"><path d="M8 2.5C10.2 2.5 12.2 3.4 13.6 4.9L15 3.3C13.2 1.3 10.7 0 8 0S2.8 1.3 1 3.3L2.4 4.9C3.8 3.4 5.8 2.5 8 2.5Z" fill={light ? 'white' : C.textPrimary}/><path d="M8 6C9.4 6 10.7 6.6 11.6 7.6L13 6C11.7 4.8 10 4 8 4S4.3 4.8 3 6L4.4 7.6C5.3 6.6 6.6 6 8 6Z" fill={light ? 'white' : C.textPrimary}/><circle cx="8" cy="10" r="1.8" fill={light ? 'white' : C.textPrimary}/></svg>
+      <div style={{ width: 25, height: 12, border: `1.5px solid ${light ? 'white' : C.textPrimary}`, borderRadius: 3, display: 'flex', alignItems: 'center', padding: '0 2px', position: 'relative' }}>
+        <div style={{ width: 16, height: 7, background: light ? 'white' : C.textPrimary, borderRadius: 1.5 }}/>
+        <div style={{ position: 'absolute', right: -4, width: 3, height: 5, background: light ? 'white' : C.textPrimary, borderRadius: '0 1px 1px 0' }}/>
+      </div>
+    </div>
+  </div>
+)
+
+const NavBar = ({ title, subtitle, onBack, onClose, bg = C.bgCard }) => (
+  <div style={{ height: 54, display: 'flex', alignItems: 'center', padding: '0 16px', borderBottom: `1px solid ${C.border}`, backgroundColor: bg, flexShrink: 0 }}>
+    <button onClick={onBack} style={{ width: 38, height: 38, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}>
+      <Ico.back/>
+    </button>
+    <div style={{ flex: 1, textAlign: 'center', padding: '0 8px', overflow: 'hidden' }}>
+      <div style={{ fontSize: 16, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</div>
+      {subtitle && <div style={{ fontSize: 12, color: C.textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 }}>{subtitle}</div>}
+    </div>
+    <button onClick={onClose} style={{ width: 38, height: 38, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}>
+      <Ico.close/>
+    </button>
+  </div>
+)
+
+const DockedButton = ({ label, onClick, disabled, secondaryLabel, onSecondary }) => (
+  <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: C.bgCard, padding: '12px 20px 34px' }}>
+    <button onClick={!disabled ? onClick : undefined} style={{ width: '100%', height: 54, borderRadius: 9999, backgroundColor: C.primary, border: 'none', cursor: disabled ? 'default' : 'pointer', fontSize: 16, fontWeight: 600, color: 'white', opacity: disabled ? 0.45 : 1, transition: 'opacity 0.15s' }}>
+      {label}
+    </button>
+    {secondaryLabel && (
+      <button onClick={onSecondary} style={{ width: '100%', height: 44, borderRadius: 9999, backgroundColor: 'transparent', border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 500, color: C.textSecondary, marginTop: 4 }}>
+        {secondaryLabel}
+      </button>
+    )}
+  </div>
+)
+
+const SearchInput = ({ value, onChange }) => {
+  const [on, setOn] = useState(false)
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, border: on ? `2px solid ${C.primary}` : `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: on ? '9px 11px' : '10px 12px', backgroundColor: C.bgCard, transition: 'border-color 0.15s' }}>
+      <Ico.search on={on}/>
+      <input type="text" value={value} onChange={e => onChange(e.target.value)} onFocus={() => setOn(true)} onBlur={() => setOn(false)} placeholder="Search" style={{ flex: 1, border: 'none', outline: 'none', fontSize: 16, color: C.textPrimary, backgroundColor: 'transparent', fontFamily: 'Inter,sans-serif' }}/>
+      {value && <button onClick={() => onChange('')} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, display: 'flex' }}><Ico.close/></button>}
+    </div>
+  )
+}
+
+const DateInputField = ({ label, value, onChange, required }) => {
+  const [on, setOn] = useState(false)
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 5 }}>{label}{required && <span style={{ color: C.primary }}> *</span>}</div>
+      <div style={{ position: 'relative', border: on ? `2px solid ${C.primary}` : `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: '12px', display: 'flex', alignItems: 'center', backgroundColor: C.bgCard }}>
+        <input type="date" value={value} onChange={e => onChange(e.target.value)} onFocus={() => setOn(true)} onBlur={() => setOn(false)} style={{ fontSize: 16, color: value ? C.textPrimary : C.textTertiary, border: 'none', outline: 'none', background: 'transparent', fontFamily: 'Inter,sans-serif', flex: 1, zIndex: 1, position: 'relative' }}/>
+        <Ico.cal/>
+      </div>
+      <div style={{ fontSize: 12, color: C.textTertiary, marginTop: 5 }}>Approximate dates are fine. You can update this later.</div>
+    </div>
+  )
+}
+
+const NotesTextarea = ({ value, onChange, placeholder }) => {
+  const [on, setOn] = useState(false)
+  return (
+    <textarea value={value} onChange={e => onChange(e.target.value)} onFocus={() => setOn(true)} onBlur={() => setOn(false)} placeholder={placeholder} rows={5} style={{ width: '100%', border: on ? `2px solid ${C.primary}` : `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: 12, fontSize: 16, color: C.textPrimary, fontFamily: 'Inter,sans-serif', resize: 'none', outline: 'none', backgroundColor: C.bgCard, lineHeight: 1.55 }}/>
+  )
+}
+
+// ─── CATALOG SEARCH STEP ──────────────────────────────────────────
+const CatalogSearchStep = ({ title, catalog, suggested, onSelect, onClose, onBack }) => {
+  const [q, setQ] = useState('')
+  const lower = q.toLowerCase().trim()
+  const filtered = lower ? catalog.filter(i => i.name.toLowerCase().includes(lower) || i.searchTerms.some(t => t.includes(lower))) : []
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', backgroundColor: C.bgCard }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 16px 32px' }}>
+        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, marginBottom: 16, lineHeight: '28px' }}>{title}</div>
+        <div style={{ position: 'relative', marginBottom: 16 }}>
+          <div style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}><Ico.search on={false}/></div>
+          <input type="text" value={q} onChange={e => setQ(e.target.value)} placeholder="Search" style={{ width: '100%', height: 44, border: `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: '0 12px 0 38px', fontSize: 16, color: C.textPrimary, backgroundColor: C.bgCard, outline: 'none', fontFamily: 'Inter, sans-serif' }}/>
+        </div>
+        {!lower && suggested?.length > 0 && (
+          <>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.textTertiary, marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.07em' }}>Suggested based on diagnosis</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {suggested.map((item, i) => (
+                <button key={i} onClick={() => onSelect(item)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, cursor: 'pointer', textAlign: 'left' }}>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary }}>{item.name}</div>
+                    {item.subtitle && <div style={{ fontSize: 13, color: C.textSecondary, marginTop: 2 }}>{item.subtitle}</div>}
+                  </div>
+                  <Ico.chevRight/>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+        {lower && filtered.length > 0 && (
+          <div style={{ backgroundColor: C.bgCard, borderRadius: 12, overflow: 'hidden', border: `1px solid ${C.border}` }}>
+            {filtered.map((item, i) => (
+              <button key={i} onClick={() => onSelect(item)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', width: '100%', background: 'none', border: 'none', borderBottom: i < filtered.length - 1 ? `1px solid ${C.border}` : 'none', cursor: 'pointer', textAlign: 'left' }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary }}>{item.name}</div>
+                  {item.subtitle && <div style={{ fontSize: 13, color: C.textSecondary, marginTop: 2 }}>{item.subtitle}</div>}
+                </div>
+                <Ico.chevRight/>
+              </button>
+            ))}
+          </div>
+        )}
+        {lower && filtered.length === 0 && (
+          <div style={{ textAlign: 'center', paddingTop: 32 }}>
+            <div style={{ fontSize: 14, color: C.textSecondary, marginBottom: 16 }}>No results for "{q}"</div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+// ─── FLOWS ────────────────────────────────────────────────────────
+
+// FlowShell: slides the whole flow up from the bottom on mount/dismiss.
+const FlowShell = ({ onClose, children }) => {
+  const [vis, setVis] = useState(false)
+  const [nav, setNav] = useState({ title: '', subtitle: null, onBack: null })
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const dismiss = () => { setVis(false); setTimeout(onClose, 340) }
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, zIndex: 60,
+      transform: vis ? 'translateY(0)' : 'translateY(100%)',
+      transition: 'transform 0.34s cubic-bezier(0.32, 0.72, 0, 1)',
+      borderRadius: '16px 16px 0 0', overflow: 'hidden',
+      display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard,
+      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+      WebkitFontSmoothing: 'antialiased',
+    }}>
+      {/* Persistent header — never slides */}
+      <StatusBar/>
+      <NavBar title={nav.title} subtitle={nav.subtitle} onBack={nav.onBack || dismiss} onClose={dismiss}/>
+      {/* Only content slides */}
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        {children(dismiss, setNav)}
+      </div>
+    </div>
+  )
+}
+
+// FlowStack: all steps rendered in a horizontal track; translates to show current step.
+// Each step slot is a render-prop function (() => JSX) so it re-evaluates on every
+// render with fresh state — fixing the stale-closure problem from static JSX children.
+const FlowStack = ({ step, steps, navConfigs, setNav }) => {
+  const count = steps.length
+  useEffect(() => { if (navConfigs && setNav && navConfigs[step]) setNav(navConfigs[step]) }, [step])
+  return (
+    <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+      <div style={{
+        display: 'flex', flexDirection: 'row',
+        width: `${count * 100}%`,
+        height: '100%',
+        transform: `translateX(${(-step * (100 / count))}%)`,
+        transition: 'transform 0.32s cubic-bezier(0.4, 0, 0.2, 1)',
+        willChange: 'transform',
+      }}>
+        {steps.map((renderStep, i) => (
+          <div key={i} style={{ width: `${100 / count}%`, height: '100%', flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            {renderStep()}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// Shared step layout wrapper — keeps structure consistent across all flows
+const StepView = ({ children }) => (
+  <div style={{ display: 'flex', flexDirection: 'column', height: '100%', backgroundColor: C.bgCard, position: 'relative' }}>
+    {children}
+  </div>
+)
+
+// ── Procedure flow: Search → Date → Notes ──────────────────────────
+const AddProcedureFlow = ({ onClose, onComplete }) => {
+  const [step, setStep] = useState(0)
+  const [sel, setSel] = useState(null)
+  const [date, setDate] = useState('')
+  const [notes, setNotes] = useState('')
+
+  return (
+    <FlowShell onClose={onClose}>
+      {(dismiss, setNav) => {
+        const finish = () => { onComplete({ type: 'procedure', name: sel.name, date, notes, id: `proc-${Date.now()}` }); dismiss() }
+        return (
+          <FlowStack step={step} setNav={setNav} navConfigs={[
+            { title: 'Add Procedure or Surgery', subtitle: null, onBack: dismiss },
+            { title: 'Add Procedure or Surgery', subtitle: sel?.name, onBack: () => setStep(0) },
+            { title: 'Add Procedure or Surgery', subtitle: sel?.name, onBack: () => setStep(1) },
+          ]} steps={[
+            () => (
+              <CatalogSearchStep
+                title="What procedure or surgery would you like to add?"
+                catalog={PROCEDURE_CATALOG}
+                suggested={PROC_SUGGESTED}
+                onSelect={i => { setSel(i); setStep(1) }}
+                onClose={dismiss}
+                onBack={dismiss}
+              />
+            ),
+            () => (
+              <StepView>
+                <div style={{ flex: 1, overflowY: 'auto', padding: '32px 20px 120px' }}>
+                  <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 24, lineHeight: 1.15 }}>Add a date</div>
+                  <DateInputField label="Date" value={date} onChange={setDate} required/>
+                </div>
+                <DockedButton label="Next" onClick={() => setStep(2)} disabled={!date}/>
+              </StepView>
+            ),
+            () => (
+              <StepView>
+                <div style={{ flex: 1, overflowY: 'auto', padding: '32px 20px 160px' }}>
+                  <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 24, lineHeight: 1.15 }}>Add notes</div>
+                  <NotesTextarea value={notes} onChange={setNotes} placeholder="e.g. Recovery went well. Follow-up in 6 weeks."/>
+                </div>
+                <DockedButton label="Add to plan" onClick={finish} />
+              </StepView>
+            ),
+          ]}/>
+        )
+      }}
+    </FlowShell>
+  )
+}
+
+const AddScanFlow = ({ onClose, onComplete }) => {
+  const [step, setStep] = useState(0)
+  const [sel, setSel] = useState(null)
+  const [date, setDate] = useState('')
+  const [notes, setNotes] = useState('')
+
+  return (
+    <FlowShell onClose={onClose}>
+      {(dismiss, setNav) => {
+        const finish = () => { onComplete({ type: 'scan', name: sel.name, date, notes, id: `scan-${Date.now()}` }); dismiss() }
+        return (
+          <FlowStack step={step} setNav={setNav} navConfigs={[
+            { title: 'Add Scan, Lab, or Pathology Test', subtitle: null, onBack: dismiss },
+            { title: 'Add Scan, Lab, or Pathology Test', subtitle: sel?.name, onBack: () => setStep(0) },
+            { title: 'Add Scan, Lab, or Pathology Test', subtitle: sel?.name, onBack: () => setStep(1) },
+          ]} steps={[
+            () => (
+              <CatalogSearchStep
+                title="What scan, lab, or pathology test would you like to add?"
+                catalog={SCAN_CATALOG}
+                suggested={SCAN_SUGGESTED}
+                onSelect={i => { setSel(i); setStep(1) }}
+                onClose={dismiss}
+                onBack={dismiss}
+              />
+            ),
+            () => (
+              <StepView>
+                <div style={{ flex: 1, overflowY: 'auto', padding: '32px 20px 120px' }}>
+                  <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 24, lineHeight: 1.15 }}>Add a date</div>
+                  <DateInputField label="Date" value={date} onChange={setDate} required/>
+                </div>
+                <DockedButton label="Next" onClick={() => setStep(2)} disabled={!date}/>
+              </StepView>
+            ),
+            () => (
+              <StepView>
+                <div style={{ flex: 1, overflowY: 'auto', padding: '32px 20px 160px' }}>
+                  <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 24, lineHeight: 1.15 }}>Add notes</div>
+                  <NotesTextarea value={notes} onChange={setNotes} placeholder="e.g. Results pending. Radiologist report in 3–5 days."/>
+                </div>
+                <DockedButton label="Add to plan" onClick={finish} />
+              </StepView>
+            ),
+          ]}/>
+        )
+      }}
+    </FlowShell>
+  )
+}
+
+const AddMedicationFlow = ({ onClose, onComplete }) => {
+  const [step, setStep] = useState(0)
+  const [sel, setSel] = useState(null)
+  const [start, setStart] = useState(new Date().toISOString().split('T')[0])
+  const [end, setEnd] = useState('')
+  const [dose, setDose] = useState('')
+  const [notes, setNotes] = useState('')
+
+  return (
+    <FlowShell onClose={onClose}>
+      {(dismiss, setNav) => {
+        const isRegimen = sel?.isRegimen || false
+        const finish = () => { onComplete({ type: 'medication', name: sel.name, dose, startDate: start, endDate: end, notes, isRegimen, date: start, id: `med-${Date.now()}` }); dismiss() }
+        return (
+          <FlowStack step={step} setNav={setNav} navConfigs={[
+            { title: 'Add Medication', subtitle: null, onBack: dismiss },
+            { title: 'Add Medication', subtitle: sel?.name, onBack: () => setStep(0) },
+            { title: 'Add Medication', subtitle: sel?.name, onBack: () => setStep(1) },
+            { title: 'Add Medication', subtitle: sel?.name, onBack: () => setStep(2) },
+          ]} steps={[
+            () => (
+              <CatalogSearchStep
+                title="What medication would you like to add?"
+                catalog={MEDICATION_CATALOG}
+                suggested={MED_SUGGESTED}
+                onSelect={i => { setSel(i); setStep(1) }}
+                onClose={dismiss}
+                onBack={dismiss}
+              />
+            ),
+            () => (
+              <StepView>
+                <div style={{ flex: 1, overflowY: 'auto', padding: '32px 20px 120px' }}>
+                  <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 24, lineHeight: 1.15 }}>Add a start date (Add an end date if it has stopped)</div>
+                  <DateInputField label="Start date" value={start} onChange={setStart} required/>
+                  <DateInputField label="End date (if known)" value={end} onChange={setEnd}/>
+                </div>
+                <DockedButton label="Next" onClick={() => setStep(2)} disabled={!start}/>
+              </StepView>
+            ),
+            () => (
+              <StepView>
+                <div style={{ flex: 1, overflowY: 'auto', padding: '32px 20px 150px' }}>
+                  <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 24, lineHeight: 1.15 }}>
+                    {isRegimen ? 'Add a schedule' : 'Add a dose and schedule'}
+                  </div>
+                  <NotesTextarea
+                    value={dose}
+                    onChange={setDose}
+                    placeholder={isRegimen ? 'e.g. Every 2 weeks. Cycles of 14 days on, 14 days off.' : 'e.g. 500mg orally twice daily with food'}
+                  />
+                </div>
+                <DockedButton label="Next" onClick={() => setStep(3)} secondaryLabel="Skip" onSecondary={() => { setDose(''); setStep(3) }}/>
+              </StepView>
+            ),
+            () => (
+              <StepView>
+                <div style={{ flex: 1, overflowY: 'auto', padding: '32px 20px 160px' }}>
+                  <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 24, lineHeight: 1.15 }}>Add notes</div>
+                  <NotesTextarea value={notes} onChange={setNotes} placeholder="e.g. Prescribed by Dr. Patel. Monitor for peripheral neuropathy."/>
+                </div>
+                <DockedButton label="Add to plan" onClick={finish} />
+              </StepView>
+            ),
+          ]}/>
+        )
+      }}
+    </FlowShell>
+  )
+}
+
+const DailySummaryCard = ({ summary, isToday }) => {
+  const [open, setOpen] = useState(isToday)
+  const bg = isToday ? C.primaryLight : C.bgCard
+  const border = isToday ? 'rgba(255,121,88,0.25)' : C.border
+  return (
+    <button onClick={() => setOpen(o => !o)} style={{ width: '100%', backgroundColor: bg, border: `1px solid ${border}`, borderRadius: 13, padding: '13px 15px', cursor: 'pointer', textAlign: 'left', WebkitTapHighlightColor: 'transparent' }}>
+      {!open && <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Ico.spark/><span style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary, flex: 1, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>Daily summary <span style={{ fontWeight: 400 }}>&bull; {summary.text}</span></span><Ico.chevDown open={false}/>
+      </div>}
+      {open && <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <Ico.spark/><span style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary, flex: 1 }}>Daily summary</span><Ico.chevDown open={true}/>
+        </div>
+        <p style={{ fontSize: 14, color: C.textPrimary, lineHeight: 1.6, marginBottom: 12 }}>{summary.text}</p>
+        <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+          <button onClick={e => e.stopPropagation()} style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer' }}><Ico.thumbUp/></button>
+          <button onClick={e => e.stopPropagation()} style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer' }}><Ico.thumbDown/></button>
+        </div>
+        <div style={{ fontSize: 12, color: C.textSecondary, lineHeight: 1.4 }}>AI-generated from your cancer health plan and recent clinical activity, accuracy may vary.</div>
+      </div>}
+    </button>
+  )
+}
+
+const EventCard = ({ event, highlightId }) => {
+  const [notesOpen, setNotesOpen] = useState(false)
+  const elRef = useRef(null)
+  useEffect(() => { if (elRef.current) cardRefs.set(event.id, elRef.current) }, [event.id])
+  const label = typeLabel[event.type] || 'Event'
+  const isHighlighted = highlightId === event.id
+  const du = event.startDate && event.endDate ? fmtDateRange(event.startDate, event.endDate) : event.startDate ? fmtDate(event.startDate) : event.date ? fmtDate(event.date) : ''
+  const clar = event.dose || (event.details ? event.details.join(' · ') : null)
+  return (
+    <div ref={elRef} style={{ width: '100%', backgroundColor: isHighlighted ? 'rgba(255,121,88,0.12)' : C.bgCard, border: `1px solid ${C.border}`, borderRadius: 13, padding: '13px 15px', transition: 'background 0.3s' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 5 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: C.textSecondary }}>{label}</span>
+        {du && <span style={{ fontSize: 12, color: C.textTertiary }}>{du}</span>}
+      </div>
+      <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.2px', color: C.textPrimary, lineHeight: 1.3, marginBottom: clar ? 5 : event.notes ? 6 : 0 }}>{event.name}</div>
+      {clar && <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.45, marginBottom: event.notes ? 5 : 0 }}>{clar}</div>}
+      {event.notes && <div onClick={e => { e.stopPropagation(); setNotesOpen(v => !v) }} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, cursor: 'pointer' }}>
+        <span style={{ marginTop: 2, flexShrink: 0, display: 'flex' }}><Ico.notes/></span><span style={{ fontSize: 13, color: C.textTertiary, lineHeight: 1.45, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: notesOpen ? 999 : 1, overflow: 'hidden' }}>{event.notes}</span>
+      </div>}
+    </div>
+  )
+}
+
+const SuggestedBlock = ({ block, defaultOpen = false, onApproachSelect }) => {
+  const [open, setOpen] = useState(defaultOpen)
+  const [closing, setClosing] = useState(false)
+  const toggle = (e) => {
+    if (e) e.stopPropagation()
+    if (open) { setClosing(true); setTimeout(() => { setOpen(false); setClosing(false) }, 300) }
+    else setOpen(true)
+  }
+  const expanded = open || closing
+  return (
+    <div onClick={toggle}
+      style={{ width: '100%', backgroundColor: expanded ? 'transparent' : C.bgCard, border: expanded ? 'none' : `1px solid ${C.border}`, borderRadius: expanded ? 0 : 13, padding: '13px 15px', cursor: 'pointer', textAlign: 'left', transition: 'background 0.22s, border 0.22s, border-radius 0.22s', WebkitTapHighlightColor: 'transparent', userSelect: 'none', outline: 'none' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: open ? 10 : 0 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.primary, marginBottom: 3 }}>Suggested Treatments</div>
+          <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.2px', color: C.textPrimary }}>{block.stepLabel}</div>
+          <div style={{ fontSize: 13, color: C.textSecondary, marginTop: 4, lineHeight: 1.5, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: open ? 999 : 2, overflow: 'hidden' }}>{block.stepBody}</div>
+        </div>
+        <button onClick={toggle} style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: expanded ? 'transparent' : C.bgCard, border: expanded ? 'none' : `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0, marginLeft: 10, marginTop: 2, transition: 'background 0.22s, border 0.22s' }}>
+          <Ico.chevDown open={open}/>
+        </button>
+      </div>
+      {expanded && <div style={{ maxHeight: closing ? '0' : '2000px', overflow: 'hidden', transition: 'max-height 0.3s cubic-bezier(0.4,0,1,1)', margin: '0 -15px', width: 'calc(100% + 30px)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {block.options.map(opt => <button key={opt.id} onClick={e => { e.stopPropagation(); onApproachSelect && onApproachSelect('hormone-targeted') }}
+            style={{ width: '100%', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 13, padding: '13px 15px', cursor: 'pointer', textAlign: 'left', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, color: C.textPrimary, marginBottom: 3 }}>{opt.title}</div>
+              <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.45 }}>{opt.description}</div>
+            </div>
+            <Ico.chevRight/>
+          </button>)}
+        </div>
+      </div>}
+    </div>
+  )
+}
+
+const RailItem = ({ icon, isToday, isLast, card }) => {
+  const lineColor = isToday ? C.timelineLineToday : C.timelineLine
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0, marginBottom: 10 }}>
+      {/* Rail column */}
+      <div style={{ width: 44, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        {/* Icon badge */}
+        <div style={{ zIndex: 1 }}>{icon}</div>
+        {/* Line below badge */}
+        {!isLast && <div style={{ width: 2, flex: 1, minHeight: 12, backgroundColor: lineColor, marginTop: 0 }}/>}
+      </div>
+      {/* Card */}
+      <div style={{ flex: 1, minWidth: 0, paddingBottom: isLast ? 0 : 0 }}>
+        {card}
+      </div>
+    </div>
+  )
+}
+
+const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, onApproachSelect }) => {
+  const allItems = []
+  if (day.summary) allItems.push({ key: 'summary', icon: null, card: <DailySummaryCard summary={day.summary} isToday={day.isToday}/> })
+  day.events.forEach(ev => allItems.push({ key: ev.id, icon: railIcon(ev.type), card: <EventCard event={ev} highlightId={highlightId}/> }))
+  ;(day.suggested || []).forEach((blk, i) => allItems.push({ key: blk.id, icon: <div style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: C.bgCard, border: `1.5px solid ${C.primary}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.primary, fontVariationSettings: "'FILL' 0, 'wght' 300" }}>kid_star</span></div>, card: <SuggestedBlock block={blk} defaultOpen={i===0} onApproachSelect={onApproachSelect}/> }))
+  const lineColor = day.isToday ? C.timelineLineToday : C.timelineLine
+  // Find index of last item with an icon
+  let lastIconIdx = -1
+  allItems.forEach((item, i) => { if (item.icon) lastIconIdx = i })
+
+  return (
+    <div style={{ backgroundColor: C.bgApp }}>
+      <div ref={sentinelRef} style={{ height: 0 }} data-date={day.date} data-label={day.isToday ? `Today · ${day.label}` : day.label}/>
+      <div style={{ position: 'sticky', top: 0, zIndex: 10, backgroundColor: C.bgApp, padding: '10px 20px 7px' }}>
+        {day.isToday
+          ? <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: C.primary }}>Today</span>
+              <span style={{ fontSize: 13, color: C.textTertiary }}>·</span>
+              <span style={{ fontSize: 13, fontWeight: 500, color: C.textSecondary }}>{day.label}</span>
+            </div>
+          : <span style={{ fontSize: 13, fontWeight: 600, color: C.textSecondary }}>{day.label}</span>
+        }
+      </div>
+      <div style={{ paddingLeft: 20, paddingRight: 16 }}>
+        {allItems.map((item, idx) => {
+          const isLastIcon = isLastDay && idx === lastIconIdx
+          // Line runs below icon unless it's the last icon on last day
+          const lineBelow = item.icon && !isLastIcon
+
+          if (!item.icon) {
+            // No icon (summary card): show line on left, card on right
+            return (
+              <div key={item.key} style={{ display: 'flex', alignItems: 'stretch', marginBottom: 10 }}>
+                <div style={{ width: 44, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
+                  <div style={{ width: 2, backgroundColor: lineColor }}/>
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>{item.card}</div>
+              </div>
+            )
+          }
+
+          return (
+            <div key={item.key} style={{ display: 'flex', alignItems: 'stretch', marginBottom: 10 }}>
+              <div style={{ width: 44, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                {/* Icon */}
+                <div style={{ flexShrink: 0, zIndex: 1 }}>{item.icon}</div>
+                {/* Line below icon stretches to bottom of card */}
+                {lineBelow && <div style={{ width: 2, flex: 1, minHeight: 8, backgroundColor: lineColor, marginTop: 2 }}/>}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>{item.card}</div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+const AddEventSheet = ({ onClose, onSelectProcedure, onSelectScan, onSelectMedication }) => {
+  const [vis, setVis] = useState(false)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+
+  // Animate sheet out downward, then fire callback once gone
+  const dismissThen = (cb) => {
+    setVis(false)
+    setTimeout(() => { onClose(); cb && cb() }, 280)
+  }
+  const dismiss = () => dismissThen(null)
+
+  const opts = [
+    { type: 'procedure', label: 'Procedure or Surgery', desc: 'A procedure or surgery you had or have scheduled', fn: onSelectProcedure },
+    { type: 'medication', label: 'Medication Treatment', desc: 'Start, stop, or adjust a medication', fn: onSelectMedication },
+    { type: 'scan', label: 'Scan, Lab, or Pathology Test', desc: 'A scan, lab, or pathology test that was ordered, completed, or scheduled', fn: onSelectScan },
+  ]
+
+  return (
+    <>
+      <div onClick={dismiss} style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.38)', zIndex: 50, opacity: vis ? 1 : 0, transition: 'opacity 0.28s ease' }}/>
+      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: C.bgCard, borderRadius: '18px 18px 0 0', zIndex: 51, transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.28s cubic-bezier(0.32, 0.72, 0, 1)', boxShadow: '0 -4px 24px rgba(0,0,0,0.1)' }}>
+        <div style={{ width: 38, height: 4, backgroundColor: 'rgba(0,0,0,0.12)', borderRadius: 2, margin: '12px auto 0' }}/>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px 6px' }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary }}>What would you like to add?</div>
+          <button onClick={dismiss} style={{ width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer' }}><Ico.close/></button>
+        </div>
+        <div style={{ padding: '0 16px 34px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {opts.map((o, i) => (
+            <button key={i} onClick={() => dismissThen(o.fn)} style={{ display: 'flex', alignItems: 'center', gap: 14, width: '100%', padding: '13px 15px', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 13, cursor: 'pointer', textAlign: 'left' }}>
+              <div style={{ flexShrink: 0 }}>{railIcon(o.type)}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary }}>{o.label}</div>
+                <div style={{ fontSize: 13, color: C.textSecondary, marginTop: 2 }}>{o.desc}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
+  )
+}
+
+const Toast = ({ message, onDone }) => {
+  const [vis, setVis] = useState(false)
+  useEffect(() => {
+    requestAnimationFrame(() => requestAnimationFrame(() => setVis(true)))
+    const t1 = setTimeout(() => setVis(false), 2200)
+    const t2 = setTimeout(onDone, 2600)
+    return () => { clearTimeout(t1); clearTimeout(t2) }
+  }, [])
+  return (
+    <div style={{ position: 'absolute', bottom: 96, left: '50%', transform: `translateX(-50%) translateY(${vis ? 0 : 10}px)`, backgroundColor: 'rgba(30,30,30,0.88)', color: 'white', padding: '9px 18px', borderRadius: 9999, fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', opacity: vis ? 1 : 0, transition: 'opacity 0.25s, transform 0.25s', zIndex: 100, pointerEvents: 'none' }}>
+      ✓ {message}
+    </div>
+  )
+}
+
+// ─── APP HEADER ───────────────────────────────────────────────────
+// ─── APP HEADER ───────────────────────────────────────────────────
+// ─── APP HEADER ───────────────────────────────────────────────────
+const AppHeader = ({ currentDayLabel }) => {
+  const r = 19, circ = 2 * Math.PI * r, dash = 0.62 * circ
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', padding: '6px 20px 12px', backgroundColor: C.bgCard, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+      <div style={{ position: 'relative', width: 46, height: 46, marginRight: 12, flexShrink: 0 }}>
+        <svg width="46" height="46" viewBox="0 0 46 46">
+          <circle cx="23" cy="23" r={r} fill="none" stroke="#e8e8e8" strokeWidth="3"/>
+          <circle cx="23" cy="23" r={r} fill="none" stroke="#4ade80" strokeWidth="3" strokeDasharray={`${dash} ${circ}`} strokeLinecap="round" transform="rotate(-90 23 23)"/>
+        </svg>
+        <div style={{ position: 'absolute', inset: 5, borderRadius: '50%', backgroundColor: '#f0f0f0', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+            <circle cx="10" cy="7" r="3.5" stroke="#666" strokeWidth="1.5"/>
+            <path d="M3 18c0-3.9 3.1-7 7-7s7 3.1 7 7" stroke="#666" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+        </div>
+      </div>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2 }}>Treatment</div>
+        <div style={{ fontSize: 12, fontWeight: 500, color: C.textSecondary, marginTop: 1, minHeight: 16, opacity: currentDayLabel ? 1 : 0, transition: 'opacity 0.18s ease' }}>
+          {currentDayLabel || '\\u00A0'}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
+// ─── ROOT ─────────────────────────────────────────────────────────
+export default function App() {
+  const [timeline, setTimeline] = useState(INITIAL_TIMELINE)
+  const [sheetOpen, setSheetOpen] = useState(false)
+  const [flow, setFlow] = useState(null)
+  const [toast, setToast] = useState(null)
+  const [currentDayLabel, setCurrentDayLabel] = useState(null)
+  const [highlightId, setHighlightId] = useState(null)
+  const [approachId, setApproachId] = useState(null)
+  const sentinelRefs = useRef({})
+  const scrollRef = useRef(null)
+
+  useEffect(() => {
+    window.__openApproach = (id) => setApproachId(id)
+    return () => { delete window.__openApproach }
+  }, [])
+
+  // Track which day sentinel is nearest to the top of the scroll container
+  useEffect(() => {
+    const root = scrollRef.current
+    if (!root) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // Find the sentinel that just crossed the top edge (going from visible to invisible above)
+        // We want the last date whose sentinel has scrolled past the top = is not intersecting + above
+        const passing = entries.filter(e => !e.isIntersecting && e.boundingClientRect.top < e.rootBounds.top)
+        if (passing.length > 0) {
+          // Pick the one closest to the top (largest negative offset = most recently passed)
+          const latest = passing.sort((a, b) => b.boundingClientRect.top - a.boundingClientRect.top)[0]
+          const date = latest.target.dataset.date
+          const day = INITIAL_TIMELINE.find(d => d.date === date)
+          // Also check new timeline days
+          setCurrentDayLabel(latest.target.dataset.label || date)
+        } else {
+          // All sentinels visible = at top, no sticky label needed
+          const anyAbove = entries.some(e => !e.isIntersecting && e.boundingClientRect.top < 0)
+          if (!anyAbove) setCurrentDayLabel(null)
+        }
+      },
+      { root, threshold: 0, rootMargin: '0px 0px -98% 0px' }
+    )
+    Object.values(sentinelRefs.current).forEach(el => { if (el) observer.observe(el) })
+    return () => observer.disconnect()
+  }, [timeline])
+
+  const openFlow = (type) => { setSheetOpen(false); setTimeout(() => setFlow(type), 310) }
+
+  const handleComplete = (event) => {
+    const dateKey = event.date || event.startDate || new Date().toISOString().split('T')[0]
+    setTimeline(prev => {
+      const existing = prev.find(d => d.date === dateKey)
+      if (existing) return prev.map(d => d.date === dateKey ? { ...d, events: [...d.events, event] } : d)
+      const d = new Date(dateKey + 'T12:00:00')
+      return [...prev, { date: dateKey, label: d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }), isToday: false, summary: null, events: [event], suggested: null }].sort((a, b) => a.date.localeCompare(b.date))
+    })
+    setFlow(null)
+    setTimeout(() => {
+      const el = cardRefs.get(event.id)
+      if (el && scrollRef.current) {
+        const c = scrollRef.current
+        c.scrollTo({ top: el.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop - 80, behavior: 'smooth' })
+      }
+      setHighlightId(event.id)
+      setTimeout(() => setHighlightId(null), 3600)
+    }, 400)
+    setTimeout(() => setToast('Added to your plan'), 350)
+  }
+
+  return (
+    <div style={{ width: 390, height: 844, backgroundColor: C.bgApp, position: 'relative', overflow: 'hidden', borderRadius: 44, boxShadow: '0 24px 64px rgba(0,0,0,0.26)' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <StatusBar/>
+        <AppHeader currentDayLabel={currentDayLabel}/>
+        <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
+          {timeline.map((day, idx) => (
+            <DaySection
+              key={day.date}
+              day={day}
+              isLastDay={idx === timeline.length - 1}
+              highlightId={highlightId}
+              onApproachSelect={setApproachId}
+              sentinelRef={el => {
+                if (el) sentinelRefs.current[day.date] = el
+              }}
+            />
+          ))}
+          <div style={{ height: 96 }}/>
+        </div>
+      </div>
+
+      <button onClick={() => setSheetOpen(true)} style={{ position: 'absolute', bottom: 34, right: 20, width: 54, height: 54, borderRadius: 27, backgroundColor: C.primary, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 18px rgba(255,121,88,0.42)', zIndex: 40 }}>
+        <Ico.plus/>
+      </button>
+
+      <div id="__approach-root" style={{ position: 'absolute', inset: 0, zIndex: 70, pointerEvents: approachId ? 'auto' : 'none' }}/>
+      {sheetOpen && <AddEventSheet onClose={() => setSheetOpen(false)} onSelectProcedure={() => openFlow('procedure')} onSelectScan={() => openFlow('scan')} onSelectMedication={() => openFlow('medication')}/>}
+      {flow === 'procedure' && <AddProcedureFlow onClose={() => setFlow(null)} onComplete={handleComplete}/>}
+      {flow === 'scan' && <AddScanFlow onClose={() => setFlow(null)} onComplete={handleComplete}/>}
+      {flow === 'medication' && <AddMedicationFlow onClose={() => setFlow(null)} onComplete={handleComplete}/>}
+      {toast && <Toast message={toast} onDone={() => setToast(null)}/>}
+    </div>
+  )
+}

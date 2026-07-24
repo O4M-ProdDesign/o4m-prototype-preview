@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback, createContext, useContext } from 'react'
 import { findCoveringRule, findRuleMatchingItem, findMatchingRules, wouldImpactRecommendations, getImpactContext } from './services/recommendationService.js'
 import { hydrateState, savePatientState, saveTimeline, saveUserDecisions, clearPersistedState, saveMedications, loadMedications } from './services/persistenceService.js'
 import { loadSession, login, createAccount, logout } from './services/authService.js'
@@ -6,6 +6,11 @@ import { useRecommendations } from './hooks/useRecommendations.js'
 import { COMMUNITIES, COMMUNITY_POSTS, POST_COMMENTS } from './data/communityData.js'
 import { getDetailData, getRegimenData } from './services/treatmentService.js'
 import { getProcedureCatalog, getProcedureSuggested, getScanCatalog, getScanSuggested, getMedicationCatalog, getMedicationSuggested, searchCatalog } from './services/catalogService.js'
+
+// ─── FLYOUT SINGLETON — one open at a time ────────────────────────
+// Module-level ref to the currently open menu's close function.
+// Calling it before opening a new menu enforces one-at-a-time.
+let _closeActiveMenu = null
 
 // ─── DESIGN TOKENS ────────────────────────────────────────────────
 const C = {
@@ -1586,11 +1591,73 @@ const DailySummaryCard = ({ summary, isToday }) => {
   )
 }
 
+// ─── NOTES DISPLAY ────────────────────────────────────────────────
+// Handles truncation detection: shows "… more" (semibold) overlay when text
+// overflows one line, "show less" below when expanded, nothing when it fits.
+const NotesDisplay = ({ notes }) => {
+  const [open, setOpen] = useState(false)
+  const [truncated, setTruncated] = useState(false)
+  const textRef = useRef(null)
+
+  useEffect(() => {
+    const el = textRef.current
+    if (!el) return
+    // scrollWidth > clientWidth = text overflows single line
+    setTruncated(el.scrollWidth > el.clientWidth)
+  }, [notes])
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+      <span style={{ marginTop: 2, flexShrink: 0, display: 'flex' }}><Ico.notes/></span>
+      <div style={{ flex: 1, minWidth: 0, fontSize: 13, color: C.textTertiary, lineHeight: 1.45 }}>
+        {open ? (
+          <>
+            <span style={{ display: 'block' }}>{notes}</span>
+            <button onClick={e => { e.stopPropagation(); setOpen(false) }} style={{ fontSize: 13, fontWeight: 600, color: C.textTertiary, border: 'none', background: 'none', cursor: 'pointer', padding: '2px 0 0', display: 'block', textAlign: 'left' }}>
+              show less
+            </button>
+          </>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', overflow: 'hidden' }}>
+            <span ref={textRef} style={{ overflow: 'hidden', whiteSpace: 'nowrap', minWidth: 0, flexShrink: 1 }}>
+              {notes}
+            </span>
+            {truncated && (
+              <button onClick={e => { e.stopPropagation(); setOpen(true) }} style={{ flexShrink: 0, fontSize: 13, fontWeight: 600, color: C.textTertiary, border: 'none', background: 'none', cursor: 'pointer', paddingLeft: 2, whiteSpace: 'nowrap' }}>
+                … more
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── APPOINTMENT CARD ─────────────────────────────────────────────
-const AppointmentCard = ({ event, highlightId, onRemove }) => {
+const AppointmentCard = ({ event, highlightId, onRemove, onEdit }) => {
   const [showRemove, setShowRemove] = useState(false)
-  const [notesOpen, setNotesOpen] = useState(false)
+  const menuRef = useRef(null)
   const isHighlighted = highlightId === event.id
+
+  const openMenu = (e) => {
+    e.stopPropagation()
+    _closeActiveMenu?.()
+    setShowRemove(true)
+    _closeActiveMenu = () => setShowRemove(false)
+  }
+
+  useEffect(() => {
+    if (!showRemove) return
+    const handler = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setShowRemove(false)
+        _closeActiveMenu = null
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showRemove])
 
   const dateStr = event.date
     ? new Date(event.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
@@ -1602,13 +1669,20 @@ const AppointmentCard = ({ event, highlightId, onRemove }) => {
   return (
     <div
       style={{ width: '100%', backgroundColor: isHighlighted ? '#E4EEFA' : C.bgCard, border: `1px solid ${isHighlighted ? '#A3B8C9' : 'transparent'}`, borderRadius: 14, padding: '12px 16px', transition: 'background 1.8s ease, border-color 1.8s ease', position: 'relative' }}
-      onClick={() => setShowRemove(false)}>
+      onClick={() => { if (showRemove) { setShowRemove(false); _closeActiveMenu = null } }}>
       {showRemove && onRemove && (
-        <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 2, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
-          <button onClick={e => { e.stopPropagation(); onRemove(); setShowRemove(false) }}
-            style={{ display: 'block', width: '100%', padding: '10px 16px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 500, color: '#ef4444', textAlign: 'left', whiteSpace: 'nowrap' }}>
-            Remove from plan
-          </button>
+        <div ref={menuRef} style={{ position: 'absolute', top: 10, right: 10, zIndex: 10, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 4px 16px rgba(0,0,0,0.14)', animation: 'flyoutIn 0.14s ease-out', transformOrigin: 'top right' }}>
+          {event.source === 'onboarding' ? (
+            <button onClick={e => { e.stopPropagation(); setShowRemove(false); _closeActiveMenu = null; onEdit && onEdit(event) }}
+              style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: C.textPrimary, textAlign: 'left', whiteSpace: 'nowrap' }}>
+              Edit
+            </button>
+          ) : (
+            <button onClick={e => { e.stopPropagation(); setShowRemove(false); _closeActiveMenu = null; onRemove() }}
+              style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: '#ef4444', textAlign: 'left', whiteSpace: 'nowrap' }}>
+              Delete event
+            </button>
+          )}
         </div>
       )}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
@@ -1617,7 +1691,7 @@ const AppointmentCard = ({ event, highlightId, onRemove }) => {
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 2 }}>
             <span style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Appointment</span>
             {onRemove && (
-              <button onClick={e => { e.stopPropagation(); setShowRemove(v => !v) }}
+              <button onClick={openMenu}
                 style={{ padding: '0 2px', background: 'none', border: 'none', cursor: 'pointer', color: C.textSecondary, fontSize: 14, fontWeight: 700, lineHeight: 1 }}>⋮</button>
             )}
           </div>
@@ -1630,11 +1704,9 @@ const AppointmentCard = ({ event, highlightId, onRemove }) => {
           {typeLocLine && (
             <div style={{ fontSize: 13, color: C.textTertiary, lineHeight: 1.45, marginBottom: event.notes ? 4 : 0 }}>{typeLocLine}</div>
           )}
-          {event.notes && (
-            <div onClick={e => { e.stopPropagation(); setNotesOpen(v => !v) }} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, cursor: 'pointer' }}>
-              <span style={{ marginTop: 2, flexShrink: 0, display: 'flex' }}><Ico.notes/></span>
-              <span style={{ fontSize: 13, color: C.textTertiary, lineHeight: 1.45, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: notesOpen ? 999 : 1, overflow: 'hidden' }}>{event.notes}</span>
-            </div>
+          {event.notes && <NotesDisplay notes={event.notes}/>}
+          {event.source === 'onboarding' && (
+            <div style={{ fontSize: 11, color: C.textTertiary, marginTop: 6 }}>Added from Clinical details</div>
           )}
         </div>
       </div>
@@ -1642,29 +1714,57 @@ const AppointmentCard = ({ event, highlightId, onRemove }) => {
   )
 }
 
-const EventCard = ({ event, highlightId, onRemove, visibleRecs = [] }) => {
-  const [notesOpen, setNotesOpen] = useState(false)
+const EventCard = ({ event, highlightId, onRemove, onEdit, visibleRecs = [] }) => {
+  const [showRemove, setShowRemove] = useState(false)
+  const menuRef = useRef(null)
   const label = typeLabel[event.type] || 'Event'
   const isHighlighted = highlightId === event.id
-  const [showRemove, setShowRemove] = useState(false)
+
+  const openMenu = (e) => {
+    e.stopPropagation()
+    _closeActiveMenu?.()
+    setShowRemove(true)
+    _closeActiveMenu = () => setShowRemove(false)
+  }
+
+  useEffect(() => {
+    if (!showRemove) return
+    const handler = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setShowRemove(false)
+        _closeActiveMenu = null
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showRemove])
   // Check if this item is covered by any currently active recommendation
   const coveringRule = findCoveringRule(event, visibleRecs)
   const du = event.startDate && event.endDate ? fmtDateRange(event.startDate, event.endDate) : event.startDate ? fmtDate(event.startDate) : event.date ? fmtDate(event.date) : ''
   const clar = event.dose || (event.details ? event.details.join(' · ') : null)
   return (
     <div style={{ width: '100%', backgroundColor: isHighlighted ? '#E4EEFA' : C.bgCard, border: `1px solid ${isHighlighted ? '#A3B8C9' : 'transparent'}`, borderRadius: 14, padding: '12px 16px', transition: 'background 1.8s ease, border-color 1.8s ease', position: 'relative' }}
-      onClick={() => setShowRemove(false)}>
-      {/* Remove action — revealed on tap of ··· */}
+      onClick={() => { if (showRemove) { setShowRemove(false); _closeActiveMenu = null } }}>
+      {/* Overflow flyout — Edit for onboarding events, Delete for user-created */}
       {showRemove && onRemove && (
-        <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 2, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
-          <button onClick={e => { e.stopPropagation(); onRemove(); setShowRemove(false) }}
-            style={{ display: 'block', width: '100%', padding: '10px 16px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 500, color: '#ef4444', textAlign: 'left', whiteSpace: 'nowrap' }}>
-            Remove from plan
-          </button>
-          {coveringRule && (
-            <div style={{ padding: '0 16px 8px', fontSize: 11, color: C.textTertiary, lineHeight: 1.4 }}>
-              {`This will restore it as a suggestion`}
-            </div>
+        <div ref={menuRef} style={{ position: 'absolute', top: 10, right: 10, zIndex: 10, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 4px 16px rgba(0,0,0,0.14)', animation: 'flyoutIn 0.14s ease-out', transformOrigin: 'top right' }}>
+          {event.source === 'onboarding' ? (
+            <button onClick={e => { e.stopPropagation(); setShowRemove(false); _closeActiveMenu = null; onEdit && onEdit(event) }}
+              style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: C.textPrimary, textAlign: 'left', whiteSpace: 'nowrap' }}>
+              Edit
+            </button>
+          ) : (
+            <>
+              <button onClick={e => { e.stopPropagation(); setShowRemove(false); _closeActiveMenu = null; onRemove() }}
+                style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: '#ef4444', textAlign: 'left', whiteSpace: 'nowrap' }}>
+                Delete event
+              </button>
+              {coveringRule && (
+                <div style={{ padding: '0 18px 10px', fontSize: 11, color: C.textTertiary, lineHeight: 1.4 }}>
+                  This will restore it as a suggestion
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -1677,15 +1777,16 @@ const EventCard = ({ event, highlightId, onRemove, visibleRecs = [] }) => {
             <span style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
               {du && <span style={{ fontSize: 12, color: C.textTertiary }}>{du}</span>}
-              {onRemove && <button onClick={e => { e.stopPropagation(); setShowRemove(v => !v) }}
+              {onRemove && <button onClick={openMenu}
                 style={{ padding: '0 2px', background: 'none', border: 'none', cursor: 'pointer', color: C.textSecondary, fontSize: 14, fontWeight: 700, lineHeight: 1 }}>⋮</button>}
             </div>
           </div>
           <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.3, marginBottom: clar ? 4 : event.notes ? 5 : 0 }}>{event.name}</div>
       {clar && <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.45, marginBottom: event.notes ? 5 : 0 }}>{clar}</div>}
-      {event.notes && <div onClick={e => { e.stopPropagation(); setNotesOpen(v => !v) }} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, cursor: 'pointer' }}>
-            <span style={{ marginTop: 2, flexShrink: 0, display: 'flex' }}><Ico.notes/></span><span style={{ fontSize: 13, color: C.textTertiary, lineHeight: 1.45, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: notesOpen ? 999 : 1, overflow: 'hidden' }}>{event.notes}</span>
-          </div>}
+      {event.notes && <NotesDisplay notes={event.notes}/>}
+      {event.source === 'onboarding' && (
+        <div style={{ fontSize: 11, color: C.textTertiary, marginTop: 6 }}>Added from Clinical details</div>
+      )}
         </div>{/* end content */}
       </div>{/* end icon+content row */}
     </div>
@@ -2070,7 +2171,7 @@ const RailItem = ({ icon, isToday, isLast, card }) => {
   )
 }
 
-const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFlash = false, summaryShown = true, onApproachSelect, addedIds = {}, onRemoveEvent, visibleRecs = [], revealedCards = null, blockGenStates = {}, genText = null, genBlockId = null, generationDone = false, onSummarize = null }) => {
+const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFlash = false, summaryShown = true, onApproachSelect, addedIds = {}, onRemoveEvent, onEditClinical, visibleRecs = [], revealedCards = null, blockGenStates = {}, genText = null, genBlockId = null, generationDone = false, onSummarize = null }) => {
   const allItems = []
   // The daily summary is absent while the timeline builds; it's inserted at the top of
   // Today right after the scroll-to-Today settles.
@@ -2079,8 +2180,8 @@ const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFla
   day.events.forEach(ev => allItems.push({
     key: ev.id, icon: null,
     card: ev.type === 'appointment'
-      ? <AppointmentCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent ? () => onRemoveEvent(ev.id, day.date) : null}/>
-      : <EventCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent && ev.type !== 'diagnosis' ? () => onRemoveEvent(ev.id, day.date) : null} visibleRecs={visibleRecs}/>
+      ? <AppointmentCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent ? () => onRemoveEvent(ev.id, day.date) : null} onEdit={onEditClinical ? () => onEditClinical(ev) : undefined}/>
+      : <EventCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent && ev.type !== 'diagnosis' ? () => onRemoveEvent(ev.id, day.date) : null} onEdit={onEditClinical ? () => onEditClinical(ev) : undefined} visibleRecs={visibleRecs}/>
   }))
   ;(day.suggested || []).forEach((blk, i) => allItems.push({ key: blk.id, isSugBlock: true, icon: <div style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: C.bgCard, border: `1.5px solid ${C.primary}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.primary, fontVariationSettings: "'FILL' 0, 'wght' 300" }}>kid_star</span></div>, card: genBlockId === blk.id
               ? <div style={{ padding: '12px 16px' }}>
@@ -3000,6 +3101,47 @@ const CANCER_TYPES = [
 
 const ONBOARDING_STEPS = ['role', 'situation', 'cancer_type', 'cancer_ack', 'diagnosis_date', 'welcome_personalized', 'stage', 'histology', 'treatment_status', 'medications', 'summary', 'account_creation']
 
+// ─── CLINICAL HELPERS (module-level so ClinicalEditSheet and completeOnboarding can share them) ──
+const _daysAgoStr = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().split('T')[0] }
+
+const buildSeedEventsFromAnswers = (ans, cancer, stage, hadSurgery) => {
+  const diagDate = ans.diagnosis_date || _daysAgoStr(14)
+  const events = []
+  events.push({ date: diagDate, event: {
+    id: 'seed_diag', type: 'diagnosis', source: 'onboarding',
+    name: cancer.name, date: diagDate,
+    details: [
+      ans.stage && ans.stage !== 'unsure' ? `Stage ${ans.stage === 'stage_1' ? 'I' : ans.stage === 'stage_2' ? 'II' : ans.stage === 'stage_3' ? 'III' : 'IV'}` : null,
+      ans.histology === 'clear_cell' ? 'Clear cell histology' : ans.histology === 'non_clear' ? 'Non-clear cell histology' : null,
+    ].filter(Boolean),
+  }})
+  if (hadSurgery) {
+    events.push({ date: _daysAgoStr(10), event: { id: 'seed_surgery', type: 'procedure', source: 'onboarding', name: 'Surgery', date: _daysAgoStr(10) }})
+    events.push({ date: _daysAgoStr(4),  event: { id: 'seed_pathology', type: 'procedure', source: 'onboarding', name: 'Pathology review', date: _daysAgoStr(4) }})
+  }
+  if (stage === 'IV') {
+    events.push({ date: diagDate, event: { id: 'seed_staging', type: 'scan', source: 'onboarding', name: 'Staging CT scan', date: diagDate }})
+  }
+  return events
+}
+
+const buildPatientStateFromAnswers = (ans) => {
+  const cancer = CANCER_TYPES.find(c => c.code === ans.cancer_type) || CANCER_TYPES[CANCER_TYPES.length - 1]
+  const stage = ans.stage === 'stage_1' ? 'I' : ans.stage === 'stage_2' ? 'II' : ans.stage === 'stage_3' ? 'III' : ans.stage === 'stage_4' ? 'IV' : 'I'
+  const hadSurgery = ans.treatment_status === 'surgery'
+  return {
+    patientState: {
+      diagnosisCode: ans.cancer_type || 'RCC',
+      stage,
+      biomarkers: { histology: ans.histology === 'clear_cell' ? 'clear-cell' : ans.histology === 'non_clear' ? 'non-clear-cell' : 'unknown' },
+      performanceStatus: 0,
+      cancerName: cancer.name,
+      onboardingAnswers: ans,
+    },
+    seedEvents: buildSeedEventsFromAnswers(ans, cancer, stage, hadSurgery),
+  }
+}
+
 const OnboardingAccountCreation = ({ onFinish, SlideIn }) => {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -3112,64 +3254,8 @@ const OnboardingScreen = ({ onComplete, onAddMedication, onExit }) => {
     }, 400)
   }
 
-  const buildPatientState = (ans) => {
-    const cancer = CANCER_TYPES.find(c => c.code === ans.cancer_type) || CANCER_TYPES[CANCER_TYPES.length - 1]
-    const stage = ans.stage === 'stage_1' ? 'I' : ans.stage === 'stage_2' ? 'II' : ans.stage === 'stage_3' ? 'III' : ans.stage === 'stage_4' ? 'IV' : 'I'
-    const hadSurgery = ans.treatment_status === 'surgery'
-    const hadOther = ans.treatment_status === 'other'
-    return {
-      patientState: {
-        diagnosisCode: ans.cancer_type || 'RCC',
-        stage,
-        biomarkers: { histology: ans.histology === 'clear_cell' ? 'clear-cell' : ans.histology === 'non_clear' ? 'non-clear-cell' : 'unknown' },
-        performanceStatus: 0,
-        cancerName: cancer.name,
-      },
-      seedEvents: buildSeedEvents(ans, cancer, stage, hadSurgery, hadOther),
-    }
-  }
-
-  const buildSeedEvents = (ans, cancer, stage, hadSurgery, hadOther) => {
-    const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().split('T')[0] }
-    const diagDate = ans.diagnosis_date || daysAgo(14)
-    const events = []
-
-    // Always: diagnosis event using actual date entered
-    events.push({ date: diagDate, event: {
-      id: 'seed_diag', type: 'diagnosis',
-      name: cancer.name,
-      date: diagDate,
-      details: [
-        ans.stage && ans.stage !== 'unsure' ? `Stage ${ans.stage === 'stage_1' ? 'I' : ans.stage === 'stage_2' ? 'II' : ans.stage === 'stage_3' ? 'III' : 'IV'}` : null,
-        ans.histology === 'clear_cell' ? 'Clear cell histology' : ans.histology === 'non_clear' ? 'Non-clear cell histology' : null,
-      ].filter(Boolean),
-    }})
-
-    // Surgery seeding: if the user indicated they've had surgery, seed procedure events
-    if (hadSurgery) {
-      events.push({ date: daysAgo(10), event: {
-        id: 'seed_surgery', type: 'procedure',
-        name: 'Surgery',
-        date: daysAgo(10),
-      }})
-      events.push({ date: daysAgo(4), event: {
-        id: 'seed_pathology', type: 'procedure',
-        name: 'Pathology review',
-        date: daysAgo(4),
-      }})
-    }
-
-    // Stage IV: add staging scan
-    if (stage === 'IV') {
-      events.push({ date: diagDate, event: {
-        id: 'seed_staging', type: 'scan',
-        name: 'Staging CT scan',
-        date: diagDate,
-      }})
-    }
-
-    return events
-  }
+  // Use module-level helpers (shared with ClinicalEditSheet)
+  const buildPatientState = buildPatientStateFromAnswers
 
   // ── Shared primitives ────────────────────────────────────────────
   const Btn = ({ children, onClick, primary, disabled }) => (
@@ -4528,6 +4614,156 @@ const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap }) =>
 }
 
 
+// ─── CLINICAL EDIT SHEET ──────────────────────────────────────────
+// Slides up when user taps Edit on an onboarding-seeded event card.
+// Shows the question that created the event, pre-selects the current answer,
+// then advances through any follow-up questions before calling onSave.
+const ClinicalEditSheet = ({ event, patientState, onSave, onClose }) => {
+  const SOURCE_STEP = { seed_surgery: 'treatment_status', seed_pathology: 'treatment_status', seed_staging: 'stage' }
+  const startStep = SOURCE_STEP[event?.id] || 'treatment_status'
+
+  const [answers, setAnswers] = useState({ ...(patientState?.onboardingAnswers || {}) })
+  const [step, setStep]       = useState(startStep)
+  const [history, setHistory] = useState([])
+  const [vis, setVis]         = useState(false)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+
+  const cancerCode    = answers.cancer_type || patientState?.diagnosisCode || 'RCC'
+  const selectedCancer = CANCER_TYPES.find(c => c.code === cancerCode)
+
+  const nextStep = (currentStep, ans) => {
+    const code = ans.cancer_type || cancerCode
+    if (currentStep === 'stage')            return code === 'RCC' ? 'histology' : 'treatment_status'
+    if (currentStep === 'histology')        return 'treatment_status'
+    if (currentStep === 'treatment_status') return 'done'
+    return 'done'
+  }
+
+  const answer = (key, value) => {
+    const next = { ...answers, [key]: value }
+    setAnswers(next)
+    const ns = nextStep(step, next)
+    if (ns === 'done') { setVis(false); setTimeout(() => onSave(next), 350) }
+    else               { setHistory(h => [...h, step]); setStep(ns) }
+  }
+
+  const goBack = () => {
+    if (history.length === 0) { setVis(false); setTimeout(onClose, 350) }
+    else { const prev = history[history.length - 1]; setHistory(h => h.slice(0, -1)); setStep(prev) }
+  }
+  const dismiss = () => { setVis(false); setTimeout(onClose, 350) }
+
+  const SelBtn = ({ answerKey, value, children }) => {
+    const sel = answers[answerKey] === value
+    return (
+      <button onClick={() => answer(answerKey, value)} style={{
+        width: '100%', padding: '14px 20px',
+        backgroundColor: sel ? C.primaryLight : C.bgCard,
+        border: `1.5px solid ${sel ? C.primary : C.border}`,
+        borderRadius: 13, cursor: 'pointer', textAlign: 'left',
+        fontSize: 15, fontWeight: 500, color: C.textPrimary,
+        marginBottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      }}>
+        <span>{children}</span>
+        {sel
+          ? <span className="material-symbols-rounded" style={{ color: C.primary, fontSize: 20, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>check_circle</span>
+          : <span style={{ color: C.primary, fontSize: 18 }}>→</span>}
+      </button>
+    )
+  }
+
+  const Wrap = ({ children }) => (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '24px 24px 40px', overflowY: 'auto' }}>
+      {children}
+    </div>
+  )
+
+  const STEPS = {
+    stage: (
+      <Wrap>
+        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 8 }}>What stage is your {selectedCancer?.name || 'cancer'}?</div>
+        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>Your doctor will have described this after imaging or surgery. If you're not sure, choose the closest option.</div>
+        {[
+          { value: 'stage_1', label: 'Stage I',      sub: "Cancer is localised, hasn't spread" },
+          { value: 'stage_2', label: 'Stage II',     sub: 'Cancer has grown but is still contained' },
+          { value: 'stage_3', label: 'Stage III',    sub: 'Cancer has spread to nearby lymph nodes' },
+          { value: 'stage_4', label: 'Stage IV',     sub: 'Cancer has spread to other organs' },
+          { value: 'unsure',  label: "I'm not sure", sub: null },
+        ].map(opt => (
+          <SelBtn key={opt.value} answerKey="stage" value={opt.value}>
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: opt.sub ? 2 : 0 }}>{opt.label}</div>
+              {opt.sub && <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>}
+            </div>
+          </SelBtn>
+        ))}
+      </Wrap>
+    ),
+    histology: (
+      <Wrap>
+        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 8 }}>What type of kidney cancer cell did your doctor mention?</div>
+        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>This is usually found in the pathology report after a biopsy or surgery.</div>
+        {[
+          { value: 'clear_cell', label: 'Clear cell',     sub: 'The most common type, about 75% of kidney cancers' },
+          { value: 'non_clear',  label: 'Non-clear cell', sub: 'Papillary, chromophobe, or other type' },
+          { value: 'unsure',     label: "I'm not sure or don't have a report yet", sub: null },
+        ].map(opt => (
+          <SelBtn key={opt.value} answerKey="histology" value={opt.value}>
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: opt.sub ? 2 : 0 }}>{opt.label}</div>
+              {opt.sub && <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>}
+            </div>
+          </SelBtn>
+        ))}
+      </Wrap>
+    ),
+    treatment_status: (
+      <Wrap>
+        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 8 }}>Have you started treatment yet?</div>
+        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>This helps us show you the most relevant recommendations for where you are right now.</div>
+        {[
+          { value: 'surgery', label: "Yes — I've had surgery",           sub: selectedCancer?.surgery ? `e.g. ${selectedCancer.surgery}` : 'A surgical procedure' },
+          { value: 'other',   label: "Yes — I've had another treatment", sub: 'Radiation, ablation, or systemic therapy' },
+          { value: 'no',      label: "No, treatment hasn't started yet", sub: null },
+          { value: 'unsure',  label: "I'm not sure",                     sub: null },
+        ].map(opt => (
+          <SelBtn key={opt.value} answerKey="treatment_status" value={opt.value}>
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: opt.sub ? 2 : 0 }}>{opt.label}</div>
+              {opt.sub && <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>}
+            </div>
+          </SelBtn>
+        ))}
+      </Wrap>
+    ),
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 300,
+      display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
+      backgroundColor: vis ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0)',
+      transition: 'background-color 0.35s',
+    }} onClick={e => { if (e.target === e.currentTarget) dismiss() }}>
+      <div style={{
+        backgroundColor: C.bgApp, borderRadius: '20px 20px 0 0',
+        maxHeight: '88vh', display: 'flex', flexDirection: 'column',
+        transform: vis ? 'translateY(0)' : 'translateY(100%)',
+        transition: 'transform 0.35s cubic-bezier(0.32, 0.72, 0, 1)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 8px 4px', flexShrink: 0 }}>
+          <button onClick={goBack} style={{ width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', color: C.textSecondary, fontSize: 20 }}>
+            {history.length === 0 ? '✕' : '←'}
+          </button>
+          <div style={{ flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 600, color: C.textPrimary }}>Clinical details</div>
+          <div style={{ width: 40 }} />
+        </div>
+        {STEPS[step] || null}
+      </div>
+    </div>
+  )
+}
+
 // ─── ROOT ─────────────────────────────────────────────────────────
 export default function App() {
   // Hydrate persisted state once — must be first so all useState can use it
@@ -4940,6 +5176,34 @@ export default function App() {
     )
   }
 
+  const [clinicalEditEvent, setClinicalEditEvent] = useState(null)
+
+  const applyClinicalEdit = (newAnswers) => {
+    const { patientState: newPs, seedEvents: newSeeds } = buildPatientStateFromAnswers(newAnswers)
+    setPatientState(newPs)
+    const todayStr = new Date().toISOString().split('T')[0]
+    setTimeline(prev => {
+      // Strip all non-diagnosis onboarding events, then re-add new ones
+      let updated = prev
+        .map(day => ({ ...day, events: day.events.filter(e => !(e.source === 'onboarding' && e.type !== 'diagnosis')) }))
+        .filter(day => day.events.length > 0 || day.summary || day.isToday)
+      for (const { date, event } of newSeeds) {
+        if (event.type === 'diagnosis') continue
+        const idx = updated.findIndex(d => d.date === date)
+        if (idx >= 0) {
+          if (!updated[idx].events.some(e => e.id === event.id))
+            updated = updated.map((d, i) => i === idx ? { ...d, events: [...d.events, event] } : d)
+        } else {
+          const d = new Date(date + 'T12:00:00')
+          updated = [...updated, { date, label: d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }), isToday: date === todayStr, summary: null, events: [event], suggested: null }]
+          updated.sort((a, b) => a.date.localeCompare(b.date))
+        }
+      }
+      return updated
+    })
+    setClinicalEditEvent(null)
+  }
+
   const handleComplete = (event) => {
     justAddedRef.current = true // the group-change replay should yield to this add's scroll/highlight
     const dateKey = event.date || event.startDate || new Date().toISOString().split('T')[0]
@@ -5105,6 +5369,8 @@ export default function App() {
   }, [visibleRecs])
 
   return (
+    <>
+    <style>{`@keyframes flyoutIn { from { opacity:0; transform:scale(0.88) translateY(-6px); } to { opacity:1; transform:scale(1) translateY(0); } }`}</style>
     <div style={{ width: '100%', minHeight: '100vh', backgroundColor: C.bgApp, position: 'relative' }}>
       <div style={{ animation: appReveal ? 'appReveal 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards' : 'none' }}>
         {onboarded && (
@@ -5175,6 +5441,7 @@ export default function App() {
                   onApproachSelect={setTreatmentOpt}
                   addedIds={addedIds}
                   onRemoveEvent={removeEvent}
+                  onEditClinical={ev => setClinicalEditEvent(ev)}
                   visibleRecs={visibleRecs}
                   revealedCards={revealedCards}
                   blockGenStates={blockGenStates}
@@ -5237,6 +5504,14 @@ export default function App() {
         skipNotes={true}
       />}
       {authVisible && <AuthScreen onLogin={handleReturningUser} onNewUser={handleNewUser}/>}
+      {clinicalEditEvent && (
+        <ClinicalEditSheet
+          event={clinicalEditEvent}
+          patientState={patientState}
+          onSave={applyClinicalEdit}
+          onClose={() => setClinicalEditEvent(null)}
+        />
+      )}
 
       {treatmentOpt && (
         <TreatmentDetailView
@@ -5283,5 +5558,6 @@ export default function App() {
       {summarizeBlock && <SummarizeSheet block={summarizeBlock.block} patientState={summarizeBlock.patientState} planItems={summarizeBlock.planItems} onClose={() => setSummarizeBlock(null)}/>}
       {selectedCommunity && <CommunityDetailView community={selectedCommunity} onClose={() => setSelectedCommunity(null)}/>}
     </div>
+    </>
   )
 }
