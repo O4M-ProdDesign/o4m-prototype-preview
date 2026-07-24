@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback, createContext, useContext } from 'react'
+import ReactDOM from 'react-dom'
 import { findCoveringRule, findRuleMatchingItem, findMatchingRules, wouldImpactRecommendations, getImpactContext } from './services/recommendationService.js'
 import { hydrateState, savePatientState, saveTimeline, saveUserDecisions, clearPersistedState, saveMedications, loadMedications } from './services/persistenceService.js'
 import { loadSession, login, createAccount, logout } from './services/authService.js'
@@ -178,7 +179,8 @@ const Ico = {
   spark: () => <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 1L9.1 5.6L14 7.5L9.1 9.4L7.5 14L5.9 9.4L1 7.5L5.9 5.6L7.5 1Z" fill={C.primary} stroke={C.primary} strokeWidth="0.4" strokeLinejoin="round"/></svg>,
   thumbUp: () => <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M1.5 7.5h2v5.5h-2zM3.5 7.5L5.5 3l1.5.5V6.5H11L10 12H3.5z" stroke={C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>,
   thumbDown: () => <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M13.5 7.5h-2V2h2zM11.5 7.5L9.5 12l-1.5-.5V8H4L5 3h6.5z" stroke={C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>,
-  cal: () => <svg width="15" height="16" viewBox="0 0 15 16" fill="none"><rect x="1" y="2" width="13" height="12.5" rx="2" stroke="#888" strokeWidth="1.3"/><path d="M5 1V3M10 1V3M1 6H14" stroke="#888" strokeWidth="1.3" strokeLinecap="round"/></svg>,
+  cal:   () => <svg width="15" height="16" viewBox="0 0 15 16" fill="none"><rect x="1" y="2" width="13" height="12.5" rx="2" stroke="#888" strokeWidth="1.3"/><path d="M5 1V3M10 1V3M1 6H14" stroke="#888" strokeWidth="1.3" strokeLinecap="round"/></svg>,
+  clock: () => <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="7.5" r="6" stroke="#888" strokeWidth="1.3"/><path d="M7.5 4.5V8L10 9.5" stroke="#888" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>,
   notes: () => <svg width="14" height="12" viewBox="0 0 14 12" fill="none"><path d="M1 1H13M1 5H10M1 9H8" stroke="rgba(0,0,0,0.3)" strokeWidth="1.3" strokeLinecap="round"/></svg>,
 
   // Timeline rail icons — square badges matching design
@@ -315,21 +317,235 @@ const SearchInput = ({ value, onChange }) => {
   )
 }
 
+// ─── IOS WHEEL PICKER ─────────────────────────────────────────────
+const MONTHS_LABELS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+const MONTHS_VALUES = ['01','02','03','04','05','06','07','08','09','10','11','12']
+const PICKER_YEARS  = Array.from({ length: 16 }, (_, i) => String(2015 + i))
+const PICKER_HOURS  = Array.from({ length: 12 }, (_, i) => String(i + 1))
+const PICKER_MINS   = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'))
+const ITEM_H = 44
+
+const WheelCol = ({ items, selectedIndex, onChange, width }) => {
+  const ref = useRef(null)
+  const timer = useRef(null)
+
+  useEffect(() => {
+    // Inject hide-scrollbar CSS once
+    if (!document.getElementById('_whl_css')) {
+      const s = document.createElement('style')
+      s.id = '_whl_css'
+      s.textContent = '.whl-scroll::-webkit-scrollbar{display:none}'
+      document.head.appendChild(s)
+    }
+    // Set initial scroll position
+    if (ref.current) ref.current.scrollTop = selectedIndex * ITEM_H
+  }, []) // mount only
+
+  const onScroll = () => {
+    clearTimeout(timer.current)
+    timer.current = setTimeout(() => {
+      if (!ref.current) return
+      const idx = Math.round(ref.current.scrollTop / ITEM_H)
+      const clamped = Math.max(0, Math.min(items.length - 1, idx))
+      ref.current.scrollTop = clamped * ITEM_H
+      onChange(clamped)
+    }, 80)
+  }
+
+  return (
+    <div style={{ position: 'relative', width: width || 70, flexShrink: 0 }}>
+      <div
+        ref={ref}
+        className="whl-scroll"
+        onScroll={onScroll}
+        style={{
+          height: ITEM_H * 5,
+          overflowY: 'scroll',
+          scrollSnapType: 'y mandatory',
+          WebkitOverflowScrolling: 'touch',
+          msOverflowStyle: 'none',
+          scrollbarWidth: 'none',
+          paddingTop: ITEM_H * 2,
+          paddingBottom: ITEM_H * 2,
+        }}
+      >
+        {items.map((item, i) => (
+          <div key={i} style={{
+            height: ITEM_H,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            scrollSnapAlign: 'center',
+            fontSize: 20,
+            fontWeight: selectedIndex === i ? 600 : 400,
+            color: selectedIndex === i ? C.textPrimary : C.textTertiary,
+            userSelect: 'none',
+            fontFamily: 'Inter,sans-serif',
+          }}>
+            {item}
+          </div>
+        ))}
+      </div>
+      {/* Selection bar */}
+      <div style={{ position: 'absolute', top: ITEM_H * 2, left: 0, right: 0, height: ITEM_H, borderTop: '1px solid rgba(0,0,0,0.12)', borderBottom: '1px solid rgba(0,0,0,0.12)', pointerEvents: 'none' }}/>
+      {/* Top fade */}
+      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: ITEM_H * 2, background: 'linear-gradient(to bottom, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0) 100%)', pointerEvents: 'none' }}/>
+      {/* Bottom fade */}
+      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: ITEM_H * 2, background: 'linear-gradient(to top, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0) 100%)', pointerEvents: 'none' }}/>
+    </div>
+  )
+}
+
+const IosPickerSheet = ({ mode, value, min, max, onSave, onClose }) => {
+  // Parse min/max bounds (YYYY-MM-DD)
+  const maxP = max ? max.split('-').map(Number) : null  // [y, m, d]
+  const minP = min ? min.split('-').map(Number) : null
+
+  // Limit year range to [minYear, maxYear]
+  const availYears = PICKER_YEARS.filter(y => {
+    const yi = parseInt(y)
+    if (maxP && yi > maxP[0]) return false
+    if (minP && yi < minP[0]) return false
+    return true
+  })
+
+  const parseDate = (v) => {
+    const today = new Date()
+    if (!v) {
+      // Default to today (or max if today exceeds max)
+      const ref = maxP
+        ? new Date(Math.min(today.getTime(), new Date(max).getTime()))
+        : today
+      const yi = availYears.indexOf(String(ref.getFullYear()))
+      return { m: ref.getMonth(), d: ref.getDate() - 1, y: yi >= 0 ? yi : availYears.length - 1 }
+    }
+    const [yStr, mStr, dStr] = v.split('-')
+    const yi = availYears.indexOf(yStr)
+    return { m: parseInt(mStr, 10) - 1, d: parseInt(dStr, 10) - 1, y: yi >= 0 ? yi : availYears.length - 1 }
+  }
+  const parseTime = (v) => {
+    if (!v) return { h: 7, min: 0, p: 0 }
+    const [hStr, mStr] = v.split(':')
+    const h24 = parseInt(hStr, 10)
+    const p = h24 >= 12 ? 1 : 0
+    let h12 = h24 % 12
+    if (h12 === 0) h12 = 12
+    return { h: h12 - 1, min: parseInt(mStr, 10), p }
+  }
+
+  const initD = parseDate(value)
+  const initT = parseTime(value)
+  const [selM,   setSelM]   = useState(initD.m)
+  const [selD,   setSelD]   = useState(initD.d)
+  const [selY,   setSelY]   = useState(initD.y)
+  const [selH,   setSelH]   = useState(initT.h)
+  const [selMin, setSelMin] = useState(initT.min)
+  const [selP,   setSelP]   = useState(initT.p)
+  const [vis,    setVis]    = useState(false)
+
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+
+  const selYearNum = parseInt(availYears[selY] || availYears[availYears.length - 1])
+
+  // For the selected year, compute which months are available
+  const availMonthIdxs = MONTHS_LABELS.map((_, i) => i).filter(mi => {
+    if (maxP && selYearNum === maxP[0] && mi + 1 > maxP[1]) return false
+    if (minP && selYearNum === minP[0] && mi + 1 < minP[1]) return false
+    return true
+  })
+  const availMonthLabels = availMonthIdxs.map(i => MONTHS_LABELS[i])
+  // Map selM (0-11) into the available-months index
+  const selMAvailIdx = Math.max(0, availMonthIdxs.indexOf(selM) >= 0
+    ? availMonthIdxs.indexOf(selM)
+    : availMonthIdxs.length - 1)
+  const actualMonthIdx = availMonthIdxs[selMAvailIdx] ?? selM  // 0-11
+
+  // Days available for the selected month/year
+  const totalDays = new Date(selYearNum, actualMonthIdx + 1, 0).getDate()
+  const maxDayNum = (maxP && selYearNum === maxP[0] && actualMonthIdx + 1 === maxP[1])
+    ? maxP[2] : totalDays
+  const minDayNum = (minP && selYearNum === minP[0] && actualMonthIdx + 1 === minP[1])
+    ? minP[2] : 1
+  const DAYS = Array.from({ length: maxDayNum - minDayNum + 1 }, (_, i) => String(minDayNum + i))
+  const clampedD = Math.min(selD, DAYS.length - 1)
+
+  const handleDone = () => {
+    let result
+    if (mode === 'date') {
+      const dayNum = parseInt(DAYS[clampedD] || DAYS[DAYS.length - 1])
+      result = `${availYears[selY]}-${MONTHS_VALUES[actualMonthIdx]}-${String(dayNum).padStart(2, '0')}`
+      // Final clamp: never exceed max or go below min
+      if (max && result > max) result = max
+      if (min && result < min) result = min
+    } else {
+      const h12 = selH + 1
+      const h24 = selP === 0 ? (h12 === 12 ? 0 : h12) : (h12 === 12 ? 12 : h12 + 12)
+      result = `${String(h24).padStart(2, '0')}:${PICKER_MINS[selMin]}`
+    }
+    onSave(result)
+    setVis(false)
+    setTimeout(onClose, 350)
+  }
+
+  const handleCancel = () => { setVis(false); setTimeout(onClose, 350) }
+
+  return ReactDOM.createPortal(
+    <div style={{ position: 'fixed', inset: 0, zIndex: 2000, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }} onClick={handleCancel}>
+      <div style={{ position: 'absolute', inset: 0, background: `rgba(0,0,0,${vis ? 0.3 : 0})`, transition: 'background 0.35s' }}/>
+      <div onClick={e => e.stopPropagation()} style={{
+        position: 'relative', background: '#fff', borderRadius: '20px 20px 0 0',
+        paddingBottom: 'env(safe-area-inset-bottom, 20px)',
+        transform: `translateY(${vis ? '0%' : '100%'})`,
+        transition: 'transform 0.35s cubic-bezier(0.32,0.72,0,1)',
+      }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px 0' }}>
+          <button onClick={handleCancel} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: C.textSecondary, padding: 4, fontFamily: 'Inter,sans-serif' }}>Cancel</button>
+          <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary, fontFamily: 'Inter,sans-serif' }}>{mode === 'date' ? 'Select Date' : 'Select Time'}</div>
+          <button onClick={handleDone} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: C.primary, fontWeight: 600, padding: 4, fontFamily: 'Inter,sans-serif' }}>Done</button>
+        </div>
+        {/* Wheels */}
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 4, padding: '12px 20px 24px' }}>
+          {mode === 'date' ? <>
+            <WheelCol key={`month-${selY}`} items={availMonthLabels} selectedIndex={selMAvailIdx} onChange={i => setSelM(availMonthIdxs[i] ?? i)} width={74}/>
+            <WheelCol key={`day-${actualMonthIdx}-${selY}`} items={DAYS} selectedIndex={clampedD} onChange={setSelD} width={52}/>
+            <WheelCol key="year" items={availYears} selectedIndex={selY} onChange={setSelY} width={74}/>
+          </> : <>
+            <WheelCol key="hour" items={PICKER_HOURS} selectedIndex={selH} onChange={setSelH} width={52}/>
+            <div style={{ fontSize: 22, fontWeight: 600, color: C.textPrimary, paddingBottom: 2 }}>:</div>
+            <WheelCol key="min" items={PICKER_MINS} selectedIndex={selMin} onChange={setSelMin} width={52}/>
+            <WheelCol key="period" items={['AM','PM']} selectedIndex={selP} onChange={setSelP} width={60}/>
+          </>}
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
 const DateInputField = ({ label, value, onChange, required, min, max }) => {
-  const [on, setOn] = useState(false)
+  const [open, setOpen] = useState(false)
+  const fmt = (v) => {
+    if (!v) return ''
+    const [y, m, d] = v.split('-')
+    return `${MONTHS_LABELS[parseInt(m, 10) - 1]} ${parseInt(d, 10)}, ${y}`
+  }
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 5 }}>{label}{required && <span style={{ color: C.primary }}> *</span>}</div>
-      <div style={{ position: 'relative', border: on ? `2px solid ${C.primary}` : `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: '12px', display: 'flex', alignItems: 'center', backgroundColor: C.bgCard }}>
-        <input type="date" value={value} min={min} max={max} onChange={e => {
-          const v = e.target.value
-          if (min && v && v < min) return
-          if (max && v && v > max) return
-          onChange(v)
-        }} onFocus={() => setOn(true)} onBlur={() => setOn(false)} style={{ fontSize: 16, color: value ? C.textPrimary : C.textTertiary, border: 'none', outline: 'none', background: 'transparent', fontFamily: 'Inter,sans-serif', flex: 1, zIndex: 1, position: 'relative' }}/>
-        <Ico.cal/>
+      <div style={{ border: `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: '12px', display: 'flex', alignItems: 'center', backgroundColor: C.bgCard, cursor: 'pointer' }} onClick={() => setOpen(true)}>
+        <div style={{ flex: 1, fontSize: 16, color: value ? C.textPrimary : C.textTertiary }}>
+          {fmt(value) || 'Select date'}
+        </div>
+        {value
+          ? <button onMouseDown={e => e.preventDefault()} onClick={e => { e.stopPropagation(); onChange('') }}
+              style={{ flexShrink: 0, width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', color: C.textTertiary, fontSize: 16, lineHeight: 1, padding: 0 }}>
+              ✕
+            </button>
+          : <Ico.cal/>}
       </div>
       <div style={{ fontSize: 12, color: C.textTertiary, marginTop: 5 }}>Approximate dates are fine. You can update this later.</div>
+      {open && <IosPickerSheet mode="date" value={value} min={min} max={max} onSave={v => onChange(v)} onClose={() => setOpen(false)}/>}
     </div>
   )
 }
@@ -342,14 +558,31 @@ const NotesTextarea = ({ value, onChange, placeholder }) => {
 }
 
 const TimeInputField = ({ label, value, onChange }) => {
-  const [on, setOn] = useState(false)
+  const [open, setOpen] = useState(false)
+  const fmt = (v) => {
+    if (!v) return ''
+    const [hStr, mStr] = v.split(':')
+    const h24 = parseInt(hStr, 10)
+    const p = h24 >= 12 ? 'PM' : 'AM'
+    let h12 = h24 % 12
+    if (h12 === 0) h12 = 12
+    return `${h12}:${mStr} ${p}`
+  }
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 5 }}>{label}</div>
-      <div style={{ border: on ? `2px solid ${C.primary}` : `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: '12px', display: 'flex', alignItems: 'center', backgroundColor: C.bgCard }}>
-        <input type="time" value={value} onChange={e => onChange(e.target.value)} onFocus={() => setOn(true)} onBlur={() => setOn(false)}
-          style={{ fontSize: 16, color: value ? C.textPrimary : C.textTertiary, border: 'none', outline: 'none', background: 'transparent', fontFamily: 'Inter,sans-serif', flex: 1 }}/>
+      <div style={{ border: `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: '12px', display: 'flex', alignItems: 'center', backgroundColor: C.bgCard, cursor: 'pointer' }} onClick={() => setOpen(true)}>
+        <div style={{ flex: 1, fontSize: 16, color: value ? C.textPrimary : C.textTertiary }}>
+          {fmt(value) || 'Select time'}
+        </div>
+        {value
+          ? <button onMouseDown={e => e.preventDefault()} onClick={e => { e.stopPropagation(); onChange('') }}
+              style={{ flexShrink: 0, width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', color: C.textTertiary, fontSize: 16, lineHeight: 1, padding: 0 }}>
+              ✕
+            </button>
+          : <Ico.clock/>}
       </div>
+      {open && <IosPickerSheet mode="time" value={value} onSave={v => onChange(v)} onClose={() => setOpen(false)}/>}
     </div>
   )
 }
