@@ -30,10 +30,14 @@ const C = {
   timelineLineToday: '#ffb8a6',
 }
 
+// ─── UTILS ────────────────────────────────────────────────────────
+// Always use local calendar date (avoids UTC-offset "yesterday" bug from toISOString)
+const localDateStr = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+
 // ─── DATA ─────────────────────────────────────────────────────────
 const INITIAL_TIMELINE = (() => {
   const daysAgo = (n) => {
-    const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().split('T')[0]
+    const d = new Date(); d.setDate(d.getDate() - n); return localDateStr(d)
   }
   const label = (n) => {
     const d = new Date(); d.setDate(d.getDate() - n)
@@ -182,6 +186,8 @@ const Ico = {
   cal:   () => <svg width="15" height="16" viewBox="0 0 15 16" fill="none"><rect x="1" y="2" width="13" height="12.5" rx="2" stroke="#888" strokeWidth="1.3"/><path d="M5 1V3M10 1V3M1 6H14" stroke="#888" strokeWidth="1.3" strokeLinecap="round"/></svg>,
   clock: () => <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="7.5" r="6" stroke="#888" strokeWidth="1.3"/><path d="M7.5 4.5V8L10 9.5" stroke="#888" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>,
   notes: () => <svg width="14" height="12" viewBox="0 0 14 12" fill="none"><path d="M1 1H13M1 5H10M1 9H8" stroke="rgba(0,0,0,0.3)" strokeWidth="1.3" strokeLinecap="round"/></svg>,
+  info:  () => <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="7.5" r="6.5" stroke={C.textTertiary} strokeWidth="1.3"/><path d="M7.5 7v3.5" stroke={C.textTertiary} strokeWidth="1.4" strokeLinecap="round"/><circle cx="7.5" cy="5" r="0.75" fill={C.textTertiary}/></svg>,
+  question: () => <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="7.5" r="6.5" stroke={C.textTertiary} strokeWidth="1.3"/><path d="M5.5 5.5a2 2 0 1 1 2 2v1" stroke={C.textTertiary} strokeWidth="1.3" strokeLinecap="round"/><circle cx="7.5" cy="10.5" r="0.75" fill={C.textTertiary}/></svg>,
 
   // Timeline rail icons — square badges matching design
   diagnosisRail: () => (
@@ -260,9 +266,10 @@ const StatusBar = ({ light }) => (
 
 const NavBar = ({ title, subtitle, onBack, onClose, bg = C.bgCard }) => (
   <div style={{ height: 54, display: 'flex', alignItems: 'center', padding: '0 16px', borderBottom: `1px solid ${C.border}`, backgroundColor: bg, flexShrink: 0 }}>
-    <button onClick={onBack} style={{ width: 38, height: 38, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}>
-      <Ico.back/>
-    </button>
+    {onBack
+      ? <button onClick={onBack} style={{ width: 38, height: 38, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}><Ico.back/></button>
+      : <div style={{ width: 38, flexShrink: 0 }}/>
+    }
     <div style={{ flex: 1, textAlign: 'center', padding: '0 8px', overflow: 'hidden' }}>
       <div style={{ fontSize: 16, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</div>
       {subtitle && <div style={{ fontSize: 12, color: C.textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 }}>{subtitle}</div>}
@@ -337,8 +344,10 @@ const WheelCol = ({ items, selectedIndex, onChange, width }) => {
       s.textContent = '.whl-scroll::-webkit-scrollbar{display:none}'
       document.head.appendChild(s)
     }
-    // Set initial scroll position
-    if (ref.current) ref.current.scrollTop = selectedIndex * ITEM_H
+    // Set initial scroll position after layout
+    requestAnimationFrame(() => {
+      if (ref.current) ref.current.scrollTop = selectedIndex * ITEM_H
+    })
   }, []) // mount only
 
   const onScroll = () => {
@@ -414,7 +423,7 @@ const IosPickerSheet = ({ mode, value, min, max, onSave, onClose }) => {
     if (!v) {
       // Default to today (or max if today exceeds max)
       const ref = maxP
-        ? new Date(Math.min(today.getTime(), new Date(max).getTime()))
+        ? new Date(Math.min(today.getTime(), new Date(max + 'T12:00:00').getTime()))
         : today
       const yi = availYears.indexOf(String(ref.getFullYear()))
       return { m: ref.getMonth(), d: ref.getDate() - 1, y: yi >= 0 ? yi : availYears.length - 1 }
@@ -713,10 +722,10 @@ const FlowShell = ({ onClose, children, zIndex = 60, confirmClose = false }) => 
       WebkitFontSmoothing: 'antialiased',
     }}>
       {/* Persistent header — never slides */}
-      <NavBar title={nav.title} subtitle={nav.subtitle} onBack={nav.onBack || dismiss} onClose={dismiss}/>
+      <NavBar title={nav.title} subtitle={nav.subtitle} onBack={nav.onBack} onClose={dismiss}/>
       {/* Only content slides */}
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        {children(dismiss, setNav)}
+        {children(dismiss, setNav, reallyDismiss)}
       </div>
       {showLeaveConfirm && (
         <ConfirmLeaveDialog
@@ -1205,7 +1214,7 @@ const AddScanFlow = ({ onClose, onComplete, preload, fromDetail, planItems = [],
 
 const AddMedicationFlow = ({ onClose, onComplete, preload, fromDetail, planItems = [], patientState, shellZIndex, skipNotes = false }) => {
   const [sel, setSel] = useState(preload || null)
-  const [start, setStart] = useState(new Date().toISOString().split('T')[0])
+  const [start, setStart] = useState(localDateStr())
   const [end, setEnd] = useState('')
   const [dose, setDose] = useState('')
   const [notes, setNotes] = useState('')
@@ -1867,25 +1876,61 @@ const NotesDisplay = ({ notes }) => {
   )
 }
 
+// ─── CLINICAL DETAIL INFO SHEET ───────────────────────────────────
+const ClinicalDetailInfoSheet = ({ onClose, onEdit }) => {
+  const [vis, setVis] = useState(false)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const dismiss = () => { setVis(false); setTimeout(onClose, 280) }
+  const handleEdit = () => { setVis(false); setTimeout(() => { onClose(); onEdit() }, 280) }
+
+  return ReactDOM.createPortal(
+    <>
+      <div onClick={dismiss} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.38)', zIndex: 50, opacity: vis ? 1 : 0, transition: 'opacity 0.28s ease' }}/>
+      <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, backgroundColor: C.bgCard, borderRadius: '18px 18px 0 0', zIndex: 51, transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.28s cubic-bezier(0.32, 0.72, 0, 1)', boxShadow: '0 -4px 24px rgba(0,0,0,0.1)' }}>
+        <div style={{ width: 38, height: 4, backgroundColor: 'rgba(0,0,0,0.12)', borderRadius: 2, margin: '12px auto 0' }}/>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px 6px' }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, flex: 1, paddingRight: 8 }}>Clinical Details can't be deleted</div>
+          <button onClick={dismiss} style={{ width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}><Ico.close/></button>
+        </div>
+        <div style={{ padding: '8px 16px 20px', fontSize: 15, color: C.textSecondary, lineHeight: 1.6 }}>
+          Clinical Details provide the health information used to personalize your recommendations. Because this information forms part of your clinical baseline, it can't be deleted. If your clinical information changes, update this event to keep your recommendations accurate.
+        </div>
+        <div style={{ padding: '0 16px 34px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <button onClick={handleEdit} style={{ width: '100%', padding: '14px', backgroundColor: C.primary, color: '#fff', border: 'none', borderRadius: 12, fontSize: 15, fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+            Edit Clinical Detail
+          </button>
+          <button onClick={dismiss} style={{ width: '100%', padding: '14px', backgroundColor: 'transparent', color: C.textSecondary, border: `1px solid ${C.border}`, borderRadius: 12, fontSize: 15, fontWeight: 500, cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </>,
+    document.body
+  )
+}
+
 // ─── APPOINTMENT CARD ─────────────────────────────────────────────
 const AppointmentCard = ({ event, highlightId, onRemove, onEdit }) => {
   const [showRemove, setShowRemove] = useState(false)
+  const [menuPos,    setMenuPos]    = useState(null)
+  const [showInfoSheet, setShowInfoSheet] = useState(false)
   const menuRef = useRef(null)
   const isHighlighted = highlightId === event.id
 
   const openMenu = (e) => {
     e.stopPropagation()
     _closeActiveMenu?.()
+    const rect = e.currentTarget.getBoundingClientRect()
+    setMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
     setShowRemove(true)
-    _closeActiveMenu = () => setShowRemove(false)
+    _closeActiveMenu = () => { setShowRemove(false); setMenuPos(null) }
   }
 
   useEffect(() => {
     if (!showRemove) return
     const handler = (e) => {
       if (menuRef.current && !menuRef.current.contains(e.target)) {
-        setShowRemove(false)
-        _closeActiveMenu = null
+        setShowRemove(false); setMenuPos(null); _closeActiveMenu = null
       }
     }
     document.addEventListener('mousedown', handler)
@@ -1903,21 +1948,33 @@ const AppointmentCard = ({ event, highlightId, onRemove, onEdit }) => {
     <div
       style={{ width: '100%', backgroundColor: isHighlighted ? '#E4EEFA' : C.bgCard, border: `1px solid ${isHighlighted ? '#A3B8C9' : 'transparent'}`, borderRadius: 14, padding: '12px 16px', transition: 'background 1.8s ease, border-color 1.8s ease', position: 'relative' }}
       onClick={() => { if (showRemove) { setShowRemove(false); _closeActiveMenu = null } }}>
-      {showRemove && onRemove && (
-        <div ref={menuRef} style={{ position: 'absolute', top: 10, right: 10, zIndex: 10, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 4px 16px rgba(0,0,0,0.14)', animation: 'flyoutIn 0.14s ease-out', transformOrigin: 'top right' }}>
+      {showRemove && menuPos && ReactDOM.createPortal(
+        <div ref={menuRef} style={{ position: 'fixed', top: menuPos.top, right: menuPos.right, zIndex: 200, minWidth: 210, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 4px 16px rgba(0,0,0,0.14)', animation: 'flyoutIn 0.14s ease-out', transformOrigin: 'top right' }}>
           {event.source === 'onboarding' ? (
-            <button onClick={e => { e.stopPropagation(); setShowRemove(false); _closeActiveMenu = null; onEdit && onEdit(event) }}
-              style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: C.textPrimary, textAlign: 'left', whiteSpace: 'nowrap' }}>
-              Edit
-            </button>
+            <>
+              <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; onEdit && onEdit(event) }}
+                style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: C.textPrimary, textAlign: 'left', whiteSpace: 'nowrap' }}>
+                Edit
+              </button>
+              <div style={{ height: 1, backgroundColor: C.border, margin: '0 12px' }}/>
+              <div style={{ display: 'flex', alignItems: 'center', padding: '11px 18px', gap: 8 }}>
+                <span style={{ flex: 1, fontSize: 14, fontWeight: 500, color: 'rgba(239,68,68,0.4)', whiteSpace: 'nowrap' }}>Delete event</span>
+                <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; setShowInfoSheet(true) }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                  <Ico.question/>
+                </button>
+              </div>
+            </>
           ) : (
-            <button onClick={e => { e.stopPropagation(); setShowRemove(false); _closeActiveMenu = null; onRemove() }}
+            <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; onRemove() }}
               style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: '#ef4444', textAlign: 'left', whiteSpace: 'nowrap' }}>
               Delete event
             </button>
           )}
-        </div>
+        </div>,
+        document.body
       )}
+      {showInfoSheet && <ClinicalDetailInfoSheet onClose={() => setShowInfoSheet(false)} onEdit={() => onEdit && onEdit(event)}/>}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
         <div style={{ flexShrink: 0, alignSelf: 'center' }}>{railIcon('appointment', 40)}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -1949,6 +2006,8 @@ const AppointmentCard = ({ event, highlightId, onRemove, onEdit }) => {
 
 const EventCard = ({ event, highlightId, onRemove, onEdit, visibleRecs = [] }) => {
   const [showRemove, setShowRemove] = useState(false)
+  const [menuPos,    setMenuPos]    = useState(null)
+  const [showInfoSheet, setShowInfoSheet] = useState(false)
   const menuRef = useRef(null)
   const label = typeLabel[event.type] || 'Event'
   const isHighlighted = highlightId === event.id
@@ -1956,16 +2015,17 @@ const EventCard = ({ event, highlightId, onRemove, onEdit, visibleRecs = [] }) =
   const openMenu = (e) => {
     e.stopPropagation()
     _closeActiveMenu?.()
+    const rect = e.currentTarget.getBoundingClientRect()
+    setMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
     setShowRemove(true)
-    _closeActiveMenu = () => setShowRemove(false)
+    _closeActiveMenu = () => { setShowRemove(false); setMenuPos(null) }
   }
 
   useEffect(() => {
     if (!showRemove) return
     const handler = (e) => {
       if (menuRef.current && !menuRef.current.contains(e.target)) {
-        setShowRemove(false)
-        _closeActiveMenu = null
+        setShowRemove(false); setMenuPos(null); _closeActiveMenu = null
       }
     }
     document.addEventListener('mousedown', handler)
@@ -1978,17 +2038,27 @@ const EventCard = ({ event, highlightId, onRemove, onEdit, visibleRecs = [] }) =
   return (
     <div style={{ width: '100%', backgroundColor: isHighlighted ? '#E4EEFA' : C.bgCard, border: `1px solid ${isHighlighted ? '#A3B8C9' : 'transparent'}`, borderRadius: 14, padding: '12px 16px', transition: 'background 1.8s ease, border-color 1.8s ease', position: 'relative' }}
       onClick={() => { if (showRemove) { setShowRemove(false); _closeActiveMenu = null } }}>
-      {/* Overflow flyout — Edit for onboarding events, Delete for user-created */}
-      {showRemove && onRemove && (
-        <div ref={menuRef} style={{ position: 'absolute', top: 10, right: 10, zIndex: 10, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 4px 16px rgba(0,0,0,0.14)', animation: 'flyoutIn 0.14s ease-out', transformOrigin: 'top right' }}>
+      {/* Overflow flyout — portal-rendered so it escapes parent overflow clipping */}
+      {showRemove && menuPos && ReactDOM.createPortal(
+        <div ref={menuRef} style={{ position: 'fixed', top: menuPos.top, right: menuPos.right, zIndex: 200, minWidth: 210, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 4px 16px rgba(0,0,0,0.14)', animation: 'flyoutIn 0.14s ease-out', transformOrigin: 'top right' }}>
           {event.source === 'onboarding' ? (
-            <button onClick={e => { e.stopPropagation(); setShowRemove(false); _closeActiveMenu = null; onEdit && onEdit(event) }}
-              style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: C.textPrimary, textAlign: 'left', whiteSpace: 'nowrap' }}>
-              Edit
-            </button>
+            <>
+              <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; onEdit && onEdit(event) }}
+                style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: C.textPrimary, textAlign: 'left', whiteSpace: 'nowrap' }}>
+                Edit
+              </button>
+              <div style={{ height: 1, backgroundColor: C.border, margin: '0 12px' }}/>
+              <div style={{ display: 'flex', alignItems: 'center', padding: '11px 18px', gap: 8 }}>
+                <span style={{ flex: 1, fontSize: 14, fontWeight: 500, color: 'rgba(239,68,68,0.4)', whiteSpace: 'nowrap' }}>Delete event</span>
+                <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; setShowInfoSheet(true) }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                  <Ico.question/>
+                </button>
+              </div>
+            </>
           ) : (
             <>
-              <button onClick={e => { e.stopPropagation(); setShowRemove(false); _closeActiveMenu = null; onRemove() }}
+              <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; onRemove() }}
                 style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: '#ef4444', textAlign: 'left', whiteSpace: 'nowrap' }}>
                 Delete event
               </button>
@@ -1999,8 +2069,10 @@ const EventCard = ({ event, highlightId, onRemove, onEdit, visibleRecs = [] }) =
               )}
             </>
           )}
-        </div>
+        </div>,
+        document.body
       )}
+      {showInfoSheet && <ClinicalDetailInfoSheet onClose={() => setShowInfoSheet(false)} onEdit={() => onEdit && onEdit(event)}/>}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
         {/* Icon — flush left, semantic anchor */}
         <div style={{ flexShrink: 0, alignSelf: 'center' }}>{railIcon(event.type, 40)}</div>
@@ -2051,7 +2123,7 @@ const buildDailySummary = (ps, timeline = [], recs = null) => {
   const dx = [stageLabel, `${hist}${cancerName}`].filter(Boolean).join(' ')
   const fmt = d => { try { return new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) } catch { return null } }
 
-  const todayStr = new Date().toISOString().split('T')[0]
+  const todayStr = localDateStr()
   const events = (timeline || []).flatMap(day => (day.events || []).map(e => ({ ...e, _date: day.date, _isToday: !!day.isToday })))
   const nonDx = events.filter(e => e.type !== 'diagnosis')
   const surg = nonDx.find(e => /nephrectomy|prostatectomy|mastectomy|resection|ablation|surgery/i.test(e.name || ''))
@@ -2563,9 +2635,6 @@ const Toast = ({ message, subtext, onDone }) => {
       zIndex: 100, pointerEvents: 'none',
       display: 'flex', alignItems: 'center', gap: 10,
     }}>
-      <div style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#4ade80', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-        <svg width="12" height="10" viewBox="0 0 12 10" fill="none"><path d="M1 5l3.5 3.5L11 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
-      </div>
       <div>
         <div style={{ fontSize: 14, fontWeight: 600, color: 'white' }}>{message}</div>
         {subtext && <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.55)', marginTop: 1 }}>{subtext}</div>}
@@ -3335,7 +3404,7 @@ const CANCER_TYPES = [
 const ONBOARDING_STEPS = ['role', 'situation', 'cancer_type', 'cancer_ack', 'diagnosis_date', 'welcome_personalized', 'stage', 'histology', 'treatment_status', 'medications', 'summary', 'account_creation']
 
 // ─── CLINICAL HELPERS (module-level so ClinicalEditSheet and completeOnboarding can share them) ──
-const _daysAgoStr = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().split('T')[0] }
+const _daysAgoStr = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return localDateStr(d) }
 
 const buildSeedEventsFromAnswers = (ans, cancer, stage, hadSurgery) => {
   const diagDate = ans.diagnosis_date || _daysAgoStr(14)
@@ -3491,11 +3560,11 @@ const OnboardingScreen = ({ onComplete, onAddMedication, onExit }) => {
   const buildPatientState = buildPatientStateFromAnswers
 
   // ── Shared primitives ────────────────────────────────────────────
-  const Btn = ({ children, onClick, primary, disabled }) => (
+  const Btn = ({ children, onClick, primary, disabled, selected }) => (
     <button onClick={!disabled ? onClick : undefined} style={{
       width: '100%', padding: primary ? '15px 20px' : '14px 20px',
-      backgroundColor: disabled ? C.bgApp : primary ? C.primary : C.bgCard,
-      border: primary ? 'none' : `1px solid ${disabled ? 'transparent' : C.border}`,
+      backgroundColor: disabled ? C.bgApp : primary ? C.primary : selected ? C.primaryLight : C.bgCard,
+      border: primary ? 'none' : `${selected ? 1.5 : 1}px solid ${disabled ? 'transparent' : selected ? C.primary : C.border}`,
       borderRadius: 13, cursor: disabled ? 'default' : 'pointer', textAlign: 'left',
       fontSize: 15, fontWeight: primary ? 600 : 500,
       color: primary ? 'white' : disabled ? C.textTertiary : C.textPrimary,
@@ -3503,7 +3572,7 @@ const OnboardingScreen = ({ onComplete, onAddMedication, onExit }) => {
       opacity: disabled ? 0.5 : 1,
     }}>
       <span>{children}</span>
-      <span style={{ color: primary ? 'rgba(255,255,255,0.7)' : C.primary, fontSize: 18 }}>→</span>
+      {!selected && <span style={{ color: primary ? 'rgba(255,255,255,0.7)' : C.primary, fontSize: 18 }}>→</span>}
     </button>
   )
 
@@ -3535,7 +3604,7 @@ const OnboardingScreen = ({ onComplete, onAddMedication, onExit }) => {
           { value: 'professional', title: "I'm a medical professional",  sub: "I work with oncology patients",                      enabled: false },
           { value: 'exploring',    title: "I'm just exploring",          sub: "I'm here to learn about cancer and see what the app offers", enabled: false },
         ].map(opt => (
-          <Btn key={opt.value} onClick={() => opt.enabled && answer('role', opt.value)} disabled={!opt.enabled}>
+          <Btn key={opt.value} onClick={() => opt.enabled && answer('role', opt.value)} disabled={!opt.enabled} selected={answers.role === opt.value}>
             <div>
               <div style={{ fontWeight: 600, marginBottom: 2 }}>{opt.title}</div>
               <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>
@@ -3555,7 +3624,7 @@ const OnboardingScreen = ({ onComplete, onAddMedication, onExit }) => {
           { value: 'in_treatment',   title: 'In treatment',             sub: 'Receiving treatment now',                                            enabled: false },
           { value: 'ned',            title: 'No evidence of disease',   sub: 'Recovering from cancer or have no evidence of disease',              enabled: false },
         ].map(opt => (
-          <Btn key={opt.value} onClick={() => opt.enabled && answer('situation', opt.value)} disabled={!opt.enabled}>
+          <Btn key={opt.value} onClick={() => opt.enabled && answer('situation', opt.value)} disabled={!opt.enabled} selected={answers.situation === opt.value}>
             <div>
               <div style={{ fontWeight: 600, marginBottom: 2 }}>{opt.title}</div>
               <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>
@@ -3582,12 +3651,12 @@ const OnboardingScreen = ({ onComplete, onAddMedication, onExit }) => {
         <div style={{ flex: 1, overflowY: 'auto', padding: '0 24px 32px' }}>
           {filteredCancers.map(cancer => (
             <button key={cancer.code} onClick={() => answer('cancer_type', cancer.code)}
-              style={{ width: '100%', padding: '13px 14px', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, cursor: 'pointer', textAlign: 'left', marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              style={{ width: '100%', padding: '13px 14px', backgroundColor: answers.cancer_type === cancer.code ? C.primaryLight : C.bgCard, border: `${answers.cancer_type === cancer.code ? 1.5 : 1}px solid ${answers.cancer_type === cancer.code ? C.primary : C.border}`, borderRadius: 12, cursor: 'pointer', textAlign: 'left', marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div>
                 <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary }}>{cancer.name}</div>
                 {cancer.subtitle && <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 2 }}>{cancer.subtitle}</div>}
               </div>
-              <span style={{ color: C.primary, fontSize: 18, flexShrink: 0, marginLeft: 8 }}>→</span>
+              {answers.cancer_type !== cancer.code && <span style={{ color: C.primary, fontSize: 18, flexShrink: 0, marginLeft: 8 }}>→</span>}
             </button>
           ))}
           {filteredCancers.length === 0 && (
@@ -3626,7 +3695,7 @@ const OnboardingScreen = ({ onComplete, onAddMedication, onExit }) => {
         <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>
           Even if your cancer changed or came back later, please enter the date you were first diagnosed.
         </div>
-        <DateInputField label="Date of initial diagnosis" value={answers.diagnosis_date || ''} onChange={v => setAnswers(a => ({ ...a, diagnosis_date: v }))} max={new Date().toISOString().split('T')[0]} />
+        <DateInputField label="Date of initial diagnosis" value={answers.diagnosis_date || ''} onChange={v => setAnswers(a => ({ ...a, diagnosis_date: v }))} max={(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` })()} />
         <div style={{ flex: 1 }} />
         <NextBtn onPress={() => advance()} disabled={!answers.diagnosis_date} />
       </SlideIn>
@@ -3644,7 +3713,7 @@ const OnboardingScreen = ({ onComplete, onAddMedication, onExit }) => {
           { value: 'stage_4', label: 'Stage IV',  sub: 'Cancer has spread to other organs' },
           { value: 'unsure',  label: "I'm not sure", sub: null },
         ].map(opt => (
-          <Btn key={opt.value} onClick={() => answer('stage', opt.value)}>
+          <Btn key={opt.value} onClick={() => answer('stage', opt.value)} selected={answers.stage === opt.value}>
             <div>
               <div style={{ fontWeight: 600, marginBottom: opt.sub ? 2 : 0 }}>{opt.label}</div>
               {opt.sub && <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>}
@@ -3663,7 +3732,7 @@ const OnboardingScreen = ({ onComplete, onAddMedication, onExit }) => {
           { value: 'non_clear',  label: 'Non-clear cell', sub: 'Papillary, chromophobe, or other type' },
           { value: 'unsure',     label: "I'm not sure or don't have a report yet", sub: null },
         ].map(opt => (
-          <Btn key={opt.value} onClick={() => answer('histology', opt.value)}>
+          <Btn key={opt.value} onClick={() => answer('histology', opt.value)} selected={answers.histology === opt.value}>
             <div>
               <div style={{ fontWeight: 600, marginBottom: opt.sub ? 2 : 0 }}>{opt.label}</div>
               {opt.sub && <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>}
@@ -3683,7 +3752,7 @@ const OnboardingScreen = ({ onComplete, onAddMedication, onExit }) => {
           { value: 'no',      label: 'No, treatment hasn\'t started yet', sub: null },
           { value: 'unsure',  label: 'I\'m not sure',                     sub: null },
         ].map(opt => (
-          <Btn key={opt.value} onClick={() => answer('treatment_status', opt.value)}>
+          <Btn key={opt.value} onClick={() => answer('treatment_status', opt.value)} selected={answers.treatment_status === opt.value}>
             <div>
               <div style={{ fontWeight: 600, marginBottom: opt.sub ? 2 : 0 }}>{opt.label}</div>
               {opt.sub && <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>}
@@ -3917,9 +3986,8 @@ const OnboardingScreen = ({ onComplete, onAddMedication, onExit }) => {
     const backMap = {
       situation: 'role', cancer_type: 'situation',
       cancer_ack: 'cancer_type', diagnosis_date: 'cancer_ack',
-      welcome_personalized: 'diagnosis_date',
-      stage: 'welcome_personalized', histology: 'stage',
-      treatment_status: answers.cancer_type === 'RCC' ? 'histology' : 'stage',
+      stage: 'diagnosis_date', histology: 'stage',
+      treatment_status: answers.cancer_type === 'RCC' ? 'histology' : 'diagnosis_date',
       medications: 'treatment_status',
       summary: 'medications',
     }
@@ -4850,150 +4918,172 @@ const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap }) =>
 // ─── CLINICAL EDIT SHEET ──────────────────────────────────────────
 // Slides up when user taps Edit on an onboarding-seeded event card.
 // Shows the question that created the event, pre-selects the current answer,
-// then advances through any follow-up questions before calling onSave.
+// Full-screen flow for editing a Clinical Detail event.
+// Uses FlowShell (slide-up, confirm-on-dismiss) + FlowStack (horizontal push between steps).
 const ClinicalEditSheet = ({ event, patientState, onSave, onClose }) => {
   const SOURCE_STEP = { seed_surgery: 'treatment_status', seed_pathology: 'treatment_status', seed_staging: 'stage' }
-  const startStep = SOURCE_STEP[event?.id] || 'treatment_status'
+  const startKey = SOURCE_STEP[event?.id] || 'treatment_status'
 
-  const [answers, setAnswers] = useState({ ...(patientState?.onboardingAnswers || {}) })
-  const [step, setStep]       = useState(startStep)
-  const [history, setHistory] = useState([])
-  const [vis, setVis]         = useState(false)
-  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const cancerCode    = patientState?.onboardingAnswers?.cancer_type || patientState?.diagnosisCode || 'RCC'
+  const selectedCancer = CANCER_TYPES.find(c => c.code === cancerCode) || CANCER_TYPES[CANCER_TYPES.length - 1]
 
-  const cancerCode    = answers.cancer_type || patientState?.diagnosisCode || 'RCC'
-  const selectedCancer = CANCER_TYPES.find(c => c.code === cancerCode)
+  // Build ordered question sequence from startKey to end
+  const seq = (() => {
+    const s = []
+    let cur = startKey
+    while (cur !== 'done') {
+      s.push(cur)
+      if (cur === 'stage')          cur = cancerCode === 'RCC' ? 'histology' : 'treatment_status'
+      else if (cur === 'histology') cur = 'treatment_status'
+      else                          cur = 'done'
+    }
+    return s
+  })()
 
-  const nextStep = (currentStep, ans) => {
-    const code = ans.cancer_type || cancerCode
-    if (currentStep === 'stage')            return code === 'RCC' ? 'histology' : 'treatment_status'
-    if (currentStep === 'histology')        return 'treatment_status'
-    if (currentStep === 'treatment_status') return 'done'
-    return 'done'
+  const hasFollowUp = seq.length > 1
+  // Visual steps: q0 → (transition?) → q1 → q2…
+  const totalSteps = hasFollowUp ? seq.length + 1 : 1
+
+  const QUESTION_CONTENT = {
+    stage: {
+      title: `What stage is your ${selectedCancer?.name || 'cancer'}?`,
+      hint:  "Your doctor will have described this after imaging or surgery. If you're not sure, choose the closest option.",
+      key:   'stage',
+      opts:  [
+        { value: 'stage_1', label: 'Stage I',      sub: "Cancer is localised, hasn't spread" },
+        { value: 'stage_2', label: 'Stage II',     sub: 'Cancer has grown but is still contained' },
+        { value: 'stage_3', label: 'Stage III',    sub: 'Cancer has spread to nearby lymph nodes' },
+        { value: 'stage_4', label: 'Stage IV',     sub: 'Cancer has spread to other organs' },
+        { value: 'unsure',  label: "I'm not sure", sub: null },
+      ],
+    },
+    histology: {
+      title: 'What type of kidney cancer cell did your doctor mention?',
+      hint:  'This is usually found in the pathology report after a biopsy or surgery.',
+      key:   'histology',
+      opts:  [
+        { value: 'clear_cell', label: 'Clear cell',     sub: 'The most common type, about 75% of kidney cancers' },
+        { value: 'non_clear',  label: 'Non-clear cell', sub: 'Papillary, chromophobe, or other type' },
+        { value: 'unsure',     label: "I'm not sure or don't have a report yet", sub: null },
+      ],
+    },
+    treatment_status: {
+      title: 'Have you started treatment yet?',
+      hint:  'This helps us show you the most relevant recommendations for where you are right now.',
+      key:   'treatment_status',
+      opts:  [
+        { value: 'surgery', label: "Yes — I've had surgery",           sub: selectedCancer?.surgery ? `e.g. ${selectedCancer.surgery}` : 'A surgical procedure' },
+        { value: 'other',   label: "Yes — I've had another treatment", sub: 'Radiation, ablation, or systemic therapy' },
+        { value: 'no',      label: "No, treatment hasn't started yet", sub: null },
+        { value: 'unsure',  label: "I'm not sure",                     sub: null },
+      ],
+    },
   }
 
-  const answer = (key, value) => {
-    const next = { ...answers, [key]: value }
-    setAnswers(next)
-    const ns = nextStep(step, next)
-    if (ns === 'done') { setVis(false); setTimeout(() => onSave(next), 350) }
-    else               { setHistory(h => [...h, step]); setStep(ns) }
-  }
+  const initialAnswers = patientState?.onboardingAnswers || {}
+  const [localAnswers, setLocalAnswers] = useState({ ...initialAnswers })
 
-  const goBack = () => {
-    if (history.length === 0) { setVis(false); setTimeout(onClose, 350) }
-    else { const prev = history[history.length - 1]; setHistory(h => h.slice(0, -1)); setStep(prev) }
-  }
-  const dismiss = () => { setVis(false); setTimeout(onClose, 350) }
-
-  const SelBtn = ({ answerKey, value, children }) => {
-    const sel = answers[answerKey] === value
-    return (
-      <button onClick={() => answer(answerKey, value)} style={{
-        width: '100%', padding: '14px 20px',
-        backgroundColor: sel ? C.primaryLight : C.bgCard,
-        border: `1.5px solid ${sel ? C.primary : C.border}`,
-        borderRadius: 13, cursor: 'pointer', textAlign: 'left',
-        fontSize: 15, fontWeight: 500, color: C.textPrimary,
-        marginBottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      }}>
-        <span>{children}</span>
-        {sel
-          ? <span className="material-symbols-rounded" style={{ color: C.primary, fontSize: 20, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>check_circle</span>
-          : <span style={{ color: C.primary, fontSize: 18 }}>→</span>}
-      </button>
-    )
-  }
-
-  const Wrap = ({ children }) => (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '24px 24px 40px', overflowY: 'auto' }}>
-      {children}
-    </div>
-  )
-
-  const STEPS = {
-    stage: (
-      <Wrap>
-        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 8 }}>What stage is your {selectedCancer?.name || 'cancer'}?</div>
-        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>Your doctor will have described this after imaging or surgery. If you're not sure, choose the closest option.</div>
-        {[
-          { value: 'stage_1', label: 'Stage I',      sub: "Cancer is localised, hasn't spread" },
-          { value: 'stage_2', label: 'Stage II',     sub: 'Cancer has grown but is still contained' },
-          { value: 'stage_3', label: 'Stage III',    sub: 'Cancer has spread to nearby lymph nodes' },
-          { value: 'stage_4', label: 'Stage IV',     sub: 'Cancer has spread to other organs' },
-          { value: 'unsure',  label: "I'm not sure", sub: null },
-        ].map(opt => (
-          <SelBtn key={opt.value} answerKey="stage" value={opt.value}>
-            <div>
-              <div style={{ fontWeight: 600, marginBottom: opt.sub ? 2 : 0 }}>{opt.label}</div>
-              {opt.sub && <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>}
-            </div>
-          </SelBtn>
-        ))}
-      </Wrap>
-    ),
-    histology: (
-      <Wrap>
-        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 8 }}>What type of kidney cancer cell did your doctor mention?</div>
-        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>This is usually found in the pathology report after a biopsy or surgery.</div>
-        {[
-          { value: 'clear_cell', label: 'Clear cell',     sub: 'The most common type, about 75% of kidney cancers' },
-          { value: 'non_clear',  label: 'Non-clear cell', sub: 'Papillary, chromophobe, or other type' },
-          { value: 'unsure',     label: "I'm not sure or don't have a report yet", sub: null },
-        ].map(opt => (
-          <SelBtn key={opt.value} answerKey="histology" value={opt.value}>
-            <div>
-              <div style={{ fontWeight: 600, marginBottom: opt.sub ? 2 : 0 }}>{opt.label}</div>
-              {opt.sub && <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>}
-            </div>
-          </SelBtn>
-        ))}
-      </Wrap>
-    ),
-    treatment_status: (
-      <Wrap>
-        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 8 }}>Have you started treatment yet?</div>
-        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>This helps us show you the most relevant recommendations for where you are right now.</div>
-        {[
-          { value: 'surgery', label: "Yes — I've had surgery",           sub: selectedCancer?.surgery ? `e.g. ${selectedCancer.surgery}` : 'A surgical procedure' },
-          { value: 'other',   label: "Yes — I've had another treatment", sub: 'Radiation, ablation, or systemic therapy' },
-          { value: 'no',      label: "No, treatment hasn't started yet", sub: null },
-          { value: 'unsure',  label: "I'm not sure",                     sub: null },
-        ].map(opt => (
-          <SelBtn key={opt.value} answerKey="treatment_status" value={opt.value}>
-            <div>
-              <div style={{ fontWeight: 600, marginBottom: opt.sub ? 2 : 0 }}>{opt.label}</div>
-              {opt.sub && <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>}
-            </div>
-          </SelBtn>
-        ))}
-      </Wrap>
-    ),
-  }
+  // Only warn on dismiss if the user actually changed something (reverts count too)
+  const hasChanges = seq.some(qKey => {
+    const k = QUESTION_CONTENT[qKey].key
+    return localAnswers[k] !== initialAnswers[k]
+  })
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 300,
-      display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
-      backgroundColor: vis ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0)',
-      transition: 'background-color 0.35s',
-    }} onClick={e => { if (e.target === e.currentTarget) dismiss() }}>
-      <div style={{
-        backgroundColor: C.bgApp, borderRadius: '20px 20px 0 0',
-        maxHeight: '88vh', display: 'flex', flexDirection: 'column',
-        transform: vis ? 'translateY(0)' : 'translateY(100%)',
-        transition: 'transform 0.35s cubic-bezier(0.32, 0.72, 0, 1)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 8px 4px', flexShrink: 0 }}>
-          <button onClick={goBack} style={{ width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', color: C.textSecondary, fontSize: 20 }}>
-            {history.length === 0 ? '✕' : '←'}
-          </button>
-          <div style={{ flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 600, color: C.textPrimary }}>Clinical details</div>
-          <div style={{ width: 40 }} />
-        </div>
-        {STEPS[step] || null}
-      </div>
-    </div>
+    <FlowShell onClose={onClose} confirmClose={hasChanges} zIndex={300}>
+      {(dismiss, setNav, reallyDismiss) => {
+        const [step, setStep] = useState(0)
+
+        // Visual step index → question key (or 'transition')
+        const stepKey = (s) => {
+          if (s === 0) return seq[0]
+          if (hasFollowUp && s === 1) return 'transition'
+          return seq[hasFollowUp ? s - 1 : s]
+        }
+
+        const isLastStep = step === totalSteps - 1
+
+        // Back: only when not on the last/only step
+        useEffect(() => {
+          setNav({ title: 'Clinical Details', subtitle: null, onBack: step > 0 && !isLastStep ? () => setStep(s => s - 1) : null })
+        }, [step])
+
+        const handlePrimary = () => {
+          if (isLastStep) {
+            onSave(localAnswers)
+          } else {
+            setStep(s => s + 1)
+          }
+        }
+
+        // Render options for a given question key
+        const renderOpts = (qKey) => {
+          const q = QUESTION_CONTENT[qKey]
+          return q.opts.map(opt => {
+            const sel = localAnswers[q.key] === opt.value
+            return (
+              <button key={opt.value}
+                onClick={() => setLocalAnswers(prev => ({ ...prev, [q.key]: opt.value }))}
+                style={{
+                  width: '100%', padding: '14px 20px',
+                  backgroundColor: sel ? C.primaryLight : C.bgCard,
+                  border: `1.5px solid ${sel ? C.primary : C.border}`,
+                  borderRadius: 13, cursor: 'pointer', textAlign: 'left',
+                  fontSize: 15, fontWeight: 500, color: C.textPrimary,
+                  marginBottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  fontFamily: 'Inter,sans-serif',
+                }}>
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: opt.sub ? 2 : 0 }}>{opt.label}</div>
+                  {opt.sub && <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>}
+                </div>
+              </button>
+            )
+          })
+        }
+
+        // Build FlowStack step array
+        const questionSteps = seq.map((qKey, qi) => {
+          const visualIdx = hasFollowUp ? (qi === 0 ? 0 : qi + 1) : 0
+          const isThisLast = visualIdx === totalSteps - 1
+          const q = QUESTION_CONTENT[qKey]
+          return () => (
+            <StepView>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '32px 20px 120px' }}>
+                <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.3, marginBottom: 10 }}>{q.title}</div>
+                <div style={{ fontSize: 15, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>{q.hint}</div>
+                {renderOpts(qKey)}
+              </div>
+              <DockedButton
+                label={isThisLast ? 'Save' : 'Next'}
+                onClick={handlePrimary}
+                disabled={!localAnswers[q.key]}
+              />
+            </StepView>
+          )
+        })
+
+        const transitionStep = () => (
+          <StepView>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '40px 24px 120px' }}>
+              <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 16, lineHeight: 1.3 }}>
+                A couple more questions
+              </div>
+              <div style={{ fontSize: 16, color: C.textSecondary, lineHeight: 1.6 }}>
+                Changing this detail may affect your recommendations. A few quick questions will keep them accurate.
+              </div>
+            </div>
+            <DockedButton label="Continue" onClick={handlePrimary}/>
+          </StepView>
+        )
+
+        const allSteps = hasFollowUp
+          ? [questionSteps[0], transitionStep, ...questionSteps.slice(1)]
+          : questionSteps
+
+        return <FlowStack step={step} steps={allSteps} setNav={setNav}/>
+      }}
+    </FlowShell>
   )
 }
 
@@ -5151,7 +5241,7 @@ export default function App() {
         id: `med-onboard-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         name: med.name,
         subtitle: med.subtitle || '',
-        startDate: new Date().toISOString().split('T')[0],
+        startDate: localDateStr(),
         dose: '',
         notes: '',
         components: med.components || [],
@@ -5160,7 +5250,7 @@ export default function App() {
     }
 
     // Build a fresh timeline from scratch — never merge into prev (stale closure risk)
-    const todayStr = new Date().toISOString().split('T')[0]
+    const todayStr = localDateStr()
     const todayLabel = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric' })
 
     // Today's raw node carries no summary text — it's derived at render time in `timelineWithRecs`.
@@ -5400,13 +5490,21 @@ export default function App() {
   const openFlow = (type) => { setSheetOpen(false); setTimeout(() => setFlow(type), 310) }
 
   const removeEvent = (eventId, dayDate) => {
-    setTimeline(prev => prev
-      .map(day => day.date === dayDate
-        ? { ...day, events: day.events.filter(e => e.id !== eventId) }
-        : day
-      )
-      .filter(day => day.events.length > 0 || day.summary || day.isToday)
-    )
+    setTimeline(prev => {
+      const ev = prev.find(d => d.date === dayDate)?.events?.find(e => e.id === eventId)
+      const typeLabel = ev?.type === 'appointment' ? 'Appointment'
+        : ev?.type === 'scan'      ? 'Scan'
+        : ev?.type === 'procedure' ? 'Procedure'
+        : ev?.type === 'medication' ? 'Medication'
+        : 'Event'
+      setToast({ message: `${typeLabel} removed` })
+      return prev
+        .map(day => day.date === dayDate
+          ? { ...day, events: day.events.filter(e => e.id !== eventId) }
+          : day
+        )
+        .filter(day => day.events.length > 0 || day.summary || day.isToday)
+    })
   }
 
   const [clinicalEditEvent, setClinicalEditEvent] = useState(null)
@@ -5414,7 +5512,7 @@ export default function App() {
   const applyClinicalEdit = (newAnswers) => {
     const { patientState: newPs, seedEvents: newSeeds } = buildPatientStateFromAnswers(newAnswers)
     setPatientState(newPs)
-    const todayStr = new Date().toISOString().split('T')[0]
+    const todayStr = localDateStr()
     setTimeline(prev => {
       // Strip all non-diagnosis onboarding events, then re-add new ones
       let updated = prev
@@ -5435,11 +5533,12 @@ export default function App() {
       return updated
     })
     setClinicalEditEvent(null)
+    setToast({ message: 'Clinical profile updated', subtext: 'Edit anytime from Profile → Clinical Details' })
   }
 
   const handleComplete = (event) => {
     justAddedRef.current = true // the group-change replay should yield to this add's scroll/highlight
-    const dateKey = event.date || event.startDate || new Date().toISOString().split('T')[0]
+    const dateKey = event.date || event.startDate || localDateStr()
     setTimeline(prev => {
       const existing = prev.find(d => d.date === dateKey)
       if (existing) return prev.map(d => d.date === dateKey ? { ...d, events: [...d.events, event] } : d)
