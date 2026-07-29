@@ -150,11 +150,19 @@ const relativeApptDate = (dateStr) => {
 }
 
 const fmtDate = (d, opts = {}) => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...opts }) : ''
-const dayLabel = (dateStr, isToday) => {
-  if (isToday) return null  // handled separately
+const dayLabel = (dateStr) => {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
   const d = new Date(dateStr + 'T12:00:00')
-  const thisYear = new Date().getFullYear() === d.getFullYear()
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(thisYear ? {} : { year: 'numeric' }) })
+  const deltaDays = Math.round((d - today) / 86400000)
+  const thisYear = today.getFullYear() === d.getFullYear()
+  const shortDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(thisYear ? {} : { year: 'numeric' }) })
+  const weekday = d.toLocaleDateString('en-US', { weekday: 'long' })
+  if (deltaDays === -1) return { prefix: 'Yesterday', shortDate }
+  if (deltaDays >= -7 && deltaDays <= -2) return { prefix: weekday, shortDate }
+  if (deltaDays === 1) return { prefix: 'Tomorrow', shortDate }
+  if (deltaDays >= 2 && deltaDays <= 7) return { prefix: `Next ${weekday}`, shortDate }
+  return { prefix: null, shortDate }
 }
 const fmtDateRange = (s, e) => {
   if (!s) return ''
@@ -1320,7 +1328,7 @@ const ProviderAvatar = ({ avatar }) => (
 )
 
 // ─── PROVIDER SEARCH STEP ─────────────────────────────────────────
-const ProviderSearchStep = ({ onSelect, setNav, dismiss, careTeam }) => {
+const ProviderSearchStep = ({ onSelect, onSkip, setNav, dismiss, careTeam }) => {
   const [q, setQ] = useState('')
   const lower = q.toLowerCase().trim()
 
@@ -1403,6 +1411,12 @@ const ProviderSearchStep = ({ onSelect, setNav, dismiss, careTeam }) => {
             </button>
           </div>
         )}
+      </div>
+      {/* "I don't know yet" escape hatch */}
+      <div style={{ backgroundColor: C.bgCard, padding: '8px 20px 34px', flexShrink: 0 }}>
+        <button onClick={onSkip} style={{ width: '100%', height: 44, borderRadius: 9999, backgroundColor: 'transparent', border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 500, color: C.textSecondary }}>
+          I don't know yet
+        </button>
       </div>
     </div>
   )
@@ -1519,6 +1533,12 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
           }
         }
 
+        const handleSkipProvider = () => {
+          setProvider(null)
+          setStreet(''); setCity(''); setStateAbbr(''); setZip('')
+          setStep(1)
+        }
+
         const handleTypeSelect = (type) => {
           setApptType(type)
           const needsLocation = LOCATION_REQUIRED_TYPES.includes(type)
@@ -1556,6 +1576,7 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
           () => (
             <ProviderSearchStep
               onSelect={handleProviderSelect}
+              onSkip={handleSkipProvider}
               setNav={setNav}
               dismiss={dismiss}
               careTeam={careTeam}
@@ -2507,9 +2528,16 @@ const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFla
           ? <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
               <span style={{ fontSize: 18, fontWeight: 800, color: C.primary, letterSpacing: '-0.3px', transition: 'opacity 0.15s', opacity: todayFlash ? 0.5 : 1 }}>Today</span>
               <span style={{ fontSize: 16, color: C.textTertiary, fontWeight: 300 }}>·</span>
-              <span style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px' }}>{dayLabel(day.date, false)}</span>
+              <span style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px' }}>{dayLabel(day.date).shortDate}</span>
             </div>
-          : <span style={{ fontSize: 18, fontWeight: 800, color: C.textPrimary, letterSpacing: '-0.3px' }}>{dayLabel(day.date, false)}</span>
+          : (() => { const { prefix, shortDate } = dayLabel(day.date); return prefix
+              ? <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
+                  <span style={{ fontSize: 18, fontWeight: 800, color: C.textPrimary, letterSpacing: '-0.3px' }}>{prefix}</span>
+                  <span style={{ fontSize: 16, color: C.textTertiary, fontWeight: 300 }}>·</span>
+                  <span style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px' }}>{shortDate}</span>
+                </div>
+              : <span style={{ fontSize: 18, fontWeight: 800, color: C.textPrimary, letterSpacing: '-0.3px' }}>{shortDate}</span>
+            })()
         }
       </div>
       <div style={{ paddingLeft: 20, paddingRight: 16 }}>
