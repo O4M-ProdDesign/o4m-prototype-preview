@@ -1863,10 +1863,15 @@ const NotesDisplay = ({ notes }) => {
   const textRef = useRef(null)
 
   useEffect(() => {
-    const el = textRef.current
-    if (!el) return
-    // scrollWidth > clientWidth = text overflows single line
-    setTruncated(el.scrollWidth > el.clientWidth)
+    let raf
+    const check = () => {
+      const el = textRef.current
+      if (!el) return
+      setTruncated(el.scrollWidth > el.clientWidth)
+    }
+    // rAF ensures the browser has finished layout before measuring
+    raf = requestAnimationFrame(check)
+    return () => cancelAnimationFrame(raf)
   }, [notes])
 
   return (
@@ -1875,7 +1880,7 @@ const NotesDisplay = ({ notes }) => {
       <div style={{ flex: 1, minWidth: 0, fontSize: 13, color: C.textTertiary, lineHeight: 1.45 }}>
         {open ? (
           <>
-            <span style={{ display: 'block' }}>{notes}</span>
+            <span style={{ display: 'block', wordBreak: 'break-word', overflowWrap: 'break-word' }}>{notes}</span>
             <button onClick={e => { e.stopPropagation(); setOpen(false) }} style={{ fontSize: 13, fontWeight: 600, color: C.textTertiary, border: 'none', background: 'none', cursor: 'pointer', padding: '2px 0 0', display: 'block', textAlign: 'left' }}>
               show less
             </button>
@@ -2645,12 +2650,14 @@ const AddEventSheet = ({ onClose, onSelectProcedure, onSelectScan, onSelectMedic
   )
 }
 
-const Toast = ({ message, subtext, onDone }) => {
+const Toast = ({ message, subtext, action, onDone }) => {
   const [vis, setVis] = useState(false)
+  const duration = action ? 3800 : 2400
+  const exitDelay = action ? 4200 : 2800
   useEffect(() => {
     requestAnimationFrame(() => requestAnimationFrame(() => setVis(true)))
-    const t1 = setTimeout(() => setVis(false), 2400)
-    const t2 = setTimeout(onDone, 2800)
+    const t1 = setTimeout(() => setVis(false), duration)
+    const t2 = setTimeout(onDone, exitDelay)
     return () => { clearTimeout(t1); clearTimeout(t2) }
   }, [])
   return (
@@ -2660,13 +2667,19 @@ const Toast = ({ message, subtext, onDone }) => {
       backgroundColor: 'rgba(22,22,22,0.92)', borderRadius: 14,
       padding: subtext ? '12px 16px' : '10px 18px',
       opacity: vis ? 1 : 0, transition: 'opacity 0.25s, transform 0.3s cubic-bezier(0.34,1.56,0.64,1)',
-      zIndex: 100, pointerEvents: 'none',
-      display: 'flex', alignItems: 'center', gap: 10,
+      zIndex: 100, pointerEvents: action ? 'auto' : 'none',
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
     }}>
       <div>
         <div style={{ fontSize: 14, fontWeight: 600, color: 'white' }}>{message}</div>
         {subtext && <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.55)', marginTop: 1 }}>{subtext}</div>}
       </div>
+      {action && (
+        <button onClick={() => { action.onAction(); onDone() }}
+          style={{ flexShrink: 0, fontSize: 14, fontWeight: 700, color: C.primary, background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0', fontFamily: 'Inter,sans-serif' }}>
+          {action.label}
+        </button>
+      )}
     </div>
   )
 }
@@ -5525,7 +5538,20 @@ export default function App() {
         : ev?.type === 'procedure' ? 'Procedure'
         : ev?.type === 'medication' ? 'Medication'
         : 'Event'
-      setToast({ message: `${typeLabel} removed` })
+      setToast({
+        message: `${typeLabel} removed`,
+        action: ev ? {
+          label: 'Undo',
+          onAction: () => setTimeline(current => {
+            const idx = current.findIndex(d => d.date === dayDate)
+            if (idx >= 0) {
+              return current.map((d, i) => i === idx ? { ...d, events: [...d.events, ev] } : d)
+            }
+            const d = new Date(dayDate + 'T12:00:00')
+            return [...current, { date: dayDate, label: d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }), isToday: dayDate === localDateStr(), summary: null, events: [ev], suggested: null }].sort((a, b) => a.date.localeCompare(b.date))
+          })
+        } : null
+      })
       return prev
         .map(day => day.date === dayDate
           ? { ...day, events: day.events.filter(e => e.id !== eventId) }
@@ -5914,7 +5940,7 @@ export default function App() {
           </div>
         </div>
       )}
-      {toast && <Toast message={toast.message} subtext={toast.subtext} onDone={() => setToast(null)}/>}
+      {toast && <Toast message={toast.message} subtext={toast.subtext} action={toast.action} onDone={() => setToast(null)}/>}
       {summarizeBlock && <SummarizeSheet block={summarizeBlock.block} patientState={summarizeBlock.patientState} planItems={summarizeBlock.planItems} onClose={() => setSummarizeBlock(null)}/>}
       {selectedCommunity && <CommunityDetailView community={selectedCommunity} onClose={() => setSelectedCommunity(null)}/>}
     </div>
