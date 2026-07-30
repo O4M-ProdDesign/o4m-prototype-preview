@@ -5532,24 +5532,30 @@ export default function App() {
 
   const removeEvent = (eventId, dayDate) => {
     setTimeline(prev => {
-      const ev = prev.find(d => d.date === dayDate)?.events?.find(e => e.id === eventId)
+      const day = prev.find(d => d.date === dayDate)
+      const ev = day?.events?.find(e => e.id === eventId)
+      const origIdx = day?.events?.findIndex(e => e.id === eventId) ?? -1
       const typeLabel = ev?.type === 'appointment' ? 'Appointment'
         : ev?.type === 'scan'      ? 'Scan'
         : ev?.type === 'procedure' ? 'Procedure'
         : ev?.type === 'medication' ? 'Medication'
         : 'Event'
       setToast({
-        message: `${typeLabel} removed`,
+        message: `${ev?.name || typeLabel} removed`,
         action: ev ? {
           label: 'Undo',
-          onAction: () => setTimeline(current => {
-            const idx = current.findIndex(d => d.date === dayDate)
-            if (idx >= 0) {
-              return current.map((d, i) => i === idx ? { ...d, events: [...d.events, ev] } : d)
-            }
-            const d = new Date(dayDate + 'T12:00:00')
-            return [...current, { date: dayDate, label: d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }), isToday: dayDate === localDateStr(), summary: null, events: [ev], suggested: null }].sort((a, b) => a.date.localeCompare(b.date))
-          })
+          onAction: () => {
+            setTimeline(current => {
+              const idx = current.findIndex(d => d.date === dayDate)
+              if (idx >= 0) {
+                return current.map((d, i) => i === idx ? { ...d, events: [...d.events.slice(0, origIdx), ev, ...d.events.slice(origIdx)] } : d)
+              }
+              const d = new Date(dayDate + 'T12:00:00')
+              return [...current, { date: dayDate, label: d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }), isToday: dayDate === localDateStr(), summary: null, events: [ev], suggested: null }].sort((a, b) => a.date.localeCompare(b.date))
+            })
+            setHighlightId(ev.id)
+            setTimeout(() => setHighlightId(null), 3600)
+          }
         } : null
       })
       return prev
