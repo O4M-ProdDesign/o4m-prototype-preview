@@ -4300,6 +4300,7 @@ const CommunityDetailView = ({ community, onClose }) => {
 const NAV_TABS = [
   { id: 'careplan',  label: 'Home',       icon: 'home' },
   { id: 'track',     label: 'Track',      icon: 'monitor_heart' },
+  { id: 'chat',      label: 'Chat',       icon: 'auto_awesome' },
   { id: 'community', label: 'Community',  icon: 'group' },
 ]
 
@@ -4830,6 +4831,438 @@ const CommunityScreen = ({ onSelectCommunity, autoJoinedId }) => (
 )
 
 
+// ─── CHAT (AI assistant) ──────────────────────────────────────────
+// P0 vertical slice. The "LLM" is simulated: routeChat() is a rule engine
+// keyed off the question map (chat-question-map-v1.md). It returns a response
+// payload plus which components to attach. Distress/capture are P1 — not here.
+
+const CHAT_CANCER = { RCC: 'kidney cancer', BREAST: 'breast cancer', CRC: 'colorectal cancer', PROSTATE: 'prostate cancer', LUNG: 'lung cancer' }
+
+const shortProvider = (name) => {
+  if (!name) return 'your care team'
+  const parts = name.replace(/^Dr\.?\s*/i, '').trim().split(/\s+/)
+  return 'Dr. ' + (parts[parts.length - 1] || name)
+}
+
+const chatRelDate = (dateStr) => {
+  const today = new Date(); today.setHours(12, 0, 0, 0)
+  const d = new Date(dateStr + 'T12:00:00')
+  const diff = Math.round((d - today) / 86400000)
+  if (diff === 0) return 'today'
+  if (diff === 1) return 'tomorrow'
+  if (diff > 1 && diff <= 6) return 'next ' + d.toLocaleDateString('en-US', { weekday: 'long' })
+  return 'on ' + d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })
+}
+
+// The simulated router. Order matters: hard-stops (safety) before answers.
+const routeChat = (raw, ctx) => {
+  const t = (raw || '').toLowerCase()
+  const prov = shortProvider(ctx.providerName)
+  const has = (re) => re.test(t)
+
+  // HARD-STOP — prognosis / survival
+  if (has(/recur|come ?back|coming back|spread|surviv|prognos|my odds|life expectanc|how long (do|have) i|going to die|will i die|am i going to be (ok|okay|alright)|be cured|is it terminal/)) {
+    return { kind: 'hardstop', cluster: 'prognosis', nurse: true,
+      text: `Wondering whether it might come back is one of the most common things people carry, especially during surveillance — it makes complete sense that it's on your mind.\n\nHere I have to be straight with you: I can't predict what will happen for any one person, and honestly no tool should. What I can tell you is that your scan schedule is built to catch any change early, and for ${ctx.stageLabel} ${ctx.cancerName} it follows NCCN surveillance guidelines.\n\nFor what your own history means for your outlook, ${prov} has your full picture — or you can talk it through with an oncology nurse right now.` }
+  }
+  // HARD-STOP — stop / change / start treatment
+  if (has(/should i (stop|start|switch|change|lower|quit|pause|come off)|stop (taking|my)|come off|change my (dose|treatment|medication|meds)|reduce my dose|skip (a|my) (dose|treatment)/)) {
+    return { kind: 'hardstop', cluster: 'treatment', nurse: true,
+      text: `That's a real decision, and it's yours to make with the people who know your case — I don't want to nudge you one way or the other on something this important.\n\nIf side effects are what's behind the question, that's worth raising sooner rather than later — dose changes or a short break are things your team weighs all the time, and they'd rather hear from you early.\n\nI can explain generally what a treatment is for and the side effects on its label, but whether to change your treatment is a conversation for ${prov} or an oncology nurse.` }
+  }
+  // HARD-STOP — interpret their specific results
+  if (has(/what does my (scan|path|result|report|lab|blood)|my (scan|pathology|results?|labs?|egfr|bloodwork)\b.*(mean|show|say|look)|is my (egfr|scan|result|lab|number|reading|count)\b.*(normal|okay|ok|bad|good|fine|high|low)|interpret (my|these)/)) {
+    return { kind: 'hardstop', cluster: 'results', nurse: true,
+      text: `Wanting to actually understand what's in your report — instead of just being handed a result — is completely reasonable.\n\nI can explain what the terms generally mean, but I can't tell you what your specific numbers mean for you. Reading your results in the context of your whole case is your care team's job, and that's not a call worth getting wrong.\n\n${prov} can walk you through your results, or an oncology nurse can help right now.` }
+  }
+  // HARD-STOP — second opinion (routes to nurse, NOT the primary provider)
+  if (has(/second opinion|another (doctor|oncologist|opinion)|different (doctor|oncologist)|right doctor|see someone else|switch doctors/)) {
+    return { kind: 'hardstop', cluster: 'secondopinion', nurse: true,
+      text: `Wanting another perspective doesn't mean anything is wrong — it's a common, completely reasonable thing to consider, and good care teams expect it.\n\nWhether to seek one in your situation depends on details of your case I shouldn't weigh in on. But I can say plainly that a second opinion is a normal part of cancer care, not something you need to feel awkward about.\n\nIf you'd like to think it through, an oncology nurse can talk with you about what the process looks like.` }
+  }
+  // NEEDS DATA — next appointment (fetch from timeline)
+  if (has(/next (appointment|appt|visit|scan|check-?up)|upcoming (appointment|appt|visit|scan)|when('?s| is) my (next )?(appointment|appt|visit|scan)/)) {
+    const next = ctx.nextAppointment
+    if (next) return { kind: 'answer',
+      text: `Your next appointment on your timeline is ${next.name}, ${chatRelDate(next.date)}.`,
+      source: 'Based on your Outcomes4Me timeline',
+      deepLink: { label: 'View your treatment plan', target: 'careplan' } }
+    return { kind: 'answer',
+      text: `I don't see an upcoming appointment on your timeline right now. If you have one scheduled, you can add it so I can reference it in future chats.`,
+      deepLink: { label: 'Add an appointment', target: 'careplan' } }
+  }
+  // INSUFFICIENT DATA — records-dependent question we can't answer from what we have
+  if (has(/how am i (doing|responding)|is (it|the treatment|my treatment) working|my (latest |recent )?(labs?|blood|test results?)|results over time|trend|how('?s| is) my (kidney|liver|blood|function)/)) {
+    if (!ctx.hasRecords) {
+      // Scenario A — nothing connected
+      return { kind: 'insufficient', scenario: 'A',
+        text: `To answer that well, I'd need access to your health records — things like your recent labs and test results. Right now you haven't connected a provider portal, so I don't have that detail.\n\nConnecting your records takes just a few minutes and would let me give you a much more specific answer.`,
+        connect: { label: 'Connect your health records', target: 'connect-records' } }
+    }
+    // Scenario B — connected, but this specific data isn't in what synced
+    return { kind: 'insufficient', scenario: 'B',
+      text: `I have your connected records, but I don't see the specific detail I'd need to answer that — like recent lab values or the relevant report. Sometimes records take a little time to fully sync, or the information may be held by a different provider.\n\nIt's worth checking back shortly, or connecting another provider portal if that data lives elsewhere.`,
+      connect: { label: 'Connect an additional provider portal', target: 'add-portal' } }
+  }
+  // ANSWER — fatigue / supportive care
+  if (has(/fatigue|tired|exhaust|no energy|worn out|drained/)) {
+    return { kind: 'answer',
+      text: `According to NCCN supportive-care guidance, fatigue during treatment is common and often builds up over time. Strategies that help many patients: keep a consistent sleep schedule, get light activity like a short walk when your energy allows, and track when your fatigue peaks so you can plan lighter days around it.`,
+      source: 'NCCN Guidelines — Cancer-Related Fatigue',
+      deepLink: { label: 'Track this symptom', target: 'track' },
+      careTeam: true }
+  }
+  // ANSWER — side effects / medication (FDA label)
+  if (has(/side ?effect|pembro|immunotherapy|nausea|rash|thyroid|what does .* (do|treat)/)) {
+    return { kind: 'answer',
+      text: `I can share what's on the FDA label. Immunotherapies like pembrolizumab can cause fatigue, rash, and — less commonly — immune-related effects such as thyroid changes. Most are manageable, and your team monitors for them with routine labs.`,
+      source: 'FDA label — Important Safety Information',
+      deepLink: { label: 'Log a side effect', target: 'track' },
+      careTeam: true }
+  }
+  // ANSWER — surveillance / what to watch for
+  if (has(/between scans|watch for|surveillance|what should i (watch|look) for|warning sign|when to (call|worry)|red flag/)) {
+    return { kind: 'answer',
+      text: `For ${ctx.stageLabel} ${ctx.cancerName} on surveillance, NCCN guidelines focus on periodic imaging and check-ins. Between scans, symptoms worth reporting to your team include unexplained pain, new or worsening fatigue, or blood in your urine — sooner rather than waiting for your next scan.`,
+      source: 'NCCN Guidelines — Kidney Cancer, surveillance',
+      deepLink: { label: 'Review your treatment plan', target: 'careplan' },
+      careTeam: true }
+  }
+  // ANSWER — diagnosis education (general, not their specific read)
+  if (has(/clear cell|what is rcc|what('?s| is) (kidney cancer|rcc)|what does (clear cell|my diagnosis|rcc) mean|what('?s| is) (my )?(grade|stage)|stage mean/)) {
+    return { kind: 'answer',
+      text: `In general terms: "clear cell" describes the most common type of kidney cancer cell under the microscope, and stage describes how far the cancer has spread. ${ctx.stageLabel} means it was found early and localized. I'm describing these generally — for what they mean in your specific case, your care team is the best source.`,
+      source: 'NCCN Guidelines — Kidney Cancer',
+      careTeam: true }
+  }
+  // ANSWER — peer experience (Social framing)
+  if (has(/other (patients|people)|anyone else|what did (others|people)|hair loss|peer|community|support group|others going through/)) {
+    return { kind: 'answer',
+      text: `That's the kind of thing other patients often have real, lived-experience answers for. Others going through similar treatment have shared how they handled it in the community.`,
+      deepLink: { label: 'See what others are discussing', target: 'community' } }
+  }
+  // ANSWER — clinical trials
+  if (has(/clinical trial|\btrial\b|experimental|research study/)) {
+    return { kind: 'answer',
+      text: `There may be clinical trials relevant to your diagnosis. You can explore trials matched to ${ctx.cancerName} and your location in the trials finder.`,
+      deepLink: { label: 'Find clinical trials', target: 'trials' },
+      careTeam: true }
+  }
+  // FALLBACK — grounded, safe
+  return { kind: 'answer',
+    text: `I can help with questions about your diagnosis, treatment and side effects, your care plan, and what to expect — grounded in NCCN guidelines and your own Outcomes4Me data. Try asking about managing a side effect, what to watch for between scans, or your next appointment.`,
+    careTeam: true }
+}
+
+// Topic label for chat-history titles — mirrors routeChat's classification order.
+// Keep in sync with routeChat when clusters change.
+const chatTopic = (raw) => {
+  const t = (raw || '').toLowerCase()
+  const has = (re) => re.test(t)
+  if (has(/recur|come ?back|coming back|spread|surviv|prognos|my odds|life expectanc|how long (do|have) i|going to die|will i die|am i going to be (ok|okay|alright)|be cured|is it terminal/)) return 'Recurrence & prognosis'
+  if (has(/should i (stop|start|switch|change|lower|quit|pause|come off)|stop (taking|my)|come off|change my (dose|treatment|medication|meds)|reduce my dose|skip (a|my) (dose|treatment)/)) return 'Changing treatment'
+  if (has(/what does my (scan|path|result|report|lab|blood)|my (scan|pathology|results?|labs?|egfr|bloodwork)\b.*(mean|show|say|look)|is my (egfr|scan|result|lab|number|reading|count)\b.*(normal|okay|ok|bad|good|fine|high|low)|interpret (my|these)/)) return 'Understanding results'
+  if (has(/second opinion|another (doctor|oncologist|opinion)|different (doctor|oncologist)|right doctor|see someone else|switch doctors/)) return 'Second opinion'
+  if (has(/next (appointment|appt|visit|scan|check-?up)|upcoming (appointment|appt|visit|scan)|when('?s| is) my (next )?(appointment|appt|visit|scan)/)) return 'Next appointment'
+  if (has(/how am i (doing|responding)|is (it|the treatment|my treatment) working|my (latest |recent )?(labs?|blood|test results?)|results over time|trend|how('?s| is) my (kidney|liver|blood|function)/)) return 'Treatment progress'
+  if (has(/fatigue|tired|exhaust|no energy|worn out|drained/)) return 'Managing fatigue'
+  if (has(/side ?effect|pembro|immunotherapy|nausea|rash|thyroid|what does .* (do|treat)/)) return 'Medication side effects'
+  if (has(/between scans|watch for|surveillance|what should i (watch|look) for|warning sign|when to (call|worry)|red flag/)) return 'Between-scan symptoms'
+  if (has(/clear cell|what is rcc|what('?s| is) (kidney cancer|rcc)|what does (clear cell|my diagnosis|rcc) mean|what('?s| is) (my )?(grade|stage)|stage mean/)) return 'Understanding your diagnosis'
+  if (has(/other (patients|people)|anyone else|what did (others|people)|hair loss|peer|community|support group|others going through/)) return "Others' experiences"
+  if (has(/clinical trial|\btrial\b|experimental|research study/)) return 'Clinical trials'
+  return null
+}
+
+// Inline citation
+const ChatSource = ({ label }) => (
+  <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 8 }}>
+    <span className="material-symbols-rounded" style={{ fontSize: 13, color: C.textTertiary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>verified</span>
+    <span style={{ fontSize: 11.5, color: C.textTertiary, fontWeight: 500 }}>{label}</span>
+  </div>
+)
+
+// Tappable deep link — neutral gray outline, dark text (keeps orange for the chat itself)
+const ChatDeepLink = ({ label, target, onDeepLink }) => (
+  <button onClick={() => onDeepLink(target)} style={{ display: 'flex', alignItems: 'center', gap: 8, width: 'fit-content', maxWidth: '100%', padding: '10px 13px', backgroundColor: 'transparent', color: C.textPrimary, border: `1px solid ${C.borderMid}`, borderRadius: 10, fontSize: 13.5, fontWeight: 600, cursor: 'pointer', textAlign: 'left' }}>
+    <span>{label}</span>
+    <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textSecondary, fontVariationSettings: "'wght' 500" }}>arrow_forward</span>
+  </button>
+)
+
+// Priority handoff for hard stops
+const ChatNurseCTA = ({ onDeepLink }) => (
+  <button onClick={() => onDeepLink('nurse')} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '12px 14px', backgroundColor: C.primary, color: 'white', border: 'none', borderRadius: 12, cursor: 'pointer', textAlign: 'left' }}>
+    <span className="material-symbols-rounded" style={{ fontSize: 20, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>stethoscope</span>
+    <div style={{ flex: 1 }}>
+      <div style={{ fontSize: 14, fontWeight: 700 }}>Chat with a nurse</div>
+      <div style={{ fontSize: 12, opacity: 0.9 }}>Talk it through with an oncology nurse now</div>
+    </div>
+    <span className="material-symbols-rounded" style={{ fontSize: 18 }}>arrow_forward</span>
+  </button>
+)
+
+// Persistent, subtle care-team prompt on clinically adjacent answers
+const ChatCareTeam = ({ providerName, onDeepLink }) => (
+  <button onClick={() => onDeepLink('profile')} style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '10px 12px', backgroundColor: 'transparent', border: `1px dashed ${C.borderMid}`, borderRadius: 10, cursor: 'pointer', textAlign: 'left' }}>
+    <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textSecondary, fontVariationSettings: "'wght' 400" }}>groups</span>
+    <span style={{ fontSize: 12.5, color: C.textSecondary, flex: 1 }}>Have a question for your care team? Reach {shortProvider(providerName)}.</span>
+    <span style={{ color: C.textTertiary }}><Ico.chevRight/></span>
+  </button>
+)
+
+const ChatUserBubble = ({ text }) => (
+  <div style={{ alignSelf: 'flex-end', maxWidth: '82%', backgroundColor: C.primaryLight, color: C.textPrimary, padding: '10px 14px', borderRadius: '16px 16px 4px 16px', fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{text}</div>
+)
+
+// Thinking indicator — the 3-star sparkle, pulsing, before a reply lands
+const ChatTyping = () => (
+  <div style={{ alignSelf: 'flex-start', padding: '2px 2px' }}>
+    <span className="material-symbols-rounded" style={{ display: 'inline-block', fontSize: 22, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400", transformOrigin: 'center', animation: 'chatSpark 1.1s ease-in-out infinite' }}>auto_awesome</span>
+  </div>
+)
+
+const ChatAiBubble = ({ resp, providerName, onDeepLink }) => {
+  const isHardstop = resp.kind === 'hardstop'
+  return (
+    <div style={{ alignSelf: 'stretch', display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ fontSize: 14.5, color: C.textPrimary, lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+        {resp.text}
+        {resp.source && <ChatSource label={resp.source}/>}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {resp.connect && <ChatDeepLink {...resp.connect} onDeepLink={onDeepLink}/>}
+        {isHardstop && resp.nurse && <ChatNurseCTA onDeepLink={onDeepLink}/>}
+      </div>
+    </div>
+  )
+}
+
+// Starter-view legal footer — sourcing language per PRD §8 / Overview
+const ChatLegal = ({ compact }) => (
+  <div style={{ fontSize: 11.5, color: C.textTertiary, lineHeight: 1.5, textAlign: 'center', padding: compact ? '8px 8px 2px' : '18px 8px 6px' }}>
+    Chat is AI and can make mistakes. Always confirm care decisions with your care team.
+  </div>
+)
+
+// Composer — send button inside the field, taller than a prompt chip
+const ChatComposer = ({ value, onChange, onSend, generating }) => {
+  const canSend = value.trim() && !generating
+  return (
+    <div style={{ position: 'relative', backgroundColor: C.bgCard, border: `1px solid ${C.borderMid}`, borderRadius: 16 }}>
+      <textarea value={value} onChange={e => onChange(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (canSend) onSend() } }} rows={1} placeholder="Ask a question…" style={{ width: '100%', boxSizing: 'border-box', minHeight: 58, maxHeight: 150, resize: 'none', border: 'none', outline: 'none', background: 'transparent', padding: '16px 54px 16px 16px', fontSize: 15, lineHeight: 1.45, fontFamily: 'inherit', color: C.textPrimary }}/>
+      <button onClick={() => canSend && onSend()} disabled={!canSend} aria-label="Send" style={{ position: 'absolute', right: 9, bottom: 9, width: 38, height: 38, borderRadius: 19, border: 'none', backgroundColor: canSend ? C.primary : C.border, cursor: canSend ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background-color 0.15s' }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 20, color: 'white', fontVariationSettings: "'FILL' 1, 'wght' 500" }}>arrow_upward</span>
+      </button>
+    </div>
+  )
+}
+
+const ChatPrompts = ({ suggestions, onPick }) => (
+  <div>
+    <div style={{ fontSize: 13, fontWeight: 600, color: C.textSecondary, margin: '0 2px 8px' }}>Suggested questions</div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {suggestions.map((q, i) => (
+        <button key={i} onClick={() => onPick(q)} style={{ width: '100%', textAlign: 'left', padding: '12px 14px', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, fontSize: 13.5, color: C.textPrimary, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <span>{q}</span>
+          <span style={{ flexShrink: 0 }}><Ico.chevRight/></span>
+        </button>
+      ))}
+    </div>
+  </div>
+)
+
+// A single conversation. Shows greeting + composer + prompts when empty; message
+// thread + composer once it has messages. Used inside the new-chat modal and the
+// in-tab drilled session. Persists via onMessagesChange.
+const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, suggestions, onDeepLink, onMessagesChange }) => {
+  const [messages, setMessages] = useState(initialMessages || [])
+  const [input, setInput] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const scrollRef = useRef(null)
+  const timerRef = useRef(null)
+  const seededRef = useRef(false)
+  const mountedRef = useRef(false)
+
+  const generateReply = (text) => {
+    setGenerating(true)
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => {
+      const resp = routeChat(text, ctx)
+      setGenerating(false)
+      setMessages(prev => [...prev, { role: 'ai', resp }])
+    }, 850 + Math.random() * 500)
+  }
+  const runSend = (text) => {
+    if (!text || generating) return
+    setInput('')
+    setMessages(prev => [...prev, { role: 'user', text }])
+    generateReply(text)
+  }
+  const send = (raw) => runSend((raw != null ? raw : input).trim())
+
+  useEffect(() => { if (seed && !seededRef.current) { seededRef.current = true; runSend(seed) } }, [seed])
+  // Resume: if the loaded thread ends on an unanswered user turn (e.g. closed mid-generation), finish the reply.
+  useEffect(() => {
+    const last = messages[messages.length - 1]
+    if (!seed && last && last.role === 'user') generateReply(last.text)
+    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
+  }, [])
+  useEffect(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight }, [messages, generating])
+  // Persist on real changes only — skip the mount fire so opening a chat doesn't re-date/re-sort it.
+  useEffect(() => {
+    if (!mountedRef.current) { mountedRef.current = true; return }
+    if (onMessagesChange) onMessagesChange(messages)
+  }, [messages])
+
+  if (messages.length === 0) {
+    return (
+      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '24px 18px 0' }}>
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+            <span className="material-symbols-rounded" style={{ fontSize: 34, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span>
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: C.textPrimary, textAlign: 'center', lineHeight: 1.3, marginBottom: 22 }}>{greeting}</div>
+          <div style={{ marginBottom: 18 }}><ChatComposer value={input} onChange={setInput} onSend={() => send()} generating={generating}/></div>
+          <ChatPrompts suggestions={suggestions} onPick={q => send(q)}/>
+        </div>
+        <ChatLegal/>
+      </div>
+    )
+  }
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 18, minHeight: 0 }}>
+        {messages.map((m, i) => m.role === 'user'
+          ? <ChatUserBubble key={i} text={m.text}/>
+          : <ChatAiBubble key={i} resp={m.resp} providerName={providerName} onDeepLink={onDeepLink}/>
+        )}
+        {generating && <ChatTyping/>}
+      </div>
+      <div style={{ flexShrink: 0, borderTop: `1px solid ${C.border}`, backgroundColor: C.bgCard, padding: '10px 12px 8px' }}>
+        <ChatComposer value={input} onChange={setInput} onSend={() => send()} generating={generating}/>
+        <ChatLegal compact/>
+      </div>
+    </div>
+  )
+}
+
+// Body of the new-chat FlowShell modal — sets the nav title, hosts a fresh thread.
+const ChatModalBody = ({ setNav, seed, threadId, ctx, providerName, greeting, suggestions, onDeepLink, onPersist }) => {
+  useEffect(() => { setNav({ title: 'New chat', subtitle: null, onBack: null }) }, [])
+  return <ChatThread key={threadId} initialMessages={[]} seed={seed} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={onDeepLink} onMessagesChange={m => onPersist(threadId, m)}/>
+}
+
+const ChatScreen = ({ patientState, timeline, userName, onDeepLink, onShowBackChange, backSignal }) => {
+  const [sessions, setSessions] = useState([])
+  const [drilledId, setDrilledId] = useState(null)      // existing chat opened in-tab (push + header back)
+  const [modalSeed, setModalSeed] = useState(undefined) // undefined = closed; null = open no seed; string = open, auto-send
+  const [launcherInput, setLauncherInput] = useState('')
+  const [recordsConnected, setRecordsConnected] = useState(false)  // simulated health-records auth (shared with future gating)
+  const modalIdRef = useRef(null)
+  const seqRef = useRef(0)
+
+  const firstName = (userName || '').trim().split(/\s+/)[0] || ''
+  const greeting = firstName ? `Hi ${firstName}, ready when you are.` : 'Hi there, ready when you are.'
+  const cancerName = CHAT_CANCER[patientState?.diagnosisCode] || 'your cancer'
+  const stageLabel = patientState?.stage ? `Stage ${patientState.stage}` : ''
+  const providerName = (CARE_TEAM && CARE_TEAM[0] && CARE_TEAM[0].name) || 'Dr. Chen'
+  const nextAppointment = useMemo(() => {
+    const todayStr = localDateStr()
+    const appts = []
+    ;(timeline || []).forEach(day => (day.events || []).forEach(e => { if (e.type === 'appointment' && e.date >= todayStr) appts.push(e) }))
+    appts.sort((a, b) => a.date.localeCompare(b.date))
+    return appts[0] || null
+  }, [timeline])
+  const ctx = { cancerName, stageLabel, providerName, hasRecords: recordsConnected, nextAppointment }
+
+  // Deep-link interceptor: the insufficient-data connect action flips the simulated
+  // records-connected flag (same flag the parked gating work will read); everything
+  // else delegates to the app-level handler.
+  const handleLink = (target) => {
+    if (target === 'connect-records') setRecordsConnected(true)
+    onDeepLink(target)
+  }
+
+  const suggestions = [
+    'What should I watch for between scans?',
+    'How can I manage fatigue during treatment?',
+    `What does clear cell ${cancerName} mean?`,
+    'When is my next appointment?',
+  ]
+
+  const upsert = (id, messages) => {
+    if (!messages || !messages.length) return
+    const firstQ = messages.find(m => m.role === 'user')
+    const title = (firstQ && chatTopic(firstQ.text)) || (firstQ ? firstQ.text : 'New chat')
+    const rec = { id, title, count: messages.length, date: new Date(), messages }
+    setSessions(prev => [rec, ...prev.filter(x => x.id !== id)])
+  }
+  const openModal = (seed = null) => { modalIdRef.current = `c${Date.now()}-${seqRef.current++}`; setModalSeed(seed) }
+  const closeModal = () => { setModalSeed(undefined); modalIdRef.current = null }
+  const launchFromInput = () => { const t = launcherInput.trim(); if (!t) return; setLauncherInput(''); openModal(t) }
+
+  useEffect(() => { if (onShowBackChange) onShowBackChange(drilledId != null) }, [drilledId])
+  useEffect(() => { if (backSignal) setDrilledId(null) }, [backSignal])
+
+  const drilled = drilledId != null ? sessions.find(s => s.id === drilledId) : null
+  const modalOpen = modalSeed !== undefined
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative', backgroundColor: C.bgCard }}>
+      <style>{`@keyframes chatDot { 0%,100%{opacity:0.25;transform:translateY(0)} 50%{opacity:1;transform:translateY(-2px)} } @keyframes chatPushIn { from{transform:translateX(100%)} to{transform:translateX(0)} } @keyframes chatSpark { 0%,100%{opacity:0.35;transform:scale(0.9)} 50%{opacity:1;transform:scale(1.12)} }`}</style>
+
+      {drilledId != null ? (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, animation: 'chatPushIn 0.32s cubic-bezier(0.32,0.72,0,1)' }}>
+          <ChatThread key={drilledId} initialMessages={drilled ? drilled.messages : []} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onMessagesChange={m => upsert(drilledId, m)}/>
+        </div>
+      ) : sessions.length === 0 ? (
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '24px 18px 0' }}>
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 34, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span>
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.textPrimary, textAlign: 'center', lineHeight: 1.3, marginBottom: 22 }}>{greeting}</div>
+            <div style={{ marginBottom: 18 }}><ChatComposer value={launcherInput} onChange={setLauncherInput} onSend={launchFromInput} generating={false}/></div>
+            <ChatPrompts suggestions={suggestions} onPick={q => openModal(q)}/>
+          </div>
+          <ChatLegal/>
+        </div>
+      ) : (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px 96px' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.textSecondary, margin: '2px 2px 10px' }}>Your chats</div>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              {sessions.map(s => (
+                <button key={s.id} onClick={() => setDrilledId(s.id)} style={{ width: '100%', textAlign: 'left', padding: '14px 2px', background: 'none', border: 'none', borderBottom: `1px solid ${C.border}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title}</div>
+                    <div style={{ fontSize: 12, color: C.textTertiary, marginTop: 3 }}>{s.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} &middot; {s.count} messages</div>
+                  </div>
+                  <span style={{ flexShrink: 0 }}><Ico.chevRight/></span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <button onClick={() => openModal()} style={{ position: 'absolute', bottom: 20, right: 16, display: 'flex', alignItems: 'center', gap: 6, padding: '12px 18px', backgroundColor: C.primary, color: 'white', border: 'none', borderRadius: 26, cursor: 'pointer', boxShadow: '0 4px 14px rgba(0,0,0,0.22)', fontSize: 14, fontWeight: 600 }}>
+            <span className="material-symbols-rounded" style={{ fontSize: 18, fontVariationSettings: "'wght' 500" }}>add</span>
+            New chat
+          </button>
+        </div>
+      )}
+
+      {modalOpen && (
+        <FlowShell onClose={closeModal}>
+          {(dismiss, setNav) => (
+            <ChatModalBody setNav={setNav} seed={modalSeed} threadId={modalIdRef.current} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onPersist={upsert}/>
+          )}
+        </FlowShell>
+      )}
+    </div>
+  )
+}
+
+
 const YouOverlay = ({ show, onClose, currentUser, onLogout }) => {
   const [vis, setVis] = useState(false)
 
@@ -4931,10 +5364,15 @@ const YouScreen = ({ currentUser, onLogout }) => (
 // ─── APP HEADER ───────────────────────────────────────────────────
 // ─── APP HEADER ───────────────────────────────────────────────────
 // ─── APP HEADER ───────────────────────────────────────────────────
-const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap }) => {
+const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap, onBack }) => {
   const r = 19, circ = 2 * Math.PI * r, dash = 0.62 * circ
   return (
     <div style={{ display: 'flex', alignItems: 'center', height: 60, padding: '0 20px', backgroundColor: C.bgCard, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+      {onBack ? (
+        <button onClick={onBack} aria-label="Back" style={{ width: 46, height: 46, marginRight: 12, flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
+          <Ico.back/>
+        </button>
+      ) : (
       <div onClick={onProfileTap} style={{ position: 'relative', width: 46, height: 46, marginRight: 12, flexShrink: 0, cursor: 'pointer' }}>
         <svg width="46" height="46" viewBox="0 0 46 46">
           <circle cx="23" cy="23" r={r} fill="none" stroke="#e8e8e8" strokeWidth="3"/>
@@ -4947,9 +5385,10 @@ const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap }) =>
           </svg>
         </div>
       </div>
+      )}
       {/* Title — absolutely centered so avatar doesn't offset it */}
       <div style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-        <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2 }}>{{ careplan: 'Home', track: 'Track', community: 'Community', you: 'You' }[activeTab] || 'Home'}</div>
+        <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2 }}>{{ careplan: 'Home', track: 'Track', chat: 'Chat', community: 'Community', you: 'You' }[activeTab] || 'Home'}</div>
       </div>
     </div>
   )
@@ -5167,6 +5606,8 @@ export default function App() {
   const [tabKey, setTabKey] = useState(0)
   const prevTabRef = useRef('careplan')
   const [showYou, setShowYou] = useState(false)
+  const [chatShowBack, setChatShowBack] = useState(false)
+  const [chatBackSignal, setChatBackSignal] = useState(0)
   const [appReveal, setAppReveal] = useState(false)
   const [currentUser, setCurrentUser] = useState(loadSession)
   const [selectedCommunity, setSelectedCommunity] = useState(null)
@@ -5256,7 +5697,7 @@ export default function App() {
     setMedications([])
   }
 
-  const TAB_ORDER = ['careplan', 'track', 'community'] // 'you' is an overlay, not a tab
+  const TAB_ORDER = ['careplan', 'track', 'chat', 'community'] // 'you' is an overlay, not a tab
   const switchTab = (next) => {
     const from = TAB_ORDER.indexOf(prevTabRef.current)
     const to   = TAB_ORDER.indexOf(next)
@@ -5265,6 +5706,20 @@ export default function App() {
     prevTabRef.current = next
     setActiveTab(next)
     if (next === 'community') setAutoJoinedCommunity(null)
+  }
+
+  // Chat deep links — navigate to real screens where they exist, toast-stub the rest.
+  const handleChatDeepLink = (target) => {
+    if (target === 'careplan' || target === 'track' || target === 'community') { switchTab(target); return }
+    if (target === 'profile') { setShowYou(true); return }
+    const labels = {
+      nurse:  'Ask Outcomes4Me — connecting you with an oncology nurse…',
+      trials: 'Opening the clinical trials finder…',
+      mood:   'Opening the mood tracker…',
+      'connect-records': 'Health records connected — I can use them in this chat now.',
+      'add-portal': 'Connecting an additional provider portal…',
+    }
+    setToast({ message: labels[target] || 'Opening…' })
   }
 
   const completeOnboarding = ({ patientState: ps, seedEvents, user, onboardingMedications, matchedCommunity }) => {
@@ -5772,7 +6227,7 @@ export default function App() {
             pointerEvents: anyDrillInOpen ? 'none' : 'auto',
             transition: 'opacity 0.2s ease',
           }}>
-            <AppHeader currentDayLabel={activeTab === 'careplan' ? currentDayLabel : null} activeTab={activeTab} onProfileTap={() => setShowYou(true)}/>
+            <AppHeader currentDayLabel={activeTab === 'careplan' ? currentDayLabel : null} activeTab={activeTab} onProfileTap={() => setShowYou(true)} onBack={activeTab === 'chat' && chatShowBack ? () => setChatBackSignal(n => n + 1) : null}/>
           </div>
         )}
         {/* Spacer for fixed header — only when onboarded */}
@@ -5783,6 +6238,9 @@ export default function App() {
         </div>
         <div style={{ display: activeTab === 'community' ? 'flex' : 'none', height: (onboarded && !anyDrillInOpen) ? 'calc(100vh - 132px)' : '100vh', flexDirection: 'column', overflow: 'hidden' }}>
           <CommunityScreen onSelectCommunity={setSelectedCommunity} autoJoinedId={autoJoinedCommunity?.id}/>
+        </div>
+        <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', height: (onboarded && !anyDrillInOpen) ? 'calc(100vh - 132px)' : '100vh', flexDirection: 'column', overflow: 'hidden' }}>
+          <ChatScreen patientState={patientState} timeline={timeline} userName={currentUser?.name} onDeepLink={handleChatDeepLink} onShowBackChange={setChatShowBack} backSignal={chatBackSignal}/>
         </div>
 
         <div

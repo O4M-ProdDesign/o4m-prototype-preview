@@ -91,12 +91,32 @@ open('docs/index.html', 'w').write(html)
 - Vite's module preload polyfill contains literal `</script>` strings that break the HTML parser. The `.replace()` above escapes them.
 - Shell-based `sed` replacement of `</script>` is unreliable due to quoting. Always use Python.
 
-### Zip for sharing
+### Zip for sharing — "the commit files"
+
+When the user asks to "package a zip" or "give me the commit files," always produce this exact set:
+- `docs/index.html` (built, inlined GitHub Pages file)
+- `index.html`, `package.json`, `vite.config.js` (build config)
+- `HANDOFF.md`, `update-notes.md` (docs)
+- the entire `src/` tree — App.jsx + services/ + hooks/ + data/ + main.jsx + index.css
+- excluding `node_modules`, `dist*/`, `.DS_Store`, and any `*.backup*` / scratch files
+
 ```bash
 rm -f /tmp/o4m-final.zip
-zip -r /tmp/o4m-final.zip docs/index.html src/App.jsx src/main.jsx src/index.css src/services/ src/hooks/ src/data/ package.json vite.config.js index.html HANDOFF.md update-notes.md --exclude "src/App.jsx.backup-v1" --exclude "src/App2.jsx"
+cd <project root>
+zip -r /tmp/o4m-final.zip \
+  docs/index.html index.html package.json vite.config.js \
+  HANDOFF.md update-notes.md \
+  src \
+  -x '*/node_modules/*' '*/dist*/*' '*.DS_Store' '*.backup*' 'src/App2.jsx'
 cp /tmp/o4m-final.zip o4m-final.zip
 ```
+
+**Why `src` (no trailing slash, no subfolder list):** zipping the whole `src` directory recursively captures every current AND future subfolder automatically. Do NOT hand-list `src/App.jsx src/services/ ...` — that silently drops any file not named, which is exactly how the services/hooks/data folders went missing between conversations.
+
+**Verify before handing off:** run `unzip -l /tmp/o4m-final.zip` and confirm `src/services/`, `src/hooks/`, and `src/data/` files are all listed.
+
+**Uploading back into a fresh chat — use a NEW filename each time** (e.g. `o4m-final-v1.3.zip`, `o4m-final-v1.4.zip`). The desktop app caches uploads by filename; re-uploading the same `o4m-final.zip` can silently serve a stale copy. A version bump in the filename forces the new file through.
+
 Always delete the old /tmp zip first. Reusing an existing zip causes stale files to persist.
 
 ---
