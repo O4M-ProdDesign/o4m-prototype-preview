@@ -682,6 +682,31 @@ const CatalogSearchStep = ({ title, catalog, suggested, onSelect, onClose, onBac
 // ─── FLOWS ────────────────────────────────────────────────────────
 
 // Destructive confirmation shown when leaving a flow with unsaved input
+const ChatDeleteDialog = ({ title, onCancel, onDelete }) => {
+  const [vis, setVis] = useState(false)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div onClick={onCancel} style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)', opacity: vis ? 1 : 0, transition: 'opacity 0.2s ease' }}/>
+      <div style={{
+        position: 'relative', width: '100%', maxWidth: 320, backgroundColor: C.bgCard, borderRadius: 18,
+        padding: '24px 20px 16px', boxShadow: '0 12px 40px rgba(0,0,0,0.25)',
+        opacity: vis ? 1 : 0, transform: vis ? 'scale(1)' : 'scale(0.94)', transition: 'opacity 0.2s ease, transform 0.2s cubic-bezier(0.32, 0.72, 0, 1)',
+      }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: C.textPrimary, lineHeight: 1.4, marginBottom: 20, textAlign: 'left' }}>Are you sure you want to delete &ldquo;{title}&rdquo;?</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <button onClick={onCancel} style={{ width: '100%', height: 46, borderRadius: 9999, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 600, color: 'white' }}>
+            Cancel
+          </button>
+          <button onClick={onDelete} style={{ width: '100%', height: 46, borderRadius: 9999, backgroundColor: 'transparent', border: `1.5px solid ${C.border}`, cursor: 'pointer', fontSize: 15, fontWeight: 600, color: '#ef4444' }}>
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const ConfirmLeaveDialog = ({ onKeepEditing, onLeave }) => {
   const [vis, setVis] = useState(false)
   useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
@@ -4300,7 +4325,7 @@ const CommunityDetailView = ({ community, onClose }) => {
 const NAV_TABS = [
   { id: 'careplan',  label: 'Home',       icon: 'home' },
   { id: 'track',     label: 'Track',      icon: 'monitor_heart' },
-  { id: 'chat',      label: 'Chat',       icon: 'auto_awesome' },
+  { id: 'chat',      label: 'Chats',      icon: 'auto_awesome' },
   { id: 'community', label: 'Community',  icon: 'group' },
 ]
 
@@ -4860,117 +4885,109 @@ const routeChat = (raw, ctx) => {
   const prov = shortProvider(ctx.providerName)
   const has = (re) => re.test(t)
 
-  // HARD-STOP — prognosis / survival
+  // ── HARD-STOPS (safety) — evaluated first ──
   if (has(/recur|come ?back|coming back|spread|surviv|prognos|my odds|life expectanc|how long (do|have) i|going to die|will i die|am i going to be (ok|okay|alright)|be cured|is it terminal/)) {
-    return { kind: 'hardstop', cluster: 'prognosis', nurse: true,
-      text: `Wondering whether it might come back is one of the most common things people carry, especially during surveillance — it makes complete sense that it's on your mind.\n\nHere I have to be straight with you: I can't predict what will happen for any one person, and honestly no tool should. What I can tell you is that your scan schedule is built to catch any change early, and for ${ctx.stageLabel} ${ctx.cancerName} it follows NCCN surveillance guidelines.\n\nFor what your own history means for your outlook, ${prov} has your full picture — or you can talk it through with an oncology nurse right now.` }
+    return { kind:'hardstop', cluster:'prognosis', nurse:true, text:`Wondering whether it might come back is one of the most common things people carry, especially during surveillance — it makes complete sense that it's on your mind.\n\nHere I have to be straight with you: I can't predict what will happen for any one person, and honestly no tool should. What I can tell you is that your scan schedule is built to catch any change early, and for ${ctx.stageLabel} ${ctx.cancerName} it follows NCCN surveillance guidelines.\n\nFor what your own history means for your outlook, ${prov} has your full picture — or you can talk it through with an oncology nurse right now.` }
   }
-  // HARD-STOP — stop / change / start treatment
-  if (has(/should i (stop|start|switch|change|lower|quit|pause|come off)|stop (taking|my)|come off|change my (dose|treatment|medication|meds)|reduce my dose|skip (a|my) (dose|treatment)/)) {
-    return { kind: 'hardstop', cluster: 'treatment', nurse: true,
-      text: `That's a real decision, and it's yours to make with the people who know your case — I don't want to nudge you one way or the other on something this important.\n\nIf side effects are what's behind the question, that's worth raising sooner rather than later — dose changes or a short break are things your team weighs all the time, and they'd rather hear from you early.\n\nI can explain generally what a treatment is for and the side effects on its label, but whether to change your treatment is a conversation for ${prov} or an oncology nurse.` }
+  if (has(/should i (stop|start|switch|change|lower|quit|pause|come off|do|take|choose|go on|be on)|stop (taking|my)|come off|change my (dose|treatment|medication|meds)|reduce my dose|skip (a|my) (dose|treatment)|which (treatment|option|drug|med)\b.*(should i|for me|is best|better)|do i qualify|keynote|am i eligible|eligible for|adjuvant.*or.*surveillance/)) {
+    return { kind:'hardstop', cluster:'treatment', nurse:true, text:`That's a real decision, and it's yours to make with the people who know your case — I don't want to nudge you one way or the other on something this important.\n\nIf side effects are what's behind the question, that's worth raising sooner rather than later — dose changes or a short break are things your team weighs all the time, and they'd rather hear from you early.\n\nI can explain generally what a treatment is for and the side effects on its label, but whether it's right for you is a conversation for ${prov} or an oncology nurse.` }
   }
-  // HARD-STOP — interpret their specific results
-  if (has(/what does my (scan|path|result|report|lab|blood)|my (scan|pathology|results?|labs?|egfr|bloodwork)\b.*(mean|show|say|look)|is my (egfr|scan|result|lab|number|reading|count)\b.*(normal|okay|ok|bad|good|fine|high|low)|interpret (my|these)/)) {
-    return { kind: 'hardstop', cluster: 'results', nurse: true,
-      text: `Wanting to actually understand what's in your report — instead of just being handed a result — is completely reasonable.\n\nI can explain what the terms generally mean, but I can't tell you what your specific numbers mean for you. Reading your results in the context of your whole case is your care team's job, and that's not a call worth getting wrong.\n\n${prov} can walk you through your results, or an oncology nurse can help right now.` }
+  if (has(/what does my (scan|path|result|report|lab|blood)|my (scan|pathology|results?|labs?|egfr|bloodwork)\b.*(mean|show|say|look)|is my (egfr|scan|result|lab|number|reading|count)\b.*(normal|okay|ok|bad|good|fine|high|low)|egfr of \d|interpret (my|these|this)|what do my .* (mean|show)/)) {
+    return { kind:'hardstop', cluster:'results', nurse:true, text:`Wanting to actually understand what's in your report — instead of just being handed a result — is completely reasonable.\n\nI can explain what the terms generally mean, but I can't tell you what your specific numbers mean for you. Reading your results in the context of your whole case is your care team's job, and that's not a call worth getting wrong.\n\n${prov} can walk you through your results, or an oncology nurse can help right now.` }
   }
-  // HARD-STOP — second opinion (routes to nurse, NOT the primary provider)
   if (has(/second opinion|another (doctor|oncologist|opinion)|different (doctor|oncologist)|right doctor|see someone else|switch doctors/)) {
-    return { kind: 'hardstop', cluster: 'secondopinion', nurse: true,
-      text: `Wanting another perspective doesn't mean anything is wrong — it's a common, completely reasonable thing to consider, and good care teams expect it.\n\nWhether to seek one in your situation depends on details of your case I shouldn't weigh in on. But I can say plainly that a second opinion is a normal part of cancer care, not something you need to feel awkward about.\n\nIf you'd like to think it through, an oncology nurse can talk with you about what the process looks like.` }
+    return { kind:'hardstop', cluster:'secondopinion', nurse:true, text:`Wanting another perspective doesn't mean anything is wrong — it's a common, completely reasonable thing to consider, and good care teams expect it.\n\nWhether to seek one in your situation depends on details of your case I shouldn't weigh in on. But I can say plainly that a second opinion is a normal part of cancer care, not something you need to feel awkward about.\n\nIf you'd like to think it through, an oncology nurse can talk with you about what the process looks like.` }
   }
-  // NEEDS DATA — next appointment (fetch from timeline)
+
+  // ── CAPTURE (first-person statements) — offer to save before answering ──
+  if (!has(/\?/) && has(/\b(i just started|i started taking|i'?ve started|i began taking|i'?m now on|started me on|i'?m taking)\b/)) {
+    return { kind:'answer', text:`Good to know — keeping your medication list current helps me give more accurate answers.`, capture:{ log:'medication list' } }
+  }
+  if (has(/(appointment|appt|visit)\b/) && has(/\bi (have|'?ve got|booked|'?m seeing)\b|next (mon|tue|wed|thu|fri|sat|sun|week)|on (mon|tue|wed|thu|fri|sat|sun)/) && !has(/when|next (appointment|appt|visit|scan)\b/)) {
+    return { kind:'answer', text:`Noted — I can keep that in mind for future chats if you add it to your plan.`, capture:{ log:'care plan' } }
+  }
+  if (!has(/side ?effect|should i/) && has(/\bi(?:'ve| have| ve)?\b.*(headache|nausea|vomit|rash|dizz|fever|diarrh|constipat|\bpain\b|ache|bleeding|swelling|numb|tingl|short(ness)? of breath|cough)/)) {
+    return { kind:'answer', text:`That sounds uncomfortable — worth keeping an eye on, and telling your care team if it persists or worsens.`, capture:{ log:'symptom log' } }
+  }
+  if (has(/\bher2\b|\bbrca\b|my (biomarker|mutation|marker) (is|was)|i also have (diabet|hypertens|high blood|copd|asthma|kidney disease|heart)|i'?m (also )?diabetic/)) {
+    return { kind:'answer', text:`Thanks — details like that help complete your profile so answers are more specific to you.`, capture:{ log:'profile' } }
+  }
+
+  // ── NEEDS DATA (fetch from the patient's record) ──
   if (has(/next (appointment|appt|visit|scan|check-?up)|upcoming (appointment|appt|visit|scan)|when('?s| is) my (next )?(appointment|appt|visit|scan)/)) {
     const next = ctx.nextAppointment
-    if (next) return { kind: 'answer',
-      text: `Your next appointment on your timeline is ${next.name}, ${chatRelDate(next.date)}.`,
-      source: 'Based on your Outcomes4Me timeline',
-      deepLink: { label: 'View your treatment plan', target: 'careplan' } }
-    return { kind: 'answer',
-      text: `I don't see an upcoming appointment on your timeline right now. If you have one scheduled, you can add it so I can reference it in future chats.`,
-      deepLink: { label: 'Add an appointment', target: 'careplan' } }
+    if (next) return { kind:'answer', text:`Your next appointment on your timeline is ${next.name}, ${chatRelDate(next.date)}.`, source:'Based on your Outcomes4Me timeline' }
+    return { kind:'answer', text:`I don't see an upcoming appointment on your timeline right now. If you have one scheduled, add it to your plan and I can reference it in future chats.` }
   }
-  // INSUFFICIENT DATA — records-dependent question we can't answer from what we have
-  if (has(/how am i (doing|responding)|is (it|the treatment|my treatment) working|my (latest |recent )?(labs?|blood|test results?)|results over time|trend|how('?s| is) my (kidney|liver|blood|function)/)) {
-    if (!ctx.hasRecords) {
-      // Scenario A — nothing connected
-      return { kind: 'insufficient', scenario: 'A',
-        text: `To answer that well, I'd need access to your health records — things like your recent labs and test results. Right now you haven't connected a provider portal, so I don't have that detail.\n\nConnecting your records takes just a few minutes and would let me give you a much more specific answer.`,
-        connect: { label: 'Connect your health records', target: 'connect-records' } }
-    }
-    // Scenario B — connected, but this specific data isn't in what synced
-    return { kind: 'insufficient', scenario: 'B',
-      text: `I have your connected records, but I don't see the specific detail I'd need to answer that — like recent lab values or the relevant report. Sometimes records take a little time to fully sync, or the information may be held by a different provider.\n\nIt's worth checking back shortly, or connecting another provider portal if that data lives elsewhere.`,
-      connect: { label: 'Connect an additional provider portal', target: 'add-portal' } }
+  if (has(/what stage am i|what'?s my stage|which stage am i|my stage\b|what is my stage/)) {
+    return { kind:'answer', text:`Your profile shows ${ctx.stageLabel} ${ctx.histology}${ctx.cancerName}. I'm reading that straight from your record — what it means for your care is a conversation for your team.`, source:'Based on your Outcomes4Me profile' }
   }
-  // ANSWER — fatigue / supportive care
-  if (has(/fatigue|tired|exhaust|no energy|worn out|drained/)) {
-    return { kind: 'answer',
-      text: `According to NCCN supportive-care guidance, fatigue during treatment is common and often builds up over time. Strategies that help many patients: keep a consistent sleep schedule, get light activity like a short walk when your energy allows, and track when your fatigue peaks so you can plan lighter days around it.`,
-      source: 'NCCN Guidelines — Cancer-Related Fatigue',
-      deepLink: { label: 'Track this symptom', target: 'track' },
-      careTeam: true }
+  if (has(/what (meds|medications?) am i (on|taking)|my medication list|am i (on|taking) any (meds|medications?)|when do i take my (meds|medication)/)) {
+    const names = (ctx.medications || []).map(m => m && m.name).filter(Boolean)
+    if (names.length) return { kind:'answer', text:`Your medication list has: ${names.join(', ')}.`, source:'Based on your Outcomes4Me medication list' }
+    return { kind:'answer', text:`I don't see any medications in your list yet. If you add them, I can reference them here.` }
   }
-  // ANSWER — side effects / medication (FDA label)
-  if (has(/side ?effect|pembro|immunotherapy|nausea|rash|thyroid|what does .* (do|treat)/)) {
-    return { kind: 'answer',
-      text: `I can share what's on the FDA label. Immunotherapies like pembrolizumab can cause fatigue, rash, and — less commonly — immune-related effects such as thyroid changes. Most are manageable, and your team monitors for them with routine labs.`,
-      source: 'FDA label — Important Safety Information',
-      deepLink: { label: 'Log a side effect', target: 'track' },
-      careTeam: true }
-  }
-  // ANSWER — surveillance / what to watch for
-  if (has(/between scans|watch for|surveillance|what should i (watch|look) for|warning sign|when to (call|worry)|red flag/)) {
-    return { kind: 'answer',
-      text: `For ${ctx.stageLabel} ${ctx.cancerName} on surveillance, NCCN guidelines focus on periodic imaging and check-ins. Between scans, symptoms worth reporting to your team include unexplained pain, new or worsening fatigue, or blood in your urine — sooner rather than waiting for your next scan.`,
-      source: 'NCCN Guidelines — Kidney Cancer, surveillance',
-      deepLink: { label: 'Review your treatment plan', target: 'careplan' },
-      careTeam: true }
-  }
-  // ANSWER — diagnosis education (general, not their specific read)
-  if (has(/clear cell|what is rcc|what('?s| is) (kidney cancer|rcc)|what does (clear cell|my diagnosis|rcc) mean|what('?s| is) (my )?(grade|stage)|stage mean/)) {
-    return { kind: 'answer',
-      text: `In general terms: "clear cell" describes the most common type of kidney cancer cell under the microscope, and stage describes how far the cancer has spread. ${ctx.stageLabel} means it was found early and localized. I'm describing these generally — for what they mean in your specific case, your care team is the best source.`,
-      source: 'NCCN Guidelines — Kidney Cancer',
-      careTeam: true }
-  }
-  // ANSWER — peer experience (Social framing)
-  if (has(/other (patients|people)|anyone else|what did (others|people)|hair loss|peer|community|support group|others going through/)) {
-    return { kind: 'answer',
-      text: `That's the kind of thing other patients often have real, lived-experience answers for. Others going through similar treatment have shared how they handled it in the community.`,
-      deepLink: { label: 'See what others are discussing', target: 'community' } }
-  }
-  // ANSWER — clinical trials
   if (has(/clinical trial|\btrial\b|experimental|research study/)) {
-    return { kind: 'answer',
-      text: `There may be clinical trials relevant to your diagnosis. You can explore trials matched to ${ctx.cancerName} and your location in the trials finder.`,
-      deepLink: { label: 'Find clinical trials', target: 'trials' },
-      careTeam: true }
+    return { kind:'answer', text:`There may be clinical trials relevant to ${ctx.stageLabel} ${ctx.cancerName}. Trials are matched on your diagnosis details and location — a good one to explore with your care team, who can also flag trials they think fit.` }
   }
-  // FALLBACK — grounded, safe
-  return { kind: 'answer',
-    text: `I can help with questions about your diagnosis, treatment and side effects, your care plan, and what to expect — grounded in NCCN guidelines and your own Outcomes4Me data. Try asking about managing a side effect, what to watch for between scans, or your next appointment.`,
-    careTeam: true }
+
+  // ── INSUFFICIENT DATA (records-dependent, can't answer) ──
+  if (has(/how am i (doing|responding)|is (it|the treatment|my treatment) working|my (latest |recent )?(labs?|blood|test results?)|results over time|trend|how('?s| is) my (kidney|liver|blood|function)/)) {
+    if (!ctx.hasRecords) return { kind:'insufficient', scenario:'A', text:`To answer that well, I'd need access to your health records — things like your recent labs and test results. Right now you haven't connected a provider portal, so I don't have that detail.\n\nConnecting your records takes just a few minutes and would let me give you a much more specific answer.`, connect:{ label:'Connect your health records', target:'connect-records' } }
+    return { kind:'insufficient', scenario:'B', text:`I have your connected records, but I don't see the specific detail I'd need to answer that — like recent lab values or the relevant report. Sometimes records take a little time to fully sync, or the information may be held by a different provider.\n\nIt's worth checking back shortly, or connecting another provider portal if that data lives elsewhere.`, connect:{ label:'Connect an additional provider portal', target:'add-portal' } }
+  }
+
+  // ── ANSWERS (guideline / label / education) ──
+  if (has(/fatigue|tired|exhaust|no energy|worn out|drained/)) {
+    return { kind:'answer', text:`According to NCCN supportive-care guidance, fatigue during treatment is common and often builds over time. Strategies that help many patients: keep a consistent sleep schedule, get light activity like a short walk when your energy allows, and track when your fatigue peaks so you can plan lighter days around it.`, source:'NCCN Guidelines — Cancer-Related Fatigue' }
+  }
+  if (has(/side ?effect|pembro|immunotherapy|nausea|rash|thyroid|what does .* (do|treat)/)) {
+    return { kind:'answer', text:`I can share what's on the FDA label. Immunotherapies like pembrolizumab can cause fatigue, rash, and — less commonly — immune-related effects such as thyroid changes. Most are manageable, and your team monitors for them with routine labs.`, source:'FDA label — Important Safety Information' }
+  }
+  if (has(/between scans|watch for|surveillance|what should i (watch|look) for|warning sign|when to (call|worry)|red flag/)) {
+    return { kind:'answer', text:`For ${ctx.stageLabel} ${ctx.cancerName} on surveillance, NCCN guidelines focus on periodic imaging and check-ins. Between scans, symptoms worth reporting include unexplained pain, new or worsening fatigue, or blood in your urine — sooner rather than waiting for your next scan.`, source:'NCCN Guidelines — Kidney Cancer, surveillance' }
+  }
+  if (has(/nephrectomy|laparoscopic|robotic|open surgery|surgery (recovery|approach)|recovery (after|from) surgery|partial (vs|versus) radical/)) {
+    return { kind:'answer', text:`In general terms: a partial nephrectomy removes just the tumor and spares the rest of the kidney; a radical removes the whole kidney. Robotic and laparoscopic approaches are both minimally invasive — usually smaller incisions and a shorter recovery than open surgery. Which is appropriate depends on the tumor and your anatomy, so that call is your surgeon's.`, source:'NCCN Guidelines — Kidney Cancer' }
+  }
+  if (has(/what does nccn|nccn (say|recommend|guideline)|what are (my|the) (options|guidelines)|options for (my )?(treatment|stage|rcc|kidney)|surveillance (vs|versus) adjuvant/)) {
+    return { kind:'answer', text:`For ${ctx.stageLabel} clear cell kidney cancer, NCCN generally describes surgery followed by either active surveillance or, for higher-risk cases, adjuvant therapy. I'm describing the guideline in general — which path fits you is your oncologist's call with your full pathology.`, source:'NCCN Guidelines — Kidney Cancer' }
+  }
+  if (has(/clear cell|what is rcc|what('?s| is) (kidney cancer|rcc)|what does (clear cell|my diagnosis|rcc|pt1b|pt1|grade) mean|what('?s| is) (a |my )?(grade|stage)\b|stage mean|pt1b/)) {
+    return { kind:'answer', text:`In general terms: "clear cell" is the most common type of kidney cancer cell under the microscope, "stage" describes how far it has spread, and a code like "pT1b" describes the tumor's size and how localized it was. ${ctx.stageLabel} means it was found early and localized. I'm describing these generally — for what they mean in your specific case, your care team is the best source.`, source:'NCCN Guidelines — Kidney Cancer' }
+  }
+  if (has(/other (patients|people)|anyone else|what did (others|people)|hair loss|peer|community|support group|others going through/)) {
+    return { kind:'answer', text:`That's the kind of thing other patients often have real, lived-experience answers for — people who've been through similar treatment tend to share what actually helped. Worth hearing those alongside anything clinical.` }
+  }
+
+  // FALLBACK
+  return { kind:'answer', text:`I can help with questions about your diagnosis, treatment and side effects, your care plan, and what to expect — grounded in NCCN guidelines and your own Outcomes4Me data. Try asking about a side effect, what to watch for between scans, or your next appointment.` }
 }
 
 // Topic label for chat-history titles — mirrors routeChat's classification order.
-// Keep in sync with routeChat when clusters change.
 const chatTopic = (raw) => {
   const t = (raw || '').toLowerCase()
   const has = (re) => re.test(t)
-  if (has(/recur|come ?back|coming back|spread|surviv|prognos|my odds|life expectanc|how long (do|have) i|going to die|will i die|am i going to be (ok|okay|alright)|be cured|is it terminal/)) return 'Recurrence & prognosis'
-  if (has(/should i (stop|start|switch|change|lower|quit|pause|come off)|stop (taking|my)|come off|change my (dose|treatment|medication|meds)|reduce my dose|skip (a|my) (dose|treatment)/)) return 'Changing treatment'
-  if (has(/what does my (scan|path|result|report|lab|blood)|my (scan|pathology|results?|labs?|egfr|bloodwork)\b.*(mean|show|say|look)|is my (egfr|scan|result|lab|number|reading|count)\b.*(normal|okay|ok|bad|good|fine|high|low)|interpret (my|these)/)) return 'Understanding results'
-  if (has(/second opinion|another (doctor|oncologist|opinion)|different (doctor|oncologist)|right doctor|see someone else|switch doctors/)) return 'Second opinion'
+  if (has(/recur|come ?back|coming back|spread|surviv|prognos|my odds|life expectanc|going to die|will i die|be cured|is it terminal/)) return 'Recurrence & prognosis'
+  if (has(/should i (stop|start|switch|change|lower|quit|do|take|choose)|do i qualify|keynote|am i eligible|eligible for|adjuvant.*or.*surveillance/)) return 'Treatment decision'
+  if (has(/what does my (scan|path|result|report|lab|blood)|my (scan|pathology|results?|labs?|egfr)\b.*(mean|show|say)|is my (egfr|scan|result|lab)\b.*(normal|okay|ok|bad|good|fine)|egfr of \d|interpret (my|these|this)/)) return 'Understanding results'
+  if (has(/second opinion|another (doctor|oncologist|opinion)|different (doctor|oncologist)|right doctor/)) return 'Second opinion'
+  if (!has(/\?/) && has(/\b(i just started|i started taking|i'?ve started|i began taking|i'?m now on|started me on|i'?m taking)\b/)) return 'New medication'
+  if (has(/(appointment|appt|visit)\b/) && has(/\bi (have|'?ve got|booked|'?m seeing)\b|next (mon|tue|wed|thu|fri|sat|sun|week)/) && !has(/when|next (appointment|appt|visit|scan)\b/)) return 'New appointment'
+  if (!has(/side ?effect|should i/) && has(/\bi(?:'ve| have| ve)?\b.*(headache|nausea|vomit|rash|dizz|fever|diarrh|\bpain\b|ache|bleeding|swelling|numb|tingl|cough)/)) return 'New symptom'
+  if (has(/\bher2\b|\bbrca\b|my (biomarker|mutation|marker) (is|was)|i also have (diabet|hypertens|copd|asthma)/)) return 'Health detail'
   if (has(/next (appointment|appt|visit|scan|check-?up)|upcoming (appointment|appt|visit|scan)|when('?s| is) my (next )?(appointment|appt|visit|scan)/)) return 'Next appointment'
-  if (has(/how am i (doing|responding)|is (it|the treatment|my treatment) working|my (latest |recent )?(labs?|blood|test results?)|results over time|trend|how('?s| is) my (kidney|liver|blood|function)/)) return 'Treatment progress'
-  if (has(/fatigue|tired|exhaust|no energy|worn out|drained/)) return 'Managing fatigue'
-  if (has(/side ?effect|pembro|immunotherapy|nausea|rash|thyroid|what does .* (do|treat)/)) return 'Medication side effects'
-  if (has(/between scans|watch for|surveillance|what should i (watch|look) for|warning sign|when to (call|worry)|red flag/)) return 'Between-scan symptoms'
-  if (has(/clear cell|what is rcc|what('?s| is) (kidney cancer|rcc)|what does (clear cell|my diagnosis|rcc) mean|what('?s| is) (my )?(grade|stage)|stage mean/)) return 'Understanding your diagnosis'
-  if (has(/other (patients|people)|anyone else|what did (others|people)|hair loss|peer|community|support group|others going through/)) return "Others' experiences"
+  if (has(/what stage am i|what'?s my stage|which stage am i|my stage\b|what is my stage/)) return 'Your diagnosis'
+  if (has(/what (meds|medications?) am i (on|taking)|my medication list|am i (on|taking) any (meds|medications?)/)) return 'Your medications'
   if (has(/clinical trial|\btrial\b|experimental|research study/)) return 'Clinical trials'
+  if (has(/how am i (doing|responding)|is (it|the treatment|my treatment) working|my (latest |recent )?(labs?|blood|test results?)|results over time|trend/)) return 'Treatment progress'
+  if (has(/fatigue|tired|exhaust|no energy|worn out|drained/)) return 'Managing fatigue'
+  if (has(/side ?effect|pembro|immunotherapy|nausea|rash|thyroid/)) return 'Medication side effects'
+  if (has(/between scans|watch for|surveillance|warning sign|red flag/)) return 'Between-scan symptoms'
+  if (has(/nephrectomy|laparoscopic|robotic|surgery (recovery|approach)|partial (vs|versus) radical/)) return 'Surgery options'
+  if (has(/what does nccn|nccn (say|recommend|guideline)|what are (my|the) (options|guidelines)|options for (my )?(treatment|stage|rcc|kidney)/)) return 'Treatment options'
+  if (has(/clear cell|what is rcc|what('?s| is) (kidney cancer|rcc)|what does (clear cell|my diagnosis|rcc|pt1b|grade) mean|what('?s| is) (a |my )?(grade|stage)\b|stage mean|pt1b/)) return 'Understanding your diagnosis'
+  if (has(/other (patients|people)|anyone else|what did (others|people)|hair loss|peer|community|support group/)) return "Others' experiences"
   return null
 }
 
@@ -5011,6 +5028,27 @@ const ChatCareTeam = ({ providerName, onDeepLink }) => (
   </button>
 )
 
+// Inline capture prompt — lightweight in-chat save (P0 stand-in; P1 is slide-up-and-return)
+const ChatCapture = ({ capture }) => {
+  const [state, setState] = useState('open')
+  if (state === 'dismissed') return null
+  if (state === 'added') return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: C.textSecondary }}>
+      <span className="material-symbols-rounded" style={{ fontSize: 15, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>check_circle</span>
+      Added to your {capture.log}.
+    </div>
+  )
+  return (
+    <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: '12px 14px', backgroundColor: C.bgApp }}>
+      <div style={{ fontSize: 13.5, color: C.textPrimary, marginBottom: 10 }}>Want me to add this to your {capture.log}?</div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button onClick={() => setState('added')} style={{ padding: '8px 14px', borderRadius: 9, border: 'none', backgroundColor: C.primaryLight, color: C.primary, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Yes, add it</button>
+        <button onClick={() => setState('dismissed')} style={{ padding: '8px 14px', borderRadius: 9, border: 'none', background: 'none', color: C.textSecondary, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>No thanks</button>
+      </div>
+    </div>
+  )
+}
+
 const ChatUserBubble = ({ text }) => (
   <div style={{ alignSelf: 'flex-end', maxWidth: '82%', backgroundColor: C.primaryLight, color: C.textPrimary, padding: '10px 14px', borderRadius: '16px 16px 4px 16px', fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{text}</div>
 )
@@ -5032,6 +5070,7 @@ const ChatAiBubble = ({ resp, providerName, onDeepLink }) => {
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {resp.connect && <ChatDeepLink {...resp.connect} onDeepLink={onDeepLink}/>}
+        {resp.capture && <ChatCapture capture={resp.capture}/>}
         {isHardstop && resp.nurse && <ChatNurseCTA onDeepLink={onDeepLink}/>}
       </div>
     </div>
@@ -5149,11 +5188,11 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
 
 // Body of the new-chat FlowShell modal — sets the nav title, hosts a fresh thread.
 const ChatModalBody = ({ setNav, seed, threadId, ctx, providerName, greeting, suggestions, onDeepLink, onPersist }) => {
-  useEffect(() => { setNav({ title: 'New chat', subtitle: null, onBack: null }) }, [])
+  useEffect(() => { setNav({ title: '', subtitle: null, onBack: null }) }, [])
   return <ChatThread key={threadId} initialMessages={[]} seed={seed} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={onDeepLink} onMessagesChange={m => onPersist(threadId, m)}/>
 }
 
-const ChatScreen = ({ patientState, timeline, userName, onDeepLink, onShowBackChange, backSignal }) => {
+const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink, onShowBackChange, backSignal, onDrilledChange, deleteSignal, onHideTitleChange }) => {
   const [sessions, setSessions] = useState([])
   const [drilledId, setDrilledId] = useState(null)      // existing chat opened in-tab (push + header back)
   const [modalSeed, setModalSeed] = useState(undefined) // undefined = closed; null = open no seed; string = open, auto-send
@@ -5165,6 +5204,7 @@ const ChatScreen = ({ patientState, timeline, userName, onDeepLink, onShowBackCh
   const firstName = (userName || '').trim().split(/\s+/)[0] || ''
   const greeting = firstName ? `Hi ${firstName}, ready when you are.` : 'Hi there, ready when you are.'
   const cancerName = CHAT_CANCER[patientState?.diagnosisCode] || 'your cancer'
+  const histology = patientState?.biomarkers?.histology === 'clear-cell' ? 'clear cell ' : ''
   const stageLabel = patientState?.stage ? `Stage ${patientState.stage}` : ''
   const providerName = (CARE_TEAM && CARE_TEAM[0] && CARE_TEAM[0].name) || 'Dr. Chen'
   const nextAppointment = useMemo(() => {
@@ -5174,7 +5214,7 @@ const ChatScreen = ({ patientState, timeline, userName, onDeepLink, onShowBackCh
     appts.sort((a, b) => a.date.localeCompare(b.date))
     return appts[0] || null
   }, [timeline])
-  const ctx = { cancerName, stageLabel, providerName, hasRecords: recordsConnected, nextAppointment }
+  const ctx = { cancerName, stageLabel, histology, providerName, hasRecords: recordsConnected, nextAppointment, medications: medications || [] }
 
   // Deep-link interceptor: the insufficient-data connect action flips the simulated
   // records-connected flag (same flag the parked gating work will read); everything
@@ -5202,8 +5242,13 @@ const ChatScreen = ({ patientState, timeline, userName, onDeepLink, onShowBackCh
   const closeModal = () => { setModalSeed(undefined); modalIdRef.current = null }
   const launchFromInput = () => { const t = launcherInput.trim(); if (!t) return; setLauncherInput(''); openModal(t) }
 
-  useEffect(() => { if (onShowBackChange) onShowBackChange(drilledId != null) }, [drilledId])
+  useEffect(() => {
+    if (onShowBackChange) onShowBackChange(drilledId != null)
+    if (onHideTitleChange) onHideTitleChange(drilledId != null || sessions.length === 0)
+    if (onDrilledChange) { const d = drilledId != null ? sessions.find(s => s.id === drilledId) : null; onDrilledChange(d ? d.title : null) }
+  }, [drilledId, sessions])
   useEffect(() => { if (backSignal) setDrilledId(null) }, [backSignal])
+  useEffect(() => { if (deleteSignal && drilledId != null) { setSessions(prev => prev.filter(s => s.id !== drilledId)); setDrilledId(null) } }, [deleteSignal])
 
   const drilled = drilledId != null ? sessions.find(s => s.id === drilledId) : null
   const modalOpen = modalSeed !== undefined
@@ -5231,7 +5276,6 @@ const ChatScreen = ({ patientState, timeline, userName, onDeepLink, onShowBackCh
       ) : (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px 96px' }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: C.textSecondary, margin: '2px 2px 10px' }}>Your chats</div>
             <div style={{ display: 'flex', flexDirection: 'column' }}>
               {sessions.map(s => (
                 <button key={s.id} onClick={() => setDrilledId(s.id)} style={{ width: '100%', textAlign: 'left', padding: '14px 2px', background: 'none', border: 'none', borderBottom: `1px solid ${C.border}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -5364,7 +5408,7 @@ const YouScreen = ({ currentUser, onLogout }) => (
 // ─── APP HEADER ───────────────────────────────────────────────────
 // ─── APP HEADER ───────────────────────────────────────────────────
 // ─── APP HEADER ───────────────────────────────────────────────────
-const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap, onBack }) => {
+const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap, onBack, hideTitle, onOverflow }) => {
   const r = 19, circ = 2 * Math.PI * r, dash = 0.62 * circ
   return (
     <div style={{ display: 'flex', alignItems: 'center', height: 60, padding: '0 20px', backgroundColor: C.bgCard, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
@@ -5386,10 +5430,17 @@ const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap, onBa
         </div>
       </div>
       )}
-      {/* Title — absolutely centered so avatar doesn't offset it */}
-      <div style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-        <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2 }}>{{ careplan: 'Home', track: 'Track', chat: 'Chat', community: 'Community', you: 'You' }[activeTab] || 'Home'}</div>
-      </div>
+      <div style={{ flex: 1 }}/>
+      {onOverflow && (
+        <button onClick={onOverflow} aria-label="More options" style={{ width: 40, height: 40, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', background: 'none', border: 'none', cursor: 'pointer' }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 22, color: C.textIcon }}>more_vert</span>
+        </button>
+      )}
+      {!hideTitle && (
+        <div style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+          <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2 }}>{{ careplan: 'Home', track: 'Track', chat: 'Chats', community: 'Community', you: 'You' }[activeTab] || 'Home'}</div>
+        </div>
+      )}
     </div>
   )
 }
@@ -5608,6 +5659,11 @@ export default function App() {
   const [showYou, setShowYou] = useState(false)
   const [chatShowBack, setChatShowBack] = useState(false)
   const [chatBackSignal, setChatBackSignal] = useState(0)
+  const [chatDrilledTitle, setChatDrilledTitle] = useState(null)
+  const [chatHideTitle, setChatHideTitle] = useState(false)
+  const [chatOverflowOpen, setChatOverflowOpen] = useState(false)
+  const [chatConfirmDelete, setChatConfirmDelete] = useState(false)
+  const [chatDeleteSignal, setChatDeleteSignal] = useState(0)
   const [appReveal, setAppReveal] = useState(false)
   const [currentUser, setCurrentUser] = useState(loadSession)
   const [selectedCommunity, setSelectedCommunity] = useState(null)
@@ -6227,7 +6283,7 @@ export default function App() {
             pointerEvents: anyDrillInOpen ? 'none' : 'auto',
             transition: 'opacity 0.2s ease',
           }}>
-            <AppHeader currentDayLabel={activeTab === 'careplan' ? currentDayLabel : null} activeTab={activeTab} onProfileTap={() => setShowYou(true)} onBack={activeTab === 'chat' && chatShowBack ? () => setChatBackSignal(n => n + 1) : null}/>
+            <AppHeader currentDayLabel={activeTab === 'careplan' ? currentDayLabel : null} activeTab={activeTab} onProfileTap={() => setShowYou(true)} onBack={activeTab === 'chat' && chatShowBack ? () => setChatBackSignal(n => n + 1) : null} hideTitle={activeTab === 'chat' && chatHideTitle} onOverflow={activeTab === 'chat' && chatShowBack ? () => setChatOverflowOpen(true) : null}/>
           </div>
         )}
         {/* Spacer for fixed header — only when onboarded */}
@@ -6240,7 +6296,7 @@ export default function App() {
           <CommunityScreen onSelectCommunity={setSelectedCommunity} autoJoinedId={autoJoinedCommunity?.id}/>
         </div>
         <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', height: (onboarded && !anyDrillInOpen) ? 'calc(100vh - 132px)' : '100vh', flexDirection: 'column', overflow: 'hidden' }}>
-          <ChatScreen patientState={patientState} timeline={timeline} userName={currentUser?.name} onDeepLink={handleChatDeepLink} onShowBackChange={setChatShowBack} backSignal={chatBackSignal}/>
+          <ChatScreen patientState={patientState} timeline={timeline} medications={medications} userName={currentUser?.name} onDeepLink={handleChatDeepLink} onShowBackChange={setChatShowBack} backSignal={chatBackSignal} onDrilledChange={setChatDrilledTitle} deleteSignal={chatDeleteSignal} onHideTitleChange={setChatHideTitle}/>
         </div>
 
         <div
@@ -6405,6 +6461,25 @@ export default function App() {
         </div>
       )}
       {toast && <Toast message={toast.message} subtext={toast.subtext} action={toast.action} onDone={() => setToast(null)}/>}
+
+      {chatOverflowOpen && (
+        <>
+          <div onClick={() => setChatOverflowOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 95 }}/>
+          <div style={{ position: 'fixed', top: 54, right: 12, zIndex: 96, minWidth: 168, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, boxShadow: '0 6px 20px rgba(0,0,0,0.16)', overflow: 'hidden', animation: 'flyoutIn 0.16s ease', transformOrigin: 'top right' }}>
+            <button onClick={() => { setChatOverflowOpen(false); setChatConfirmDelete(true) }} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '13px 16px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 19, color: '#ef4444' }}>delete</span>
+              <span style={{ fontSize: 14.5, fontWeight: 500, color: '#ef4444' }}>Delete</span>
+            </button>
+          </div>
+        </>
+      )}
+      {chatConfirmDelete && (
+        <ChatDeleteDialog
+          title={chatDrilledTitle}
+          onCancel={() => setChatConfirmDelete(false)}
+          onDelete={() => { setChatConfirmDelete(false); setChatDeleteSignal(n => n + 1) }}
+        />
+      )}
       {summarizeBlock && <SummarizeSheet block={summarizeBlock.block} patientState={summarizeBlock.patientState} planItems={summarizeBlock.planItems} onClose={() => setSummarizeBlock(null)}/>}
       {selectedCommunity && <CommunityDetailView community={selectedCommunity} onClose={() => setSelectedCommunity(null)}/>}
     </div>
