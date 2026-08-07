@@ -1281,7 +1281,7 @@ const AddMedicationFlow = ({ onClose, onComplete, preload, fromDetail, planItems
         const finish = () => { onComplete({ type: 'medication', name: sel.name, dose, startDate: start, endDate: end, notes, followUpAnswers, isRegimen, date: start, id: `med-${Date.now()}` }); dismiss() }
         const navConfigs = [
           { title: 'Add Medication', subtitle: null, onBack: fromDetail ? dismiss : null },
-          { title: 'Add Medication', subtitle: sel?.name, onBack: () => setStep(0) },
+          { title: 'Add Medication', subtitle: sel?.name, onBack: preload ? null : () => setStep(0) },
           { title: 'Add Medication', subtitle: sel?.name, onBack: () => setStep(1) },
           ...(hasFollowUp ? [{ title: 'Add Medication', subtitle: sel?.name, onBack: () => setStep(2) }] : []),
           ...(!skipNotes ? [{ title: 'Add Medication', subtitle: sel?.name, onBack: () => setStep(notesStep - 1) }] : []),
@@ -2009,7 +2009,7 @@ const AppointmentCard = ({ event, highlightId, onRemove, onEdit }) => {
               </button>
               <div style={{ height: 1, backgroundColor: C.border, margin: '0 12px' }}/>
               <div style={{ display: 'flex', alignItems: 'center', padding: '11px 18px', gap: 8 }}>
-                <span style={{ flex: 1, fontSize: 14, fontWeight: 500, color: 'rgba(239,68,68,0.4)', whiteSpace: 'nowrap' }}>Delete event</span>
+                <span style={{ flex: 1, fontSize: 14, fontWeight: 500, color: 'rgba(239,68,68,0.4)', whiteSpace: 'nowrap' }}>Delete</span>
                 <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; setShowInfoSheet(true) }}
                   style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center', flexShrink: 0 }}>
                   <Ico.question/>
@@ -2019,7 +2019,7 @@ const AppointmentCard = ({ event, highlightId, onRemove, onEdit }) => {
           ) : (
             <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; onRemove() }}
               style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: '#ef4444', textAlign: 'left', whiteSpace: 'nowrap' }}>
-              Delete event
+              Delete
             </button>
           )}
         </div>,
@@ -2100,7 +2100,7 @@ const EventCard = ({ event, highlightId, onRemove, onEdit, visibleRecs = [] }) =
               </button>
               <div style={{ height: 1, backgroundColor: C.border, margin: '0 12px' }}/>
               <div style={{ display: 'flex', alignItems: 'center', padding: '11px 18px', gap: 8 }}>
-                <span style={{ flex: 1, fontSize: 14, fontWeight: 500, color: 'rgba(239,68,68,0.4)', whiteSpace: 'nowrap' }}>Delete event</span>
+                <span style={{ flex: 1, fontSize: 14, fontWeight: 500, color: 'rgba(239,68,68,0.4)', whiteSpace: 'nowrap' }}>Delete</span>
                 <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; setShowInfoSheet(true) }}
                   style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center', flexShrink: 0 }}>
                   <Ico.question/>
@@ -2111,7 +2111,7 @@ const EventCard = ({ event, highlightId, onRemove, onEdit, visibleRecs = [] }) =
             <>
               <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; onRemove() }}
                 style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: '#ef4444', textAlign: 'left', whiteSpace: 'nowrap' }}>
-                Delete event
+                Delete
               </button>
               {coveringRule && (
                 <div style={{ padding: '0 18px 10px', fontSize: 11, color: C.textTertiary, lineHeight: 1.4 }}>
@@ -4325,7 +4325,7 @@ const CommunityDetailView = ({ community, onClose }) => {
 const NAV_TABS = [
   { id: 'careplan',  label: 'Home',       icon: 'home' },
   { id: 'track',     label: 'Track',      icon: 'monitor_heart' },
-  { id: 'chat',      label: 'Chats',      icon: 'auto_awesome' },
+  { id: 'chat',      label: 'Chat',       icon: 'auto_awesome' },
   { id: 'community', label: 'Community',  icon: 'group' },
 ]
 
@@ -4863,6 +4863,15 @@ const CommunityScreen = ({ onSelectCommunity, autoJoinedId }) => (
 
 const CHAT_CANCER = { RCC: 'kidney cancer', BREAST: 'breast cancer', CRC: 'colorectal cancer', PROSTATE: 'prostate cancer', LUNG: 'lung cancer' }
 
+// Type-accurate acknowledgment posted back into chat after a capture saves.
+const buildCaptureAck = (type, event) => {
+  const name = (event && event.name) || 'that'
+  if (type === 'medication') return `${name} is saved — it'll show in your medication tracker and on your timeline, and I'll take it into account here in chat.`
+  if (type === 'appointment') return `Added — ${name} will show on your timeline.`
+  if (type === 'symptom') return `Saved — it'll show in your symptom tracker.`
+  return `Saved to your record.`
+}
+
 const shortProvider = (name) => {
   if (!name) return 'your care team'
   const parts = name.replace(/^Dr\.?\s*/i, '').trim().split(/\s+/)
@@ -4901,7 +4910,18 @@ const routeChat = (raw, ctx) => {
 
   // ── CAPTURE (first-person statements) — offer to save before answering ──
   if (!has(/\?/) && has(/\b(i just started|i started taking|i'?ve started|i began taking|i'?m now on|started me on|i'?m taking)\b/)) {
-    return { kind:'answer', text:`Good to know — keeping your medication list current helps me give more accurate answers.`, capture:{ log:'medication list' } }
+    const m = t.match(/(?:i just started|i started taking|i'?ve started|i began taking|started me on|i'?m now on|i'?m taking)\s+([a-z0-9][a-z0-9 \-]*)/)
+    // Capture just the first med: stop at punctuation or a conjunction ("Xeloda and Tylenol" → "Xeloda").
+    // Full multi-med capture is deferred; this keeps a two-drug mention from saving as one malformed record.
+    const raw = m ? m[1].replace(/[.?!,;].*$/, '').replace(/\s+(and|&|,|plus|along with|as well as)\b.*$/i, '').trim() : ''
+    const name = raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : ''
+    const low = raw.toLowerCase()
+    // Offer-gating: if the assistant can already see this med on record, silently continue —
+    // no capture prompt, no bookkeeping call-out (per PRD §14: suppress the prompt, keep it natural).
+    if (low && (ctx.medNames || []).some(n => n === low || n.includes(low) || low.includes(n))) {
+      return { kind:'answer', text:`Sounds good 👍` }
+    }
+    return { kind:'answer', text:``, capture:{ type:'medication', log:'medication list', med: name || 'this medication', prefill: name ? { name } : null } }
   }
   if (has(/(appointment|appt|visit)\b/) && has(/\bi (have|'?ve got|booked|'?m seeing)\b|next (mon|tue|wed|thu|fri|sat|sun|week)|on (mon|tue|wed|thu|fri|sat|sun)/) && !has(/when|next (appointment|appt|visit|scan)\b/)) {
     return { kind:'answer', text:`Noted — I can keep that in mind for future chats if you add it to your plan.`, capture:{ log:'care plan' } }
@@ -5029,22 +5049,30 @@ const ChatCareTeam = ({ providerName, onDeepLink }) => (
 )
 
 // Inline capture prompt — lightweight in-chat save (P0 stand-in; P1 is slide-up-and-return)
-const ChatCapture = ({ capture }) => {
-  const [state, setState] = useState('open')
-  if (state === 'dismissed') return null
-  if (state === 'added') return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: C.textSecondary }}>
-      <span className="material-symbols-rounded" style={{ fontSize: 15, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>check_circle</span>
-      Added to your {capture.log}.
-    </div>
-  )
+// In-chat offer block: question + single positive button. Nothing changes until the
+// add is confirmed; then the user's answer (tapped option or their typed text) is
+// recorded inside the block, below the question. The AI's follow-up is a separate reply.
+const ChatCapture = ({ capture, onCapture, msgIndex }) => {
+  const [localAnswer, setLocalAnswer] = useState(null)  // unwired types resolve cosmetically in place
+  const wired = onCapture && capture.type === 'medication'
+  const answer = capture.answer || localAnswer
+  const resolved = !!capture.resolved || localAnswer != null
+  const question = capture.type === 'medication'
+    ? `Keeping your medication list current helps me give better answers. Want me to add ${capture.med || 'this medication'} to your medications?`
+    : `Want me to add this to your ${capture.log}?`
   return (
-    <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: '12px 14px', backgroundColor: C.bgApp }}>
-      <div style={{ fontSize: 13.5, color: C.textPrimary, marginBottom: 10 }}>Want me to add this to your {capture.log}?</div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={() => setState('added')} style={{ padding: '8px 14px', borderRadius: 9, border: 'none', backgroundColor: C.primaryLight, color: C.primary, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Yes, add it</button>
-        <button onClick={() => setState('dismissed')} style={{ padding: '8px 14px', borderRadius: 9, border: 'none', background: 'none', color: C.textSecondary, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>No thanks</button>
-      </div>
+    <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: '12px 14px' }}>
+      <div style={{ fontSize: 14.5, color: C.textPrimary, marginBottom: capture.retired ? 0 : 10, lineHeight: 1.45 }}>{question}</div>
+      {capture.retired ? null : resolved ? (
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <div style={{ backgroundColor: C.primaryLight, color: C.textPrimary, padding: '7px 12px', borderRadius: '14px 14px 4px 14px', fontSize: 13 }}>{answer}</div>
+        </div>
+      ) : (
+        <button onClick={() => { const a = `Add ${capture.med || 'this medication'}`; if (wired) onCapture({ ...capture, msgIndex, answer: a }); else setLocalAnswer(a) }}
+          style={{ padding: '8px 14px', borderRadius: 9, border: 'none', backgroundColor: C.bgApp, color: C.textPrimary, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+          Add {capture.med || 'this medication'}
+        </button>
+      )}
     </div>
   )
 }
@@ -5060,19 +5088,21 @@ const ChatTyping = () => (
   </div>
 )
 
-const ChatAiBubble = ({ resp, providerName, onDeepLink }) => {
+const ChatAiBubble = ({ resp, providerName, onDeepLink, onCapture, msgIndex }) => {
   const isHardstop = resp.kind === 'hardstop'
   return (
     <div style={{ alignSelf: 'stretch', display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ fontSize: 14.5, color: C.textPrimary, lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
         {resp.text}
-        {resp.source && <ChatSource label={resp.source}/>}
+        {resp.source && !resp._streaming && <ChatSource label={resp.source}/>}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {resp.connect && <ChatDeepLink {...resp.connect} onDeepLink={onDeepLink}/>}
-        {resp.capture && <ChatCapture capture={resp.capture}/>}
-        {isHardstop && resp.nurse && <ChatNurseCTA onDeepLink={onDeepLink}/>}
-      </div>
+      {!resp._streaming && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {resp.connect && <ChatDeepLink {...resp.connect} onDeepLink={onDeepLink}/>}
+          {resp.capture && <ChatCapture capture={resp.capture} onCapture={onCapture} msgIndex={msgIndex}/>}
+          {isHardstop && resp.nurse && <ChatNurseCTA onDeepLink={onDeepLink}/>}
+        </div>
+      )}
     </div>
   )
 }
@@ -5087,9 +5117,21 @@ const ChatLegal = ({ compact }) => (
 // Composer — send button inside the field, taller than a prompt chip
 const ChatComposer = ({ value, onChange, onSend, generating }) => {
   const canSend = value.trim() && !generating
+  const taRef = useRef(null)
+  const MAX_H = 150
+  // Grow the field to fit its content up to MAX_H, then scroll inside. Runs on every value
+  // change so it grows as you type and shrinks back when text is cleared/sent.
+  useEffect(() => {
+    const el = taRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    const h = Math.min(el.scrollHeight, MAX_H)
+    el.style.height = h + 'px'
+    el.style.overflowY = el.scrollHeight > MAX_H ? 'auto' : 'hidden'
+  }, [value])
   return (
-    <div style={{ position: 'relative', backgroundColor: C.bgCard, border: `1px solid ${C.borderMid}`, borderRadius: 16 }}>
-      <textarea value={value} onChange={e => onChange(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (canSend) onSend() } }} rows={1} placeholder="Ask a question…" style={{ width: '100%', boxSizing: 'border-box', minHeight: 58, maxHeight: 150, resize: 'none', border: 'none', outline: 'none', background: 'transparent', padding: '16px 54px 16px 16px', fontSize: 15, lineHeight: 1.45, fontFamily: 'inherit', color: C.textPrimary }}/>
+    <div style={{ position: 'relative', backgroundColor: C.bgCard, border: `1px solid ${C.borderMid}`, borderRadius: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.05)' }}>
+      <textarea ref={taRef} value={value} onChange={e => onChange(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (canSend) onSend() } }} rows={1} placeholder="Type a message…" style={{ width: '100%', boxSizing: 'border-box', minHeight: 58, maxHeight: MAX_H, resize: 'none', border: 'none', outline: 'none', background: 'transparent', padding: '16px 54px 16px 16px', fontSize: 15, lineHeight: 1.45, fontFamily: 'inherit', color: C.textPrimary, overflowY: 'hidden' }}/>
       <button onClick={() => canSend && onSend()} disabled={!canSend} aria-label="Send" style={{ position: 'absolute', right: 9, bottom: 9, width: 38, height: 38, borderRadius: 19, border: 'none', backgroundColor: canSend ? C.primary : C.border, cursor: canSend ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background-color 0.15s' }}>
         <span className="material-symbols-rounded" style={{ fontSize: 20, color: 'white', fontVariationSettings: "'FILL' 1, 'wght' 500" }}>arrow_upward</span>
       </button>
@@ -5114,7 +5156,7 @@ const ChatPrompts = ({ suggestions, onPick }) => (
 // A single conversation. Shows greeting + composer + prompts when empty; message
 // thread + composer once it has messages. Used inside the new-chat modal and the
 // in-tab drilled session. Persists via onMessagesChange.
-const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, suggestions, onDeepLink, onMessagesChange }) => {
+const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, suggestions, onDeepLink, onMessagesChange, threadId, onCapture, inject, onInjected }) => {
   const [messages, setMessages] = useState(initialMessages || [])
   const [input, setInput] = useState('')
   const [generating, setGenerating] = useState(false)
@@ -5122,18 +5164,81 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
   const timerRef = useRef(null)
   const seededRef = useRef(false)
   const mountedRef = useRef(false)
+  const injectedRef = useRef(null)
+  const streamTimerRef = useRef(null)
+  const streamingRef = useRef(false)
+
+  const handleCapture = (cap) => { if (onCapture) onCapture({ type: cap.type, prefill: cap.prefill, threadId, msgIndex: cap.msgIndex, answer: cap.answer }) }
+
+  // Stream a reply's text in progressively (no fade) — like live generation.
+  // Attachments (citation / CTAs / capture) hold until the text finishes.
+  const deliver = (resp) => {
+    const tokens = (resp.text || '').split(/(\s+)/)  // words + whitespace preserved
+    streamingRef.current = true
+    // Only one live medication offer per med: if this reply carries a new offer for a med
+    // that already has a standing (unresolved) offer, retire the older one's button so the
+    // newest is the single actionable CTA. Retired blocks render question-only (no button).
+    const newMed = resp.capture && resp.capture.type === 'medication' && (resp.capture.med || '').toLowerCase().trim()
+    setMessages(prev => {
+      const base = newMed
+        ? prev.map(m => {
+            const c = m.role === 'ai' && m.resp && m.resp.capture
+            if (c && c.type === 'medication' && !c.resolved && !c.retired && (c.med || '').toLowerCase().trim() === newMed) {
+              return { ...m, resp: { ...m.resp, capture: { ...c, retired: true } } }
+            }
+            return m
+          })
+        : prev
+      return [...base, { role: 'ai', resp: { ...resp, text: '', _streaming: true } }]
+    })
+    let i = 0
+    if (streamTimerRef.current) clearInterval(streamTimerRef.current)
+    streamTimerRef.current = setInterval(() => {
+      i = Math.min(tokens.length, i + 2)
+      const shown = tokens.slice(0, i).join('')
+      const done = i >= tokens.length
+      setMessages(prev => {
+        if (!prev.length) return prev
+        const last = prev[prev.length - 1]
+        if (last.role !== 'ai') return prev
+        return prev.slice(0, -1).concat({ ...last, resp: { ...last.resp, text: shown, _streaming: !done } })
+      })
+      if (done) { clearInterval(streamTimerRef.current); streamTimerRef.current = null; streamingRef.current = false }
+    }, 42)
+  }
 
   const generateReply = (text) => {
     setGenerating(true)
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => {
-      const resp = routeChat(text, ctx)
+      let resp = routeChat(text, ctx)
+      // One offer per drug per conversation. If we've already offered this med in this thread
+      // (tapped or ignored), don't re-offer — just answer. Ignoring an offer is a soft "no";
+      // re-asking on every mention nags. The original offer stays tappable in the thread.
+      if (resp.capture && resp.capture.type === 'medication') {
+        const med = (resp.capture.med || '').toLowerCase().trim()
+        const alreadyOffered = messages.some(m => m.role === 'ai' && m.resp && m.resp.capture && m.resp.capture.type === 'medication' && (m.resp.capture.med || '').toLowerCase().trim() === med)
+        if (alreadyOffered) resp = { kind: 'answer', text: 'Got it 👍' }
+      }
       setGenerating(false)
-      setMessages(prev => [...prev, { role: 'ai', resp }])
+      deliver(resp)
     }, 850 + Math.random() * 500)
   }
   const runSend = (text) => {
     if (!text || generating) return
+    // Affirmative typed against a standing capture offer → fire it, record the typed text
+    // inside the offer block (no separate user bubble); nothing else changes until confirmed.
+    let pendingIdx = -1
+    for (let k = messages.length - 1; k >= 0; k--) {
+      const c = messages[k].resp && messages[k].resp.capture
+      if (c && c.type === 'medication' && !c.resolved) { pendingIdx = k; break }
+    }
+    if (pendingIdx >= 0 && /^\s*(yes|yeah|yep|yup|sure|ok(ay)?|please|add it|add|do it|go ahead|sounds good|yes please|please do)\b/i.test(text)) {
+      setInput('')
+      const c = messages[pendingIdx].resp.capture
+      if (onCapture) onCapture({ type: c.type, prefill: c.prefill, threadId, msgIndex: pendingIdx, answer: text })
+      return
+    }
     setInput('')
     setMessages(prev => [...prev, { role: 'user', text }])
     generateReply(text)
@@ -5145,14 +5250,35 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
   useEffect(() => {
     const last = messages[messages.length - 1]
     if (!seed && last && last.role === 'user') generateReply(last.text)
-    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); if (streamTimerRef.current) clearInterval(streamTimerRef.current) }
   }, [])
   useEffect(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight }, [messages, generating])
   // Persist on real changes only — skip the mount fire so opening a chat doesn't re-date/re-sort it.
   useEffect(() => {
     if (!mountedRef.current) { mountedRef.current = true; return }
+    if (streamingRef.current) return  // don't persist mid-stream (spammy + re-dates); save once on completion
     if (onMessagesChange) onMessagesChange(messages)
   }, [messages])
+  // Post-capture acknowledgment injected from App after a save completes.
+  // Route it through the thinking state so it lands like a normal reply, not a silent pop-in.
+  useEffect(() => {
+    if (inject && inject.id !== injectedRef.current) {
+      injectedRef.current = inject.id
+      // Record the answer inside the offer block (question stays; answer appears below).
+      if (inject.msgIndex != null) {
+        setMessages(prev => prev.map((m, idx) => (idx === inject.msgIndex && m.resp && m.resp.capture)
+          ? { ...m, resp: { ...m.resp, capture: { ...m.resp.capture, resolved: true, answer: inject.answer } } } : m))
+      }
+      // Then the AI follow-up, through the thinking beat, as a separate reply.
+      setGenerating(true)
+      if (timerRef.current) clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => {
+        setGenerating(false)
+        deliver({ kind: 'answer', text: inject.text })
+        if (onInjected) onInjected()
+      }, 750 + Math.random() * 400)
+    }
+  }, [inject])
 
   if (messages.length === 0) {
     return (
@@ -5174,11 +5300,11 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
       <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 18, minHeight: 0 }}>
         {messages.map((m, i) => m.role === 'user'
           ? <ChatUserBubble key={i} text={m.text}/>
-          : <ChatAiBubble key={i} resp={m.resp} providerName={providerName} onDeepLink={onDeepLink}/>
+          : <ChatAiBubble key={i} resp={m.resp} providerName={providerName} onDeepLink={onDeepLink} onCapture={handleCapture} msgIndex={i}/>
         )}
         {generating && <ChatTyping/>}
       </div>
-      <div style={{ flexShrink: 0, borderTop: `1px solid ${C.border}`, backgroundColor: C.bgCard, padding: '10px 12px 8px' }}>
+      <div style={{ flexShrink: 0, backgroundColor: C.bgCard, padding: '0 12px 8px' }}>
         <ChatComposer value={input} onChange={setInput} onSend={() => send()} generating={generating}/>
         <ChatLegal compact/>
       </div>
@@ -5187,12 +5313,12 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
 }
 
 // Body of the new-chat FlowShell modal — sets the nav title, hosts a fresh thread.
-const ChatModalBody = ({ setNav, seed, threadId, ctx, providerName, greeting, suggestions, onDeepLink, onPersist }) => {
+const ChatModalBody = ({ setNav, seed, threadId, ctx, providerName, greeting, suggestions, onDeepLink, onPersist, onCapture, captureAck, onInjected }) => {
   useEffect(() => { setNav({ title: '', subtitle: null, onBack: null }) }, [])
-  return <ChatThread key={threadId} initialMessages={[]} seed={seed} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={onDeepLink} onMessagesChange={m => onPersist(threadId, m)}/>
+  return <ChatThread key={threadId} threadId={threadId} initialMessages={[]} seed={seed} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={onDeepLink} onMessagesChange={m => onPersist(threadId, m)} onCapture={onCapture} inject={captureAck && captureAck.threadId === threadId ? captureAck : null} onInjected={onInjected}/>
 }
 
-const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink, onShowBackChange, backSignal, onDrilledChange, deleteSignal, onHideTitleChange }) => {
+const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink, onShowBackChange, backSignal, onDrilledChange, deleteSignal, onHideTitleChange, onCaptureFlow, captureAck, onAckConsumed }) => {
   const [sessions, setSessions] = useState([])
   const [drilledId, setDrilledId] = useState(null)      // existing chat opened in-tab (push + header back)
   const [modalSeed, setModalSeed] = useState(undefined) // undefined = closed; null = open no seed; string = open, auto-send
@@ -5214,7 +5340,15 @@ const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink,
     appts.sort((a, b) => a.date.localeCompare(b.date))
     return appts[0] || null
   }, [timeline])
-  const ctx = { cancerName, stageLabel, histology, providerName, hasRecords: recordsConnected, nextAppointment, medications: medications || [] }
+  // Names the assistant can already see, for offer-gating (don't offer to add what's on record).
+  // Both stores, since tracker and timeline are separate.
+  const medNames = useMemo(() => {
+    const names = []
+    ;(medications || []).forEach(m => { if (m && m.name) names.push(m.name.toLowerCase()) })
+    ;(timeline || []).forEach(day => (day.events || []).forEach(e => { if (e.type === 'medication' && e.name) names.push(e.name.toLowerCase()) }))
+    return names
+  }, [medications, timeline])
+  const ctx = { cancerName, stageLabel, histology, providerName, hasRecords: recordsConnected, nextAppointment, medications: medications || [], medNames }
 
   // Deep-link interceptor: the insufficient-data connect action flips the simulated
   // records-connected flag (same flag the parked gating work will read); everything
@@ -5259,7 +5393,7 @@ const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink,
 
       {drilledId != null ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, animation: 'chatPushIn 0.32s cubic-bezier(0.32,0.72,0,1)' }}>
-          <ChatThread key={drilledId} initialMessages={drilled ? drilled.messages : []} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onMessagesChange={m => upsert(drilledId, m)}/>
+          <ChatThread key={drilledId} threadId={drilledId} initialMessages={drilled ? drilled.messages : []} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onMessagesChange={m => upsert(drilledId, m)} onCapture={onCaptureFlow} inject={captureAck && captureAck.threadId === drilledId ? captureAck : null} onInjected={onAckConsumed}/>
         </div>
       ) : sessions.length === 0 ? (
         <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
@@ -5298,7 +5432,7 @@ const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink,
       {modalOpen && (
         <FlowShell onClose={closeModal}>
           {(dismiss, setNav) => (
-            <ChatModalBody setNav={setNav} seed={modalSeed} threadId={modalIdRef.current} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onPersist={upsert}/>
+            <ChatModalBody setNav={setNav} seed={modalSeed} threadId={modalIdRef.current} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onPersist={upsert} onCapture={onCaptureFlow} captureAck={captureAck} onInjected={onAckConsumed}/>
           )}
         </FlowShell>
       )}
@@ -5664,6 +5798,8 @@ export default function App() {
   const [chatOverflowOpen, setChatOverflowOpen] = useState(false)
   const [chatConfirmDelete, setChatConfirmDelete] = useState(false)
   const [chatDeleteSignal, setChatDeleteSignal] = useState(0)
+  const [captureAck, setCaptureAck] = useState(null)      // {threadId, id, text} injected into the active chat thread
+  const pendingCaptureRef = useRef(null)                  // {type, threadId} while a chat-initiated flow is open
   const [appReveal, setAppReveal] = useState(false)
   const [currentUser, setCurrentUser] = useState(loadSession)
   const [selectedCommunity, setSelectedCommunity] = useState(null)
@@ -6041,7 +6177,25 @@ export default function App() {
 
   const openFlow = (type) => { setSheetOpen(false); setTimeout(() => setFlow(type), 310) }
 
+  // Chat-initiated capture: open the existing add-flow prefilled; handleComplete routes the result back to chat.
+  const openCaptureFlow = ({ type, prefill, threadId, msgIndex, answer }) => {
+    pendingCaptureRef.current = { type, threadId, msgIndex, answer }
+    let item = prefill || null
+    if (type === 'medication' && prefill && prefill.name) {
+      const match = getMedicationCatalog().find(m => (m.name || '').toLowerCase() === prefill.name.toLowerCase())
+      item = match || prefill
+    }
+    setFlowPreload({ type, item })
+    setFlow(type)
+  }
+
   const removeEvent = (eventId, dayDate) => {
+    // Convenience sync: deleting a medication event also removes its linked tracker entry
+    // (captured meds share an id across timeline + tracker). No-op for non-med events.
+    const srcDay = timeline.find(d => d.date === dayDate)
+    const srcEv = srcDay?.events?.find(e => e.id === eventId)
+    const trackedMed = srcEv && srcEv.type === 'medication' ? medications.find(m => m.id === eventId) : null
+    if (trackedMed) setMedications(prev => prev.filter(m => m.id !== eventId))
     setTimeline(prev => {
       const day = prev.find(d => d.date === dayDate)
       const ev = day?.events?.find(e => e.id === eventId)
@@ -6064,6 +6218,7 @@ export default function App() {
               const d = new Date(dayDate + 'T12:00:00')
               return [...current, { date: dayDate, label: d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }), isToday: dayDate === localDateStr(), summary: null, events: [ev], suggested: null }].sort((a, b) => a.date.localeCompare(b.date))
             })
+            if (trackedMed) setMedications(prev => prev.some(m => m.id === trackedMed.id) ? prev : [trackedMed, ...prev])
             setHighlightId(ev.id)
             setTimeout(() => setHighlightId(null), 3600)
           }
@@ -6126,6 +6281,18 @@ export default function App() {
           .map(r => ({ id: `dec_${r.id}_${Date.now()}`, recommendationId: r.id, decision: 'accepted', timestamp: Date.now() }))
       ])
     }
+    // Chat-initiated capture: dual-write where needed, return to chat with an acknowledgment, skip the care-plan scroll.
+    const cap = pendingCaptureRef.current
+    if (cap) {
+      pendingCaptureRef.current = null
+      setFlowPreload(null)
+      setFlow(null)
+      if (cap.type === 'medication') {
+        handleSaveMedication({ id: event.id, name: event.name, dose: event.dose, startDate: event.startDate, endDate: event.endDate, notes: event.notes })
+      }
+      setCaptureAck({ threadId: cap.threadId, id: Date.now(), text: buildCaptureAck(cap.type, event), msgIndex: cap.msgIndex, answer: cap.answer })
+      return
+    }
     setFlow(null)
     // Scroll to the newly added event, then highlight it.
     // Two things must be true before we scroll: (1) the card exists — a future-dated
@@ -6166,6 +6333,9 @@ export default function App() {
   // Derive recommendations, addedIds, and allPlanItems from current state
   const { allPlanItems, visibleRecs, addedIds } = useRecommendations(patientState, timeline)
   const anyDrillInOpen = !!(treatmentOpt || selectedCommunity || showYou || summarizeBlock || flow || sheetOpen)
+  // Drilled into a chat (back button showing) → treat like a drill-in: hide the fixed nav, go full-height.
+  const chatDrilled = activeTab === 'chat' && chatShowBack
+  const hideNav = anyDrillInOpen || chatDrilled
 
   // Inject visible recommendations into today's day — derived, not stored
   const timelineWithRecs = timeline.map(day => {
@@ -6295,8 +6465,8 @@ export default function App() {
         <div style={{ display: activeTab === 'community' ? 'flex' : 'none', height: (onboarded && !anyDrillInOpen) ? 'calc(100vh - 132px)' : '100vh', flexDirection: 'column', overflow: 'hidden' }}>
           <CommunityScreen onSelectCommunity={setSelectedCommunity} autoJoinedId={autoJoinedCommunity?.id}/>
         </div>
-        <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', height: (onboarded && !anyDrillInOpen) ? 'calc(100vh - 132px)' : '100vh', flexDirection: 'column', overflow: 'hidden' }}>
-          <ChatScreen patientState={patientState} timeline={timeline} medications={medications} userName={currentUser?.name} onDeepLink={handleChatDeepLink} onShowBackChange={setChatShowBack} backSignal={chatBackSignal} onDrilledChange={setChatDrilledTitle} deleteSignal={chatDeleteSignal} onHideTitleChange={setChatHideTitle}/>
+        <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', height: !onboarded ? '100dvh' : (hideNav ? 'calc(100dvh - 60px)' : 'calc(100dvh - 132px)'), flexDirection: 'column', overflow: 'hidden' }}>
+          <ChatScreen patientState={patientState} timeline={timeline} medications={medications} userName={currentUser?.name} onDeepLink={handleChatDeepLink} onShowBackChange={setChatShowBack} backSignal={chatBackSignal} onDrilledChange={setChatDrilledTitle} deleteSignal={chatDeleteSignal} onHideTitleChange={setChatHideTitle} onCaptureFlow={openCaptureFlow} captureAck={captureAck} onAckConsumed={() => setCaptureAck(null)}/>
         </div>
 
         <div
@@ -6369,8 +6539,8 @@ export default function App() {
       {onboarded && (
         <div style={{
           position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 45,
-          opacity: anyDrillInOpen ? 0 : 1,
-          pointerEvents: anyDrillInOpen ? 'none' : 'auto',
+          opacity: hideNav ? 0 : 1,
+          pointerEvents: hideNav ? 'none' : 'auto',
           transition: 'opacity 0.2s ease',
         }}>
           <BottomNav activeTab={activeTab} onTabChange={switchTab}/>
@@ -6437,7 +6607,7 @@ export default function App() {
       {sheetOpen && <AddEventSheet onClose={() => setSheetOpen(false)} onSelectProcedure={() => openFlow('procedure')} onSelectScan={() => openFlow('scan')} onSelectMedication={() => openFlow('medication')} onSelectAppointment={() => openFlow('appointment')}/>}
       {flow === 'procedure' && <AddProcedureFlow onClose={() => { setFlow(null); setFlowPreload(null) }} onComplete={handleComplete} preload={flowPreload?.type === 'procedure' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
       {flow === 'scan' && <AddScanFlow onClose={() => { setFlow(null); setFlowPreload(null) }} onComplete={handleComplete} preload={flowPreload?.type === 'scan' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
-      {flow === 'medication' && <AddMedicationFlow onClose={() => { setFlow(null); setFlowPreload(null) }} onComplete={handleComplete} preload={flowPreload?.type === 'medication' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
+      {flow === 'medication' && <AddMedicationFlow onClose={() => { setFlow(null); setFlowPreload(null); pendingCaptureRef.current = null }} onComplete={handleComplete} preload={flowPreload?.type === 'medication' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
       {flow === 'appointment' && <AddAppointmentFlow onClose={() => setFlow(null)} onComplete={handleComplete}/>}
       {onboarded && !anyDrillInOpen && activeTab === 'careplan' && showTodayPill && (
         <div style={{
