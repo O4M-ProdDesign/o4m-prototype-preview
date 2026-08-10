@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, createContext, useContext } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, createContext, useContext } from 'react'
 import ReactDOM from 'react-dom'
 import { findCoveringRule, findRuleMatchingItem, findMatchingRules, wouldImpactRecommendations, getImpactContext } from './services/recommendationService.js'
 import { hydrateState, savePatientState, saveTimeline, saveUserDecisions, clearPersistedState, saveMedications, loadMedications } from './services/persistenceService.js'
@@ -6457,31 +6457,68 @@ export default function App() {
     setRefreshKey(k => k + 1)
   }, [visibleRecs])
 
+  // ── Mobile keyboard (chat tab only) ───────────────────────────────
+  // dvh doesn't shrink when the iOS keyboard opens, so the shell ends up taller than what's visible
+  // and the composer gets pushed behind the keyboard. On the chat tab we shrink the shell to
+  // visualViewport.height so the composer stays above the keyboard.
+  // CRITICAL: write the height straight to the DOM, NOT via React state. setState on every
+  // keyboard-animation frame re-renders the chat subtree and iOS drops the input's focus, which
+  // dismisses the keyboard and causes the focus/blur loop. Direct DOM writes avoid re-rendering.
+  const rootRef = useRef(null)
+  const activeTabRef = useRef(activeTab)
+  activeTabRef.current = activeTab
+  // Pin the shell to the VISIBLE viewport on the chat tab: height = visualViewport.height,
+  // translateY = visualViewport.offsetTop, so the composer sits on top of the keyboard.
+  // Height/transform are written straight to the DOM (no setState → no re-render → no focus loop),
+  // and re-applied after every render (useLayoutEffect) so a nav-hide re-render can't clobber them.
+  // kbOpen is the only state — it flips once per keyboard show/hide (guarded) to hide the nav.
+  const kbOpenRef = useRef(false)
+  const [kbOpen, setKbOpen] = useState(false)
+  const applyShellHeight = useCallback(() => {
+    const el = rootRef.current
+    const vv = window.visualViewport
+    const chat = activeTabRef.current === 'chat'
+    if (el) {
+      el.style.height = (chat && vv) ? `${vv.height}px` : '100dvh'
+      el.style.transform = (chat && vv) ? `translateY(${vv.offsetTop}px)` : ''
+    }
+    const open = !!(chat && vv && (window.innerHeight - vv.height > 150))
+    if (open !== kbOpenRef.current) { kbOpenRef.current = open; setKbOpen(open) }
+  }, [])
+  useLayoutEffect(() => { applyShellHeight() })
+  useEffect(() => {
+    const vv = window.visualViewport
+    if (vv) { vv.addEventListener('resize', applyShellHeight); vv.addEventListener('scroll', applyShellHeight) }
+    return () => { if (vv) { vv.removeEventListener('resize', applyShellHeight); vv.removeEventListener('scroll', applyShellHeight) } }
+  }, [applyShellHeight])
+  // Lock the page from scrolling while on the chat tab so iOS can't rubber-band the body (which
+  // oscillates visualViewport.offsetTop and fights the pin). Only the message list scrolls, inside.
+  useEffect(() => {
+    document.body.style.overflow = activeTab === 'chat' ? 'hidden' : ''
+    return () => { document.body.style.overflow = '' }
+  }, [activeTab])
+
   return (
     <>
     <style>{`@keyframes flyoutIn { from { opacity:0; transform:scale(0.88) translateY(-6px); } to { opacity:1; transform:scale(1) translateY(0); } }`}</style>
-    <div style={{ width: '100%', minHeight: '100vh', backgroundColor: C.bgApp, position: 'relative' }}>
-      <div style={{ animation: appReveal ? 'appReveal 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards' : 'none' }}>
+    {/* CSS-owned app shell: root is a flex column pinned to the dynamic viewport. Header and
+        nav are ordinary flex children (not position:fixed), and the active screen is the single
+        flex:1 scroll owner. No per-panel height math; the browser divides 100dvh across the three. */}
+    <div ref={rootRef} style={{ width: '100%', height: '100dvh', backgroundColor: C.bgApp, position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {onboarded && (
-          <div style={{
-            position: 'fixed', top: 0, left: 0, right: 0, zIndex: 45,
-            opacity: anyDrillInOpen ? 0 : 1,
-            pointerEvents: anyDrillInOpen ? 'none' : 'auto',
-            transition: 'opacity 0.2s ease',
-          }}>
+          <div style={{ flexShrink: 0, opacity: anyDrillInOpen ? 0 : 1, pointerEvents: anyDrillInOpen ? 'none' : 'auto', transition: 'opacity 0.2s ease' }}>
             <AppHeader currentDayLabel={activeTab === 'careplan' ? currentDayLabel : null} activeTab={activeTab} onProfileTap={() => setShowYou(true)} onBack={activeTab === 'chat' && chatShowBack ? () => setChatBackSignal(n => n + 1) : null} hideTitle={activeTab === 'chat' && chatHideTitle} onOverflow={activeTab === 'chat' && chatShowBack ? () => setChatOverflowOpen(true) : null}/>
           </div>
         )}
-        {/* Spacer for fixed header — only when onboarded */}
-        {onboarded && <div style={{ height: 60 }}/>}
-
-        <div style={{ display: activeTab === 'track' ? 'flex' : 'none', height: (onboarded && !anyDrillInOpen) ? 'calc(100vh - 132px)' : '100vh', flexDirection: 'column', overflow: 'hidden' }}>
+        {/* Content region — single flex:1 area; the active screen fills it and scrolls internally */}
+        <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: activeTab === 'track' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
           <TrackScreen medications={medications} patientState={patientState} onSaveMedication={handleSaveMedication}/>
         </div>
-        <div style={{ display: activeTab === 'community' ? 'flex' : 'none', height: (onboarded && !anyDrillInOpen) ? 'calc(100vh - 132px)' : '100vh', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ display: activeTab === 'community' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
           <CommunityScreen onSelectCommunity={setSelectedCommunity} autoJoinedId={autoJoinedCommunity?.id}/>
         </div>
-        <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', height: !onboarded ? '100dvh' : (hideNav ? 'calc(100dvh - 60px)' : 'calc(100dvh - 132px)'), flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
           <ChatScreen patientState={patientState} timeline={timeline} medications={medications} userName={currentUser?.name} onDeepLink={handleChatDeepLink} onShowBackChange={setChatShowBack} backSignal={chatBackSignal} onDrilledChange={setChatDrilledTitle} deleteSignal={chatDeleteSignal} onHideTitleChange={setChatHideTitle} onCaptureFlow={openCaptureFlow} captureAck={captureAck} onAckConsumed={() => setCaptureAck(null)}/>
         </div>
 
@@ -6489,10 +6526,10 @@ export default function App() {
             transform (even identity) creates a composited layer that breaks position:sticky AND
             stops the scroll container from reflowing on content-height change (e.g. summary
             collapse leaves a gap). `none` avoids the layer; it still animates to translateX(-20%). */}
-        <div style={{ display: activeTab === 'careplan' ? undefined : 'none', height: (onboarded && !anyDrillInOpen) ? 'calc(100dvh - 132px)' : '100dvh', opacity: onboarded ? (treatmentOpt ? 0.6 : 1) : 0, transform: treatmentOpt ? 'translateX(-20%)' : 'none', transition: 'opacity 0.3s, transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)', transformOrigin: 'center' }}>
+        <div style={{ display: activeTab === 'careplan' ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0, opacity: onboarded ? (treatmentOpt ? 0.6 : 1) : 0, transform: treatmentOpt ? 'translateX(-20%)' : 'none', transition: 'opacity 0.3s, transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)', transformOrigin: 'center' }}>
         <div
           ref={scrollRef}
-          style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', overscrollBehaviorY: 'contain', position: 'relative' }}
+          style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehaviorY: 'contain', position: 'relative' }}
           onTouchStart={e => { if (scrollRef.current?.scrollTop === 0) scrollRef.current._pullStart = e.touches[0].clientY }}
           onTouchMove={e => {
             const sc = scrollRef.current
@@ -6558,13 +6595,8 @@ export default function App() {
         </div>
       </div>
 
-      {onboarded && (
-        <div style={{
-          position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 45,
-          opacity: hideNav ? 0 : 1,
-          pointerEvents: hideNav ? 'none' : 'auto',
-          transition: 'opacity 0.2s ease',
-        }}>
+      {onboarded && !hideNav && !kbOpen && (
+        <div style={{ flexShrink: 0 }}>
           <BottomNav activeTab={activeTab} onTabChange={switchTab}/>
         </div>
       )}
