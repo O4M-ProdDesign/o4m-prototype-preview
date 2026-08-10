@@ -6004,8 +6004,21 @@ export default function App() {
       const container = scrollRef.current
       const sleep = ms => new Promise(r => setTimeout(r, ms))
 
-      // Wait for onboarding overlay to fully unmount and careplan to be visible
+      // Wait for onboarding overlay to unmount AND the scroll container to be laid out.
+      // On mobile the dvh viewport settles a frame or two after mount; measuring/scrolling before
+      // then leaves the view mis-sized until an interaction (pull-to-refresh) forces a reflow.
       await sleep(600)
+      await new Promise(res => {
+        let tries = 0, lastH = -1, stable = 0
+        const check = () => {
+          const h = scrollRef.current ? scrollRef.current.clientHeight : 0
+          if (h > 100 && h === lastH) stable++; else stable = 0
+          lastH = h
+          if (stable >= 2 || tries++ > 40) res()
+          else requestAnimationFrame(check)
+        }
+        requestAnimationFrame(check)
+      })
 
       // Build flat ordered list of all items across all days
       const items = []
@@ -6100,6 +6113,9 @@ export default function App() {
       await sleep(550) // let the smooth scroll settle first
       if (summaryItem) setRevealedCards(prev => { const n = new Set(prev); n.add(summaryItem.key); return n })
       setSummaryShown(true)
+      // Re-pin after the summary insert (and any late mobile viewport settle) so Today lands flush.
+      await sleep(150)
+      scrollToToday()
     }
     runGeneration()
     // Mark generation done after all cards have had time to appear
@@ -6469,9 +6485,14 @@ export default function App() {
           <ChatScreen patientState={patientState} timeline={timeline} medications={medications} userName={currentUser?.name} onDeepLink={handleChatDeepLink} onShowBackChange={setChatShowBack} backSignal={chatBackSignal} onDrilledChange={setChatDrilledTitle} deleteSignal={chatDeleteSignal} onHideTitleChange={setChatHideTitle} onCaptureFlow={openCaptureFlow} captureAck={captureAck} onAckConsumed={() => setCaptureAck(null)}/>
         </div>
 
+        {/* Parallax transform: MUST be `none` at rest, not translateX(0). On iOS Safari any
+            transform (even identity) creates a composited layer that breaks position:sticky AND
+            stops the scroll container from reflowing on content-height change (e.g. summary
+            collapse leaves a gap). `none` avoids the layer; it still animates to translateX(-20%). */}
+        <div style={{ display: activeTab === 'careplan' ? undefined : 'none', height: (onboarded && !anyDrillInOpen) ? 'calc(100dvh - 132px)' : '100dvh', opacity: onboarded ? (treatmentOpt ? 0.6 : 1) : 0, transform: treatmentOpt ? 'translateX(-20%)' : 'none', transition: 'opacity 0.3s, transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)', transformOrigin: 'center' }}>
         <div
           ref={scrollRef}
-          style={{ display: activeTab === 'careplan' ? undefined : 'none', height: (onboarded && !anyDrillInOpen) ? 'calc(100vh - 132px)' : '100vh', overflowY: 'auto', overflowX: 'hidden', overscrollBehaviorY: 'contain', opacity: onboarded ? (treatmentOpt ? 0.6 : 1) : 0, transform: treatmentOpt ? 'translateX(-20%)' : 'translateX(0)', transition: 'opacity 0.3s, transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)', transformOrigin: 'center', position: 'relative' }}
+          style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', overscrollBehaviorY: 'contain', position: 'relative' }}
           onTouchStart={e => { if (scrollRef.current?.scrollTop === 0) scrollRef.current._pullStart = e.touches[0].clientY }}
           onTouchMove={e => {
             const sc = scrollRef.current
@@ -6533,6 +6554,7 @@ export default function App() {
             })
           })()}
           <div style={{ height: 24 }}/>
+        </div>
         </div>
       </div>
 
