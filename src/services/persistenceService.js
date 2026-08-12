@@ -10,7 +10,24 @@ const KEYS = {
   timeline:       KEY_PREFIX + 'timeline',
   userDecisions:  KEY_PREFIX + 'userDecisions',
   medications:    KEY_PREFIX + 'medications',
+  chatDrafts:     KEY_PREFIX + 'chatDrafts',
 }
+
+// ─── SCHEMA VERSION GUARD ─────────────────────────────────────────
+// Bump SCHEMA_VERSION whenever the persisted data shape changes. On load, if the stored version
+// doesn't match, all persisted state is discarded so the app starts fresh (onboarding) instead of
+// hydrating a stale/incompatible timeline — which otherwise renders as a broken home feed. Runs
+// once on import, before any load below.
+const SCHEMA_VERSION = '2'
+const VERSION_KEY = KEY_PREFIX + 'schemaVersion'
+;(() => {
+  try {
+    if (localStorage.getItem(VERSION_KEY) !== SCHEMA_VERSION) {
+      Object.values(KEYS).forEach(key => localStorage.removeItem(key))
+      localStorage.setItem(VERSION_KEY, SCHEMA_VERSION)
+    }
+  } catch (e) { /* localStorage unavailable — ignore */ }
+})()
 
 // ─── SAVE ─────────────────────────────────────────────────────────
 
@@ -108,6 +125,34 @@ export const loadMedications = () => {
     console.warn('[persistence] Failed to load medications:', e)
     return []
   }
+}
+
+// ─── CHAT DRAFTS ──────────────────────────────────────────────────
+// Unsent composer text, kept per conversation (keyed by conversation id) so it survives
+// navigating away and reloads — matching messaging-app behavior. Cleared on send.
+
+const loadChatDrafts = () => {
+  try {
+    const raw = localStorage.getItem(KEYS.chatDrafts)
+    const parsed = raw ? JSON.parse(raw) : null
+    return (parsed && typeof parsed === 'object') ? parsed : {}
+  } catch (e) { return {} }
+}
+
+export const getChatDraft = (id) => {
+  if (!id) return ''
+  const d = loadChatDrafts()
+  return typeof d[id] === 'string' ? d[id] : ''
+}
+
+export const saveChatDraft = (id, text) => {
+  if (!id) return
+  try {
+    const d = loadChatDrafts()
+    if (text && text.trim()) d[id] = text
+    else delete d[id]
+    localStorage.setItem(KEYS.chatDrafts, JSON.stringify(d))
+  } catch (e) { console.warn('[persistence] Failed to save chat draft:', e) }
 }
 
 // ─── CLEAR ────────────────────────────────────────────────────────

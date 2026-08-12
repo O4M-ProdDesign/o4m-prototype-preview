@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, createContext, useContext } from 'react'
 import ReactDOM from 'react-dom'
 import { findCoveringRule, findRuleMatchingItem, findMatchingRules, wouldImpactRecommendations, getImpactContext } from './services/recommendationService.js'
-import { hydrateState, savePatientState, saveTimeline, saveUserDecisions, clearPersistedState, saveMedications, loadMedications } from './services/persistenceService.js'
+import { hydrateState, savePatientState, saveTimeline, saveUserDecisions, clearPersistedState, saveMedications, loadMedications, getChatDraft, saveChatDraft } from './services/persistenceService.js'
 import { loadSession, login, createAccount, logout } from './services/authService.js'
 import { useRecommendations } from './hooks/useRecommendations.js'
 import { COMMUNITIES, COMMUNITY_POSTS, POST_COMMENTS } from './data/communityData.js'
@@ -4324,8 +4324,8 @@ const CommunityDetailView = ({ community, onClose }) => {
 // ─── BOTTOM NAV ──────────────────────────────────────────────────
 const NAV_TABS = [
   { id: 'careplan',  label: 'Home',       icon: 'home' },
-  { id: 'track',     label: 'Track',      icon: 'monitor_heart' },
   { id: 'chat',      label: 'Chat',       icon: 'auto_awesome' },
+  { id: 'track',     label: 'Tracker',    icon: 'monitor_heart' },
   { id: 'community', label: 'Community',  icon: 'group' },
 ]
 
@@ -4863,6 +4863,11 @@ const CommunityScreen = ({ onSelectCommunity, autoJoinedId }) => (
 
 const CHAT_CANCER = { RCC: 'kidney cancer', BREAST: 'breast cancer', CRC: 'colorectal cancer', PROSTATE: 'prostate cancer', LUNG: 'lung cancer' }
 
+// Session message limit (combined patient + AI, incl. any loaded prior transcript) — PRD §11.
+// TEST VALUES (8/10) for easy triggering; production is 180 soft / 200 hard.
+const MSG_SOFT_LIMIT = 8
+const MSG_HARD_LIMIT = 10
+
 // Type-accurate acknowledgment posted back into chat after a capture saves.
 const buildCaptureAck = (type, event) => {
   const name = (event && event.name) || 'that'
@@ -4894,6 +4899,24 @@ const routeChat = (raw, ctx) => {
   const prov = shortProvider(ctx.providerName)
   const has = (re) => re.test(t)
 
+  // ── SAFETY OVERRIDE (evaluated first) — supersedes ALL routing (CHAT-13) ──
+  // Medical emergency
+  if (has(/can'?t breathe|chest pain|crushing (chest )?pain|having a (heart attack|stroke)|face (is )?drooping|slurred speech|passing out|about to pass out|severe bleeding|bleeding (a lot|that won'?t stop)|took too many pills|overdose/)) {
+    return { kind:'crisis', tier:'emergency',
+      text:`This could be a medical emergency. Please call 911 or your local emergency number right now — getting help quickly matters, and this is beyond what I can do here.`,
+      resources:[{ icon:'call', label:'Call 911', sub:'Emergency services' }] }
+  }
+  // Emotional crisis (self-harm risk)
+  if (has(/(don'?t|do not) want to (be here|live|wake up)|want to die|wish i (were|was) dead|kill (myself|my self)|end (it all|my life|things)|take my (own )?life|hurt(ing)? myself|harm(ing)? myself|self.?harm|suicid|no reason to (live|go on)|can'?t go on|nothing to live for|better off (dead|without me)/)) {
+    return { kind:'crisis', tier:'crisis',
+      text:`I'm really sorry you're feeling this way, and I'm glad you told me. You deserve to talk to someone who can help right now — please reach out to one of these. They're free and available 24/7.`,
+      resources:[
+        { icon:'call', label:'Call or text 988', sub:'Suicide & Crisis Lifeline' },
+        { icon:'chat', label:'Text HOME to 741741', sub:'Crisis Text Line' },
+        { icon:'stethoscope', label:'Chat with an oncology nurse', sub:'In the app', target:'nurse' },
+      ] }
+  }
+
   // ── HARD-STOPS (safety) — evaluated first ──
   if (has(/recur|come ?back|coming back|spread|surviv|prognos|my odds|life expectanc|how long (do|have) i|going to die|will i die|am i going to be (ok|okay|alright)|be cured|is it terminal/)) {
     return { kind:'hardstop', cluster:'prognosis', nurse:true, text:`Wondering whether it might come back is one of the most common things people carry, especially during surveillance — it makes complete sense that it's on your mind.\n\nHere I have to be straight with you: I can't predict what will happen for any one person, and honestly no tool should. What I can tell you is that your scan schedule is built to catch any change early, and for ${ctx.stageLabel} ${ctx.cancerName} it follows NCCN surveillance guidelines.\n\nFor what your own history means for your outlook, ${prov} has your full picture — or you can talk it through with an oncology nurse right now.` }
@@ -4906,6 +4929,11 @@ const routeChat = (raw, ctx) => {
   }
   if (has(/second opinion|another (doctor|oncologist|opinion)|different (doctor|oncologist)|right doctor|see someone else|switch doctors/)) {
     return { kind:'hardstop', cluster:'secondopinion', nurse:true, text:`Wanting another perspective doesn't mean anything is wrong — it's a common, completely reasonable thing to consider, and good care teams expect it.\n\nWhether to seek one in your situation depends on details of your case I shouldn't weigh in on. But I can say plainly that a second opinion is a normal part of cancer care, not something you need to feel awkward about.\n\nIf you'd like to think it through, an oncology nurse can talk with you about what the process looks like.` }
+  }
+
+  // ── DIRECT NURSE REQUEST — surface the handoff CTA inline (not a hard stop) ──
+  if (has(/\bnurse\b|chat with (a )?(nurse|someone|human)|(talk|speak) (to|with) (a )?(nurse|someone|human|real person|person)|human (agent|support)|real person/)) {
+    return { kind:'answer', text:`Sure — you can talk with an oncology nurse right now. They can help with anything I'm not able to.`, nurse:true }
   }
 
   // ── CAPTURE (first-person statements) — offer to save before answering ──
@@ -4980,6 +5008,11 @@ const routeChat = (raw, ctx) => {
     return { kind:'answer', text:`That's the kind of thing other patients often have real, lived-experience answers for — people who've been through similar treatment tend to share what actually helped. Worth hearing those alongside anything clinical.` }
   }
 
+  // Emotional difficulty (not a crisis) — warm support, normal flow, nurse offered
+  if (has(/this is (so|really) hard|i'?m (so )?scared|i'?m (so )?(overwhelmed|exhausted|frightened|anxious|terrified)|i can'?t cope|struggling emotionally|feel(ing)? (so )?alone/)) {
+    return { kind:'answer', text:`That sounds really heavy — it's completely understandable to feel this way going through treatment, and you don't have to carry it alone. If it would help to talk it through, you can reach an oncology nurse, and a lot of people find support from others going through the same thing in the community.`, nurse:true }
+  }
+
   // FALLBACK
   return { kind:'answer', text:`I can help with questions about your diagnosis, treatment and side effects, your care plan, and what to expect — grounded in NCCN guidelines and your own Outcomes4Me data. Try asking about a side effect, what to watch for between scans, or your next appointment.` }
 }
@@ -5027,17 +5060,52 @@ const ChatDeepLink = ({ label, target, onDeepLink }) => (
   </button>
 )
 
-// Priority handoff for hard stops
+// Priority handoff — same bordered-block CTA shape as capture, but emphasized (light-orange
+// background, orange border, orange button) since it's the highest-stakes action in chat.
 const ChatNurseCTA = ({ onDeepLink }) => (
-  <button onClick={() => onDeepLink('nurse')} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '12px 14px', backgroundColor: C.primary, color: 'white', border: 'none', borderRadius: 12, cursor: 'pointer', textAlign: 'left' }}>
-    <span className="material-symbols-rounded" style={{ fontSize: 20, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>stethoscope</span>
-    <div style={{ flex: 1 }}>
-      <div style={{ fontSize: 14, fontWeight: 700 }}>Chat with a nurse</div>
-      <div style={{ fontSize: 12, opacity: 0.9 }}>Talk it through with an oncology nurse now</div>
-    </div>
-    <span className="material-symbols-rounded" style={{ fontSize: 18 }}>arrow_forward</span>
-  </button>
+  <div style={{ border: `1px solid ${C.primary}`, borderRadius: 12, padding: '12px 14px' }}>
+    <div style={{ fontSize: 14.5, color: C.textPrimary, marginBottom: 10, lineHeight: 1.45 }}>Talk it through with an oncology nurse — they can help right now.</div>
+    <button onClick={() => onDeepLink('nurse')} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '8px 14px', borderRadius: 9, border: 'none', backgroundColor: C.primary, color: 'white', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+      <span className="material-symbols-rounded" style={{ fontSize: 18, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>stethoscope</span>
+      Chat with a nurse
+    </button>
+  </div>
 )
+
+// Crisis / emergency treatment — its own serious register, deliberately NOT the CTA palette
+// (no brand orange, no red). Calm, resources-first, non-dismissible. (CHAT-13)
+const ChatCrisis = ({ resp, onDeepLink }) => {
+  const emergency = resp.tier === 'emergency'
+  return (
+    <div style={{ borderRadius: 12, padding: '14px 16px', backgroundColor: C.bgApp }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textPrimary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>{emergency ? 'emergency' : 'volunteer_activism'}</span>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: C.textPrimary, letterSpacing: '0.03em', textTransform: 'uppercase' }}>{emergency ? 'Get help now' : 'You’re not alone'}</div>
+      </div>
+      <div style={{ fontSize: 14.5, color: C.textPrimary, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{resp.text}</div>
+      {!resp._streaming && resp.resources && (
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {resp.resources.map((r, i) => {
+            const inner = (
+              <>
+                <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textPrimary }}>{r.icon}</span>
+                <div style={{ flex: 1, textAlign: 'left' }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary }}>{r.label}</div>
+                  <div style={{ fontSize: 12, color: C.textSecondary }}>{r.sub}</div>
+                </div>
+                {r.target && <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textSecondary }}>chevron_right</span>}
+              </>
+            )
+            const style = { display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '11px 13px', backgroundColor: C.bgCard, border: 'none', borderRadius: 10 }
+            return r.target
+              ? <button key={i} onClick={() => onDeepLink(r.target)} style={{ ...style, cursor: 'pointer' }}>{inner}</button>
+              : <div key={i} style={style}>{inner}</div>
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
 
 // Persistent, subtle care-team prompt on clinically adjacent answers
 const ChatCareTeam = ({ providerName, onDeepLink }) => (
@@ -5090,6 +5158,9 @@ const ChatTyping = () => (
 
 const ChatAiBubble = ({ resp, providerName, onDeepLink, onCapture, msgIndex }) => {
   const isHardstop = resp.kind === 'hardstop'
+  if (resp.kind === 'crisis') {
+    return <div style={{ alignSelf: 'stretch' }}><ChatCrisis resp={resp} onDeepLink={onDeepLink}/></div>
+  }
   return (
     <div style={{ alignSelf: 'stretch', display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ fontSize: 14.5, color: C.textPrimary, lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
@@ -5100,7 +5171,7 @@ const ChatAiBubble = ({ resp, providerName, onDeepLink, onCapture, msgIndex }) =
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {resp.connect && <ChatDeepLink {...resp.connect} onDeepLink={onDeepLink}/>}
           {resp.capture && <ChatCapture capture={resp.capture} onCapture={onCapture} msgIndex={msgIndex}/>}
-          {isHardstop && resp.nurse && <ChatNurseCTA onDeepLink={onDeepLink}/>}
+          {resp.nurse && <ChatNurseCTA onDeepLink={onDeepLink}/>}
         </div>
       )}
     </div>
@@ -5115,8 +5186,8 @@ const ChatLegal = ({ compact }) => (
 )
 
 // Composer — send button inside the field, taller than a prompt chip
-const ChatComposer = ({ value, onChange, onSend, generating }) => {
-  const canSend = value.trim() && !generating
+const ChatComposer = ({ value, onChange, onSend, generating, disabled }) => {
+  const canSend = value.trim() && !generating && !disabled
   const taRef = useRef(null)
   const MAX_H = 150
   // Grow the field to fit its content up to MAX_H, then scroll inside. Runs on every value
@@ -5130,8 +5201,8 @@ const ChatComposer = ({ value, onChange, onSend, generating }) => {
     el.style.overflowY = el.scrollHeight > MAX_H ? 'auto' : 'hidden'
   }, [value])
   return (
-    <div style={{ position: 'relative', backgroundColor: C.bgCard, border: `1px solid ${C.borderMid}`, borderRadius: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.05)' }}>
-      <textarea ref={taRef} value={value} onChange={e => onChange(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (canSend) onSend() } }} rows={1} placeholder="Type a message…" style={{ width: '100%', boxSizing: 'border-box', minHeight: 58, maxHeight: MAX_H, resize: 'none', border: 'none', outline: 'none', background: 'transparent', padding: '16px 54px 16px 16px', fontSize: 15, lineHeight: 1.45, fontFamily: 'inherit', color: C.textPrimary, overflowY: 'hidden' }}/>
+    <div style={{ position: 'relative', backgroundColor: C.bgCard, border: `1px solid ${C.borderMid}`, borderRadius: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.05)', opacity: disabled ? 0.55 : 1 }}>
+      <textarea ref={taRef} value={value} onChange={e => onChange(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (canSend) onSend() } }} rows={1} disabled={disabled} placeholder={disabled ? 'Start a new chat to continue' : 'How can I help you today?'} style={{ width: '100%', boxSizing: 'border-box', minHeight: 58, maxHeight: MAX_H, resize: 'none', border: 'none', outline: 'none', background: 'transparent', padding: '16px 54px 16px 16px', fontSize: 15, lineHeight: 1.45, fontFamily: 'inherit', color: C.textPrimary, overflowY: 'hidden', cursor: disabled ? 'default' : 'text' }}/>
       <button onClick={() => canSend && onSend()} disabled={!canSend} aria-label="Send" style={{ position: 'absolute', right: 9, bottom: 9, width: 38, height: 38, borderRadius: 19, border: 'none', backgroundColor: canSend ? C.primary : C.border, cursor: canSend ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background-color 0.15s' }}>
         <span className="material-symbols-rounded" style={{ fontSize: 20, color: 'white', fontVariationSettings: "'FILL' 1, 'wght' 500" }}>arrow_upward</span>
       </button>
@@ -5140,25 +5211,23 @@ const ChatComposer = ({ value, onChange, onSend, generating }) => {
 }
 
 const ChatPrompts = ({ suggestions, onPick }) => (
-  <div>
-    <div style={{ fontSize: 13, fontWeight: 600, color: C.textSecondary, margin: '0 2px 8px' }}>Suggested questions</div>
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {suggestions.map((q, i) => (
-        <button key={i} onClick={() => onPick(q)} style={{ width: '100%', textAlign: 'left', padding: '12px 14px', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, fontSize: 13.5, color: C.textPrimary, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-          <span>{q}</span>
-          <span style={{ flexShrink: 0 }}><Ico.chevRight/></span>
-        </button>
-      ))}
-    </div>
+  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+    {suggestions.map((q, i) => (
+      <button key={i} onClick={() => onPick(q)} style={{ width: '100%', textAlign: 'left', padding: '13px 14px', backgroundColor: C.bgApp, border: 'none', borderRadius: 12, fontSize: 13.5, color: C.textPrimary, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+        <span>{q}</span>
+        <span style={{ flexShrink: 0 }}><Ico.chevRight/></span>
+      </button>
+    ))}
   </div>
 )
 
 // A single conversation. Shows greeting + composer + prompts when empty; message
 // thread + composer once it has messages. Used inside the new-chat modal and the
 // in-tab drilled session. Persists via onMessagesChange.
-const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, suggestions, onDeepLink, onMessagesChange, threadId, onCapture, inject, onInjected }) => {
+const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, suggestions, onDeepLink, onMessagesChange, threadId, onCapture, inject, onInjected, onNewChat }) => {
   const [messages, setMessages] = useState(initialMessages || [])
-  const [input, setInput] = useState('')
+  const [input, setInput] = useState(() => getChatDraft(threadId))  // restore unsent draft for this chat
+  useEffect(() => { saveChatDraft(threadId, input) }, [input, threadId])  // persist per conversation; cleared on send (input → '')
   const [generating, setGenerating] = useState(false)
   const scrollRef = useRef(null)
   const timerRef = useRef(null)
@@ -5226,18 +5295,31 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
   }
   const runSend = (text) => {
     if (!text || generating) return
+    if (messages.length >= MSG_HARD_LIMIT) return  // session message cap reached (PRD §11)
     // Affirmative typed against a standing capture offer → fire it, record the typed text
     // inside the offer block (no separate user bubble); nothing else changes until confirmed.
+    // Typed response to a standing med offer. A loose affirmative ("sure", "ok", "add it") only
+    // fires when it's the IMMEDIATE reply to the offer (offer is the last message). Once the
+    // conversation has moved on, a bare "ok" must NOT reach back — only a specific instruction
+    // ("add metformin", "add it to my tracker/record/timeline") triggers it. Declines fall through
+    // to a normal reply (no add).
     let pendingIdx = -1
     for (let k = messages.length - 1; k >= 0; k--) {
       const c = messages[k].resp && messages[k].resp.capture
       if (c && c.type === 'medication' && !c.resolved) { pendingIdx = k; break }
     }
-    if (pendingIdx >= 0 && /^\s*(yes|yeah|yep|yup|sure|ok(ay)?|please|add it|add|do it|go ahead|sounds good|yes please|please do)\b/i.test(text)) {
-      setInput('')
+    if (pendingIdx >= 0) {
       const c = messages[pendingIdx].resp.capture
-      if (onCapture) onCapture({ type: c.type, prefill: c.prefill, threadId, msgIndex: pendingIdx, answer: text })
-      return
+      const med = (c.med || '').toLowerCase()
+      const immediate = pendingIdx === messages.length - 1  // nothing sent since the offer
+      const looseYes = /^\s*(yes|yeah|yep|yup|sure|ok(ay)?|please|add it|do it|go ahead|sounds good|yes please|please do|let'?s( go| do it| add it)?)\b/i.test(text)
+      const specificAdd = /\badd\b/i.test(text) && ((med && text.toLowerCase().includes(med)) || /\b(record|tracker|timeline|list|profile|medications?)\b/i.test(text))
+      if ((immediate && looseYes) || specificAdd) {
+        setInput('')
+        if (onCapture) onCapture({ type: c.type, prefill: c.prefill, threadId, msgIndex: pendingIdx, answer: text })
+        return
+      }
+      // Anything else (a decline, a question, an unrelated message) falls through to a normal reply.
     }
     setInput('')
     setMessages(prev => [...prev, { role: 'user', text }])
@@ -5305,7 +5387,26 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
         {generating && <ChatTyping/>}
       </div>
       <div style={{ flexShrink: 0, backgroundColor: C.bgCard, padding: '0 12px 8px' }}>
-        <ChatComposer value={input} onChange={setInput} onSend={() => send()} generating={generating}/>
+        {messages.length >= MSG_HARD_LIMIT ? (
+          // Hard stop — message + New chat above, composer kept but disabled (PRD §11: "input is disabled").
+          <>
+            <div style={{ backgroundColor: C.bgApp, borderRadius: 12, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 8 }}>
+              <div style={{ fontSize: 13.5, color: C.textPrimary, lineHeight: 1.45 }}>You've reached the maximum length for this conversation. Start a new chat to keep going.</div>
+              <button onClick={() => onNewChat && onNewChat()} style={{ alignSelf: 'flex-start', padding: '9px 16px', borderRadius: 9, border: 'none', backgroundColor: C.primary, color: 'white', fontSize: 13.5, fontWeight: 600, cursor: 'pointer' }}>New chat</button>
+            </div>
+            <ChatComposer value={input} onChange={setInput} onSend={() => send()} generating={generating} disabled/>
+          </>
+        ) : (
+          <>
+            {messages.length >= MSG_SOFT_LIMIT && (
+              // Soft nudge — persistent line above the composer; composer stays usable.
+              <div style={{ fontSize: 12.5, color: C.textSecondary, backgroundColor: C.bgApp, borderRadius: 10, padding: '8px 12px', margin: '0 0 8px', lineHeight: 1.4 }}>
+                You're approaching the conversation limit — consider starting a new chat soon.
+              </div>
+            )}
+            <ChatComposer value={input} onChange={setInput} onSend={() => send()} generating={generating}/>
+          </>
+        )}
         <ChatLegal compact/>
       </div>
     </div>
@@ -5313,16 +5414,17 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
 }
 
 // Body of the new-chat FlowShell modal — sets the nav title, hosts a fresh thread.
-const ChatModalBody = ({ setNav, seed, threadId, ctx, providerName, greeting, suggestions, onDeepLink, onPersist, onCapture, captureAck, onInjected }) => {
+const ChatModalBody = ({ setNav, seed, threadId, ctx, providerName, greeting, suggestions, onDeepLink, onPersist, onCapture, captureAck, onInjected, onNewChat }) => {
   useEffect(() => { setNav({ title: '', subtitle: null, onBack: null }) }, [])
-  return <ChatThread key={threadId} threadId={threadId} initialMessages={[]} seed={seed} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={onDeepLink} onMessagesChange={m => onPersist(threadId, m)} onCapture={onCapture} inject={captureAck && captureAck.threadId === threadId ? captureAck : null} onInjected={onInjected}/>
+  return <ChatThread key={threadId} threadId={threadId} initialMessages={[]} seed={seed} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={onDeepLink} onMessagesChange={m => onPersist(threadId, m)} onCapture={onCapture} inject={captureAck && captureAck.threadId === threadId ? captureAck : null} onInjected={onInjected} onNewChat={onNewChat}/>
 }
 
 const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink, onShowBackChange, backSignal, onDrilledChange, deleteSignal, onHideTitleChange, onCaptureFlow, captureAck, onAckConsumed }) => {
   const [sessions, setSessions] = useState([])
   const [drilledId, setDrilledId] = useState(null)      // existing chat opened in-tab (push + header back)
   const [modalSeed, setModalSeed] = useState(undefined) // undefined = closed; null = open no seed; string = open, auto-send
-  const [launcherInput, setLauncherInput] = useState('')
+  const [launcherInput, setLauncherInput] = useState(() => getChatDraft('launcher'))  // home composer draft
+  useEffect(() => { saveChatDraft('launcher', launcherInput) }, [launcherInput])
   const [recordsConnected, setRecordsConnected] = useState(false)  // simulated health-records auth (shared with future gating)
   const modalIdRef = useRef(null)
   const seqRef = useRef(0)
@@ -5393,7 +5495,7 @@ const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink,
 
       {drilledId != null ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, animation: 'chatPushIn 0.32s cubic-bezier(0.32,0.72,0,1)' }}>
-          <ChatThread key={drilledId} threadId={drilledId} initialMessages={drilled ? drilled.messages : []} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onMessagesChange={m => upsert(drilledId, m)} onCapture={onCaptureFlow} inject={captureAck && captureAck.threadId === drilledId ? captureAck : null} onInjected={onAckConsumed}/>
+          <ChatThread key={drilledId} threadId={drilledId} initialMessages={drilled ? drilled.messages : []} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onMessagesChange={m => upsert(drilledId, m)} onCapture={onCaptureFlow} inject={captureAck && captureAck.threadId === drilledId ? captureAck : null} onInjected={onAckConsumed} onNewChat={() => { setDrilledId(null); openModal() }}/>
         </div>
       ) : sessions.length === 0 ? (
         <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
@@ -5432,7 +5534,7 @@ const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink,
       {modalOpen && (
         <FlowShell onClose={closeModal}>
           {(dismiss, setNav) => (
-            <ChatModalBody setNav={setNav} seed={modalSeed} threadId={modalIdRef.current} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onPersist={upsert} onCapture={onCaptureFlow} captureAck={captureAck} onInjected={onAckConsumed}/>
+            <ChatModalBody setNav={setNav} seed={modalSeed} threadId={modalIdRef.current} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onPersist={upsert} onCapture={onCaptureFlow} captureAck={captureAck} onInjected={onAckConsumed} onNewChat={() => openModal()}/>
           )}
         </FlowShell>
       )}
@@ -5572,7 +5674,7 @@ const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap, onBa
       )}
       {!hideTitle && (
         <div style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-          <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2 }}>{{ careplan: 'Home', track: 'Track', chat: 'Chats', community: 'Community', you: 'You' }[activeTab] || 'Home'}</div>
+          <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2 }}>{{ careplan: 'Home', track: 'Tracker', chat: 'Chats', community: 'Community', you: 'You' }[activeTab] || 'Home'}</div>
         </div>
       )}
     </div>
