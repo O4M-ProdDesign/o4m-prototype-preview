@@ -4,3 +4,13 @@ html, body { background: #F5F4F6; min-height: 100vh; min-height: 100dvh; width: 
 input[type="date"]::-webkit-calendar-picker-indicator { opacity: 0; position: absolute; right: 0; top: 0; width: 100%; height: 100%; cursor: pointer; }
 input[type="date"] { position: relative; }
 ::-webkit-scrollbar { width: 0; }
+
+/* Heavier (600) Material Symbols Rounded — the base package is static 400, so this aliases the 600 file to its own family for icons that need more weight. */
+@font-face {
+  font-family: "Material Symbols Rounded 600";
+  font-style: normal;
+  font-weight: normal;
+  font-display: block;
+  src: url("../node_modules/@material-symbols/font-600/material-symbols-rounded.woff2") format("woff2");
+}
+.msr-600 { font-family: "Material Symbols Rounded 600" !important; }

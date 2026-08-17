@@ -748,7 +748,7 @@ const FlowShell = ({ onClose, children, zIndex = 60, confirmClose = false }) => 
     <div style={{
       position: 'fixed', inset: 0, zIndex,
       transform: vis ? 'translateY(0)' : 'translateY(100%)',
-      transition: 'transform 0.34s cubic-bezier(0.32, 0.72, 0, 1)',
+      transition: 'transform 0.42s cubic-bezier(0.32, 0.72, 0, 1)',
       overflow: 'hidden',
       display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard,
       fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
@@ -1859,7 +1859,7 @@ const DailySummaryCard = ({ summary, isToday }) => {
   return (
     <button ref={cardRef} onClick={() => setOpen(o => !o)} style={{ position: 'relative', width: '100%', backgroundColor: C.bgCard, border: '1px solid transparent', borderRadius: 14, padding: '13px 16px', cursor: 'pointer', textAlign: 'left', WebkitTapHighlightColor: 'transparent' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span ref={starRef} style={{ display: 'inline-flex', transformOrigin: 'center' }}><Ico.spark/></span><span style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary, flex: 1, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>Daily summary{!open && <span style={{ ...textFade, fontWeight: 400 }}> &bull; {shownText}</span>}</span><Ico.chevDown open={open}/>
+        <span ref={starRef} style={{ display: 'inline-flex', transformOrigin: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 17, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span></span><span style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary, flex: 1, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>Daily summary{!open && <span style={{ ...textFade, fontWeight: 400 }}> &bull; {shownText}</span>}</span><Ico.chevDown open={open}/>
       </div>
       <div style={{ display: 'grid', gridTemplateRows: open ? '1fr' : '0fr', transition: 'grid-template-rows 0.35s ease' }}>
         <div style={{ overflow: 'hidden', minHeight: 0 }}>
@@ -5419,15 +5419,16 @@ const ChatModalBody = ({ setNav, seed, threadId, ctx, providerName, greeting, su
   return <ChatThread key={threadId} threadId={threadId} initialMessages={[]} seed={seed} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={onDeepLink} onMessagesChange={m => onPersist(threadId, m)} onCapture={onCapture} inject={captureAck && captureAck.threadId === threadId ? captureAck : null} onInjected={onInjected} onNewChat={onNewChat}/>
 }
 
-const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink, onShowBackChange, backSignal, onDrilledChange, deleteSignal, onHideTitleChange, onCaptureFlow, captureAck, onAckConsumed }) => {
+const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink, onDrilledChange, onDrillModeChange, onMenuOpenChange, onTabChange, kbOpen, backSignal, deleteSignal, menuSignal, newSignal, onOverflow, onCaptureFlow, captureAck, onAckConsumed }) => {
   const [sessions, setSessions] = useState([])
-  const [drilledId, setDrilledId] = useState(null)      // existing chat opened in-tab (push + header back)
-  const [modalSeed, setModalSeed] = useState(undefined) // undefined = closed; null = open no seed; string = open, auto-send
-  const [launcherInput, setLauncherInput] = useState(() => getChatDraft('launcher'))  // home composer draft
-  useEffect(() => { saveChatDraft('launcher', launcherInput) }, [launcherInput])
-  const [recordsConnected, setRecordsConnected] = useState(false)  // simulated health-records auth (shared with future gating)
-  const modalIdRef = useRef(null)
   const seqRef = useRef(0)
+  const firstId = `c${Date.now()}-${seqRef.current++}`
+  const [homeId, setHomeId] = useState(firstId)                 // the home surface (composer-first new chat)
+  const [currentId, setCurrentId] = useState(firstId)           // what's on screen — home, or a chat drilled in from the menu
+  const drilledIn = currentId !== homeId                        // opened an existing chat from the side menu
+  const [menuOpen, setMenuOpen] = useState(false)           // history menu revealed beneath the app stack
+  const [anim, setAnim] = useState(null)                    // drill transition: 'push' (in) | 'pop' (out) | null
+  const [recordsConnected, setRecordsConnected] = useState(false)  // simulated health-records auth (shared with future gating)
 
   const firstName = (userName || '').trim().split(/\s+/)[0] || ''
   const greeting = firstName ? `Hi ${firstName}, ready when you are.` : 'Hi there, ready when you are.'
@@ -5467,77 +5468,130 @@ const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink,
     'When is my next appointment?',
   ]
 
+  const newChatId = () => `c${Date.now()}-${seqRef.current++}`
   const upsert = (id, messages) => {
     if (!messages || !messages.length) return
     const firstQ = messages.find(m => m.role === 'user')
     const title = (firstQ && chatTopic(firstQ.text)) || (firstQ ? firstQ.text : 'New chat')
     const rec = { id, title, count: messages.length, date: new Date(), messages }
     setSessions(prev => [rec, ...prev.filter(x => x.id !== id)])
+    // First send from the home surface promotes it to a drilled-in conversation and
+    // mints a fresh empty home behind it — the Chat tab never lands you inside a chat.
+    if (id === homeId && firstQ) setHomeId(newChatId())
   }
-  const openModal = (seed = null) => { modalIdRef.current = `c${Date.now()}-${seqRef.current++}`; setModalSeed(seed) }
-  const closeModal = () => { setModalSeed(undefined); modalIdRef.current = null }
-  const launchFromInput = () => { const t = launcherInput.trim(); if (!t) return; setLauncherInput(''); openModal(t) }
+  const closeMenu = () => setMenuOpen(false)
+  const startNewChat = () => {                                                     // compose / menu "+ New chat"
+    const id = newChatId()
+    if (currentId !== homeId) { setHomeId(id); setAnim('pop') }                    // drilled → pop the chat off, reveal a fresh home
+    else { setHomeId(id); setCurrentId(id) }                                       // already home → reset to a fresh empty home
+    setMenuOpen(false)
+  }
+  // menu-select → the app stack slides back over the menu, now showing the drilled chat (cover)
+  const openChat = (id) => { setCurrentId(id); setMenuOpen(false) }
+  const goHome = () => { if (currentId !== homeId) setAnim('pop'); else setCurrentId(homeId) }  // back → pop the chat off, uncover the home
 
-  useEffect(() => {
-    if (onShowBackChange) onShowBackChange(drilledId != null)
-    if (onHideTitleChange) onHideTitleChange(drilledId != null || sessions.length === 0)
-    if (onDrilledChange) { const d = drilledId != null ? sessions.find(s => s.id === drilledId) : null; onDrilledChange(d ? d.title : null) }
-  }, [drilledId, sessions])
-  useEffect(() => { if (backSignal) setDrilledId(null) }, [backSignal])
-  useEffect(() => { if (deleteSignal && drilledId != null) { setSessions(prev => prev.filter(s => s.id !== drilledId)); setDrilledId(null) } }, [deleteSignal])
+  // Header hamburger toggles the history menu (slides the app stack aside to uncover it beneath the home).
+  useEffect(() => { if (menuSignal) setMenuOpen(o => !o) }, [menuSignal])
+  // Header compose starts a fresh chat.
+  useEffect(() => { if (newSignal) startNewChat() }, [newSignal])
+  // Header back arrow (drilled-in view) returns to the home surface.
+  useEffect(() => { if (backSignal) goHome() }, [backSignal])
+  // Report the current chat's title to the app header (null on a fresh/empty chat → hamburger only).
+  const current = sessions.find(s => s.id === currentId) || null
+  useEffect(() => { if (onDrilledChange) onDrilledChange(current ? current.title : null) }, [currentId, current && current.title])
+  // Tell the app whether we're drilled into a chat (hide nav + show back) or on the home (nav + hamburger).
+  // During a back-pop, report "home" at the start of the slide so the header transitions with the view, not after it.
+  useEffect(() => { if (onDrillModeChange) onDrillModeChange(anim === 'pop' ? false : drilledIn) }, [drilledIn, anim])
+  // Tell the app when the menu is open so the footer nav can slide aside with the home (it belongs to the home layer, above the menu).
+  useEffect(() => { if (onMenuOpenChange) onMenuOpenChange(menuOpen) }, [menuOpen])
+  // Delete the current chat (from the header overflow); drilled → back to home, home → fresh home.
+  useEffect(() => { if (deleteSignal) {
+    setSessions(prev => prev.filter(s => s.id !== currentId))
+    if (currentId === homeId) { const id = newChatId(); setHomeId(id); setCurrentId(id) }
+    else setCurrentId(homeId)
+  } }, [deleteSignal])
 
-  const drilled = drilledId != null ? sessions.find(s => s.id === drilledId) : null
-  const modalOpen = modalSeed !== undefined
+  const current2 = sessions.find(s => s.id === currentId) || null
+  const currentMessages = current2 ? current2.messages : []
+  // App-bar state. During a back-pop, treat as home from the start of the slide so the bar transitions with the view.
+  const headerDrilled = anim === 'pop' ? false : (currentId !== homeId)
+  const headerTitle = current2 ? current2.title : null
+  const abBtn = { width: 44, height: 44, flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }
+  // App bar that belongs to a view (home or chat), so it slides in/out with its screen — consistent both ways.
+  const renderAppBar = (mode) => (
+    <div style={{ flexShrink: 0, height: 60, display: 'flex', alignItems: 'center', padding: '0 8px 0 12px', borderBottom: `1px solid ${C.border}`, backgroundColor: C.bgCard, position: 'relative' }}>
+      {mode === 'chat'
+        ? <button onClick={goHome} aria-label="Back" style={{ ...abBtn, justifyContent: 'flex-start' }}><span className="material-symbols-rounded msr-600" style={{ fontSize: 26, color: C.textIcon }}>arrow_back</span></button>
+        : <button onClick={() => setMenuOpen(o => !o)} aria-label="Chats menu" style={{ ...abBtn, justifyContent: 'flex-start' }}><span className="material-symbols-rounded msr-600" style={{ fontSize: 25, color: C.textIcon, transform: 'scaleX(-1)' }}>segment</span></button>}
+      <div style={{ flex: 1 }}/>
+      {mode === 'chat' && <button onClick={startNewChat} aria-label="New chat" style={{ ...abBtn, width: 40, height: 40 }}><span className="material-symbols-rounded msr-600" style={{ fontSize: 23, color: C.textIcon }}>edit_square</span></button>}
+      {mode === 'chat' && <button onClick={onOverflow} aria-label="More options" style={{ ...abBtn, width: 40, height: 40 }}><span className="material-symbols-rounded msr-600" style={{ fontSize: 22, color: C.textIcon }}>more_vert</span></button>}
+    </div>
+  )
+  // Footer nav lives inside the home layer so it slides with the home and the menu can run full-height beneath it.
+  const renderFooter = () => kbOpen ? null : (
+    <div style={{ flexShrink: 0 }}><BottomNav activeTab="chat" onTabChange={onTabChange}/></div>
+  )
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative', backgroundColor: C.bgCard }}>
-      <style>{`@keyframes chatDot { 0%,100%{opacity:0.25;transform:translateY(0)} 50%{opacity:1;transform:translateY(-2px)} } @keyframes chatPushIn { from{transform:translateX(100%)} to{transform:translateX(0)} } @keyframes chatSpark { 0%,100%{opacity:0.35;transform:scale(0.9)} 50%{opacity:1;transform:scale(1.12)} }`}</style>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative', overflow: 'hidden', backgroundColor: C.bgCard }}>
+      <style>{`@keyframes chatDot { 0%,100%{opacity:0.25;transform:translateY(0)} 50%{opacity:1;transform:translateY(-2px)} } @keyframes chatSpark { 0%,100%{opacity:0.35;transform:scale(0.9)} 50%{opacity:1;transform:scale(1.12)} } @keyframes chatViewIn { from{transform:translateX(100%)} to{transform:translateX(0)} } @keyframes chatViewOut { from{transform:translateX(0)} to{transform:translateX(100%)} } @keyframes chatPeekBack { from{transform:translateX(0);opacity:1} to{transform:translateX(-22%);opacity:0.55} } @keyframes chatPeekFwd { from{transform:translateX(-22%);opacity:0.55} to{transform:translateX(0);opacity:1} } @keyframes hdrFade{from{opacity:0}to{opacity:1}} .chatRow{background:transparent;transition:background 0.14s ease} .chatRow:hover{background:${C.bgApp}} .chatRow:active{background:${C.bgApp}} .chatRow.sel{background:${C.bgApp}}`}</style>
 
-      {drilledId != null ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, animation: 'chatPushIn 0.32s cubic-bezier(0.32,0.72,0,1)' }}>
-          <ChatThread key={drilledId} threadId={drilledId} initialMessages={drilled ? drilled.messages : []} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onMessagesChange={m => upsert(drilledId, m)} onCapture={onCaptureFlow} inject={captureAck && captureAck.threadId === drilledId ? captureAck : null} onInjected={onAckConsumed} onNewChat={() => { setDrilledId(null); openModal() }}/>
-        </div>
-      ) : sessions.length === 0 ? (
-        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '24px 18px 0' }}>
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 34, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span>
-            </div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: C.textPrimary, textAlign: 'center', lineHeight: 1.3, marginBottom: 22 }}>{greeting}</div>
-            <div style={{ marginBottom: 18 }}><ChatComposer value={launcherInput} onChange={setLauncherInput} onSend={launchFromInput} generating={false}/></div>
-            <ChatPrompts suggestions={suggestions} onPick={q => openModal(q)}/>
-          </div>
-          <ChatLegal/>
-        </div>
-      ) : (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px 96px' }}>
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              {sessions.map(s => (
-                <button key={s.id} onClick={() => setDrilledId(s.id)} style={{ width: '100%', textAlign: 'left', padding: '14px 2px', background: 'none', border: 'none', borderBottom: `1px solid ${C.border}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title}</div>
-                    <div style={{ fontSize: 12, color: C.textTertiary, marginTop: 3 }}>{s.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} &middot; {s.count} messages</div>
-                  </div>
-                  <span style={{ flexShrink: 0 }}><Ico.chevRight/></span>
-                </button>
-              ))}
-            </div>
-          </div>
-          <button onClick={() => openModal()} style={{ position: 'absolute', bottom: 20, right: 16, display: 'flex', alignItems: 'center', gap: 6, padding: '12px 18px', backgroundColor: C.primary, color: 'white', border: 'none', borderRadius: 26, cursor: 'pointer', boxShadow: '0 4px 14px rgba(0,0,0,0.22)', fontSize: 14, fontWeight: 600 }}>
-            <span className="material-symbols-rounded" style={{ fontSize: 18, fontVariationSettings: "'wght' 500" }}>add</span>
-            New chat
-          </button>
-        </div>
-      )}
+      {/* Stack, bottom → top: MENU (history) · HOME · CHAT. Sliding a layer aside uncovers the one beneath,
+          so the menu reads as sitting *below* the home, and back/drill are the same uncover/cover motion.
+          The app bar lives inside the app stack, so it slides with the home to uncover the menu's own header. */}
 
-      {modalOpen && (
-        <FlowShell onClose={closeModal}>
-          {(dismiss, setNav) => (
-            <ChatModalBody setNav={setNav} seed={modalSeed} threadId={modalIdRef.current} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onPersist={upsert} onCapture={onCaptureFlow} captureAck={captureAck} onInjected={onAckConsumed} onNewChat={() => openModal()}/>
-          )}
-        </FlowShell>
-      )}
+      {/* MENU — the base of the stack; its own header is revealed when the app stack slides aside. Tapping
+          empty space here (anything that doesn't navigate) closes the menu. */}
+      <div onClick={closeMenu} style={{ position: 'absolute', inset: 0, zIndex: 1, display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard }}>
+        <div style={{ flexShrink: 0, height: 60, display: 'flex', alignItems: 'center', padding: '0 20px', borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: C.textPrimary }}>Chats</div>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0 90px' }}>
+          {sessions.length === 0 ? (
+            <div style={{ padding: '18px 20px', color: C.textTertiary, fontSize: 13.5, lineHeight: 1.5 }}>No chats yet. Ask something to start one.</div>
+          ) : sessions.map(s => (
+            <button key={s.id} className={`chatRow${s.id === currentId ? ' sel' : ''}`} onClick={(e) => { e.stopPropagation(); openChat(s.id) }} style={{ width: '86%', textAlign: 'left', padding: '13px 20px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title}</div>
+                <div style={{ fontSize: 12, color: C.textTertiary, marginTop: 3 }}>{s.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} &middot; {s.count} messages</div>
+              </div>
+              <span style={{ flexShrink: 0 }}><Ico.chevRight/></span>
+            </button>
+          ))}
+        </div>
+        <button onClick={(e) => { e.stopPropagation(); startNewChat() }} style={{ position: 'absolute', bottom: 20, left: 16, display: 'flex', alignItems: 'center', gap: 6, padding: '12px 18px', backgroundColor: C.primary, color: 'white', border: 'none', borderRadius: 26, cursor: 'pointer', boxShadow: '0 4px 14px rgba(0,0,0,0.22)', fontSize: 14, fontWeight: 600 }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 18, fontVariationSettings: "'wght' 500" }}>add</span>
+          New chat
+        </button>
+      </div>
+
+      {/* APP STACK — each layer (home / drilled chat) carries its OWN app bar, so the bar travels with its
+          view: it slides in with the chat on drill-in and slides back out with it on back — consistent both ways. */}
+      <div style={{ position: 'absolute', inset: 0, zIndex: 2, backgroundColor: C.bgCard, transform: menuOpen ? 'translateX(86%)' : 'translateX(0)', transition: 'transform 0.42s cubic-bezier(0.32,0.72,0,1)', boxShadow: menuOpen ? '-10px 0 30px rgba(0,0,0,0.18)' : 'none' }}>
+        {/* home peek — behind the drilled chat, its own hamburger bar, parallax recede */}
+        {currentId !== homeId && (
+          <div key={'peek-' + homeId} style={{ position: 'absolute', inset: 0, zIndex: 1, display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard, pointerEvents: 'none', ...(anim === 'push' ? { animation: 'chatPeekBack 0.42s cubic-bezier(0.32,0.72,0,1) forwards' } : anim === 'pop' ? { animation: 'chatPeekFwd 0.42s cubic-bezier(0.32,0.72,0,1) forwards' } : { transform: 'translateX(-22%)', opacity: 0.55 }) }}>
+            {renderAppBar('home')}
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+              <ChatThread key={homeId} threadId={homeId} initialMessages={[]} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onMessagesChange={m => upsert(homeId, m)} onCapture={onCaptureFlow} inject={null} onInjected={onAckConsumed} onNewChat={startNewChat}/>
+            </div>
+            {renderFooter()}
+          </div>
+        )}
+        {/* foreground — the home or the drilled chat, with its matching bar; keyed by currentId so send never changes slot */}
+        <div
+          onAnimationEnd={(e) => { if (e.target !== e.currentTarget) return; if (anim === 'pop') setCurrentId(homeId); setAnim(null) }}
+          style={{ position: 'absolute', inset: 0, zIndex: 2, display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard, boxShadow: (currentId !== homeId || anim) ? '-8px 0 24px rgba(0,0,0,0.12)' : 'none', ...(anim === 'push' ? { animation: 'chatViewIn 0.42s cubic-bezier(0.32,0.72,0,1) forwards' } : anim === 'pop' ? { animation: 'chatViewOut 0.42s cubic-bezier(0.32,0.72,0,1) forwards' } : null) }}>
+          {renderAppBar(currentId === homeId ? 'home' : 'chat')}
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <ChatThread key={currentId} threadId={currentId} initialMessages={currentMessages} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onMessagesChange={m => upsert(currentId, m)} onCapture={onCaptureFlow} inject={captureAck && captureAck.threadId === currentId ? captureAck : null} onInjected={onAckConsumed} onNewChat={startNewChat}/>
+          </div>
+          {currentId === homeId && renderFooter()}
+        </div>
+        {/* Light scrim over the pushed-back home — lightens it (not darkens) so it recedes without reading as "below"; taps close the menu */}
+        <div onClick={closeMenu} style={{ position: 'absolute', inset: 0, zIndex: 5, backgroundColor: 'rgba(255,255,255,0.55)', opacity: menuOpen ? 1 : 0, pointerEvents: menuOpen ? 'auto' : 'none', transition: 'opacity 0.42s ease' }}/>
+      </div>
     </div>
   )
 }
@@ -5644,16 +5698,21 @@ const YouScreen = ({ currentUser, onLogout }) => (
 // ─── APP HEADER ───────────────────────────────────────────────────
 // ─── APP HEADER ───────────────────────────────────────────────────
 // ─── APP HEADER ───────────────────────────────────────────────────
-const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap, onBack, hideTitle, onOverflow }) => {
+const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap, onBack, onMenu, hideTitle, onOverflow, onNewChat, title }) => {
   const r = 19, circ = 2 * Math.PI * r, dash = 0.62 * circ
   return (
     <div style={{ display: 'flex', alignItems: 'center', height: 60, padding: '0 20px', backgroundColor: C.bgCard, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+      <style>{`@keyframes hdrFade{from{opacity:0}to{opacity:1}}`}</style>
       {onBack ? (
-        <button onClick={onBack} aria-label="Back" style={{ width: 46, height: 46, marginRight: 12, flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
+        <button key="back" onClick={onBack} aria-label="Back" style={{ width: 46, height: 46, marginRight: 12, flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-start', animation: 'hdrFade 0.24s ease' }}>
           <Ico.back/>
         </button>
+      ) : onMenu ? (
+        <button key="menu" onClick={onMenu} aria-label="Chats menu" style={{ width: 46, height: 46, marginRight: 12, flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-start', animation: 'hdrFade 0.24s ease' }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 25, color: C.textPrimary, transform: 'scaleX(-1)' }}>segment</span>
+        </button>
       ) : (
-      <div onClick={onProfileTap} style={{ position: 'relative', width: 46, height: 46, marginRight: 12, flexShrink: 0, cursor: 'pointer' }}>
+      <div key="avatar" onClick={onProfileTap} style={{ position: 'relative', width: 46, height: 46, marginRight: 12, flexShrink: 0, cursor: 'pointer' }}>
         <svg width="46" height="46" viewBox="0 0 46 46">
           <circle cx="23" cy="23" r={r} fill="none" stroke="#e8e8e8" strokeWidth="3"/>
           <circle cx="23" cy="23" r={r} fill="none" stroke="#4ade80" strokeWidth="3" strokeDasharray={`${dash} ${circ}`} strokeLinecap="round" transform="rotate(-90 23 23)"/>
@@ -5667,14 +5726,19 @@ const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap, onBa
       </div>
       )}
       <div style={{ flex: 1 }}/>
+      {onNewChat && (
+        <button key="compose" onClick={onNewChat} aria-label="New chat" style={{ width: 40, height: 40, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', animation: 'hdrFade 0.24s ease' }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 23, color: C.textIcon }}>edit_square</span>
+        </button>
+      )}
       {onOverflow && (
-        <button onClick={onOverflow} aria-label="More options" style={{ width: 40, height: 40, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', background: 'none', border: 'none', cursor: 'pointer' }}>
+        <button key="overflow" onClick={onOverflow} aria-label="More options" style={{ width: 40, height: 40, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', background: 'none', border: 'none', cursor: 'pointer', animation: 'hdrFade 0.24s ease' }}>
           <span className="material-symbols-rounded" style={{ fontSize: 22, color: C.textIcon }}>more_vert</span>
         </button>
       )}
       {!hideTitle && (
         <div style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-          <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2 }}>{{ careplan: 'Home', track: 'Tracker', chat: 'Chats', community: 'Community', you: 'You' }[activeTab] || 'Home'}</div>
+          <div key={'t-' + (title || activeTab)} style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 8px', animation: 'hdrFade 0.24s ease' }}>{title || ({ careplan: 'Home', track: 'Tracker', chat: 'Chats', community: 'Community', you: 'You' }[activeTab] || 'Home')}</div>
         </div>
       )}
     </div>
@@ -5893,10 +5957,12 @@ export default function App() {
   const [tabKey, setTabKey] = useState(0)
   const prevTabRef = useRef('careplan')
   const [showYou, setShowYou] = useState(false)
-  const [chatShowBack, setChatShowBack] = useState(false)
-  const [chatBackSignal, setChatBackSignal] = useState(0)
-  const [chatDrilledTitle, setChatDrilledTitle] = useState(null)
-  const [chatHideTitle, setChatHideTitle] = useState(false)
+  const [chatMenuSignal, setChatMenuSignal] = useState(0)          // header hamburger → open history drawer
+  const [chatNewSignal, setChatNewSignal] = useState(0)            // header compose → start a new chat
+  const [chatBackSignal, setChatBackSignal] = useState(0)          // header back arrow → return to the home surface
+  const [chatDrilled, setChatDrilled] = useState(false)            // true when a chat was opened from the side menu
+  const [chatMenuOpen, setChatMenuOpen] = useState(false)          // true while the history menu is revealed (footer nav slides aside with the home)
+  const [chatDrilledTitle, setChatDrilledTitle] = useState(null)   // current chat's topic title (null = fresh chat)
   const [chatOverflowOpen, setChatOverflowOpen] = useState(false)
   const [chatConfirmDelete, setChatConfirmDelete] = useState(false)
   const [chatDeleteSignal, setChatDeleteSignal] = useState(0)
@@ -6452,8 +6518,7 @@ export default function App() {
   const { allPlanItems, visibleRecs, addedIds } = useRecommendations(patientState, timeline)
   const anyDrillInOpen = !!(treatmentOpt || selectedCommunity || showYou || summarizeBlock || flow || sheetOpen)
   // Drilled into a chat (back button showing) → treat like a drill-in: hide the fixed nav, go full-height.
-  const chatDrilled = activeTab === 'chat' && chatShowBack
-  const hideNav = anyDrillInOpen || chatDrilled
+  const hideNav = anyDrillInOpen || (activeTab === 'chat' && chatDrilled)   // hide the footer nav only when drilled into a chat from the side menu
 
   // Inject visible recommendations into today's day — derived, not stored
   const timelineWithRecs = timeline.map(day => {
@@ -6607,9 +6672,9 @@ export default function App() {
         nav are ordinary flex children (not position:fixed), and the active screen is the single
         flex:1 scroll owner. No per-panel height math; the browser divides 100dvh across the three. */}
     <div ref={rootRef} style={{ width: '100%', height: '100dvh', backgroundColor: C.bgApp, position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        {onboarded && (
+        {onboarded && activeTab !== 'chat' && (
           <div style={{ flexShrink: 0, opacity: anyDrillInOpen ? 0 : 1, pointerEvents: anyDrillInOpen ? 'none' : 'auto', transition: 'opacity 0.2s ease' }}>
-            <AppHeader currentDayLabel={activeTab === 'careplan' ? currentDayLabel : null} activeTab={activeTab} onProfileTap={() => setShowYou(true)} onBack={activeTab === 'chat' && chatShowBack ? () => setChatBackSignal(n => n + 1) : null} hideTitle={activeTab === 'chat' && chatHideTitle} onOverflow={activeTab === 'chat' && chatShowBack ? () => setChatOverflowOpen(true) : null}/>
+            <AppHeader currentDayLabel={activeTab === 'careplan' ? currentDayLabel : null} activeTab={activeTab} onProfileTap={() => setShowYou(true)}/>
           </div>
         )}
         {/* Content region — single flex:1 area; the active screen fills it and scrolls internally */}
@@ -6621,7 +6686,7 @@ export default function App() {
           <CommunityScreen onSelectCommunity={setSelectedCommunity} autoJoinedId={autoJoinedCommunity?.id}/>
         </div>
         <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
-          <ChatScreen patientState={patientState} timeline={timeline} medications={medications} userName={currentUser?.name} onDeepLink={handleChatDeepLink} onShowBackChange={setChatShowBack} backSignal={chatBackSignal} onDrilledChange={setChatDrilledTitle} deleteSignal={chatDeleteSignal} onHideTitleChange={setChatHideTitle} onCaptureFlow={openCaptureFlow} captureAck={captureAck} onAckConsumed={() => setCaptureAck(null)}/>
+          <ChatScreen patientState={patientState} timeline={timeline} medications={medications} userName={currentUser?.name} onDeepLink={handleChatDeepLink} onDrilledChange={setChatDrilledTitle} onDrillModeChange={setChatDrilled} backSignal={chatBackSignal} deleteSignal={chatDeleteSignal} menuSignal={chatMenuSignal} newSignal={chatNewSignal} onOverflow={() => setChatOverflowOpen(true)} onMenuOpenChange={setChatMenuOpen} onTabChange={switchTab} kbOpen={kbOpen} onCaptureFlow={openCaptureFlow} captureAck={captureAck} onAckConsumed={() => setCaptureAck(null)}/>
         </div>
 
         {/* Parallax transform: MUST be `none` at rest, not translateX(0). On iOS Safari any
@@ -6697,7 +6762,7 @@ export default function App() {
         </div>
       </div>
 
-      {onboarded && !hideNav && !kbOpen && (
+      {onboarded && !hideNav && !kbOpen && activeTab !== 'chat' && (
         <div style={{ flexShrink: 0 }}>
           <BottomNav activeTab={activeTab} onTabChange={switchTab}/>
         </div>
