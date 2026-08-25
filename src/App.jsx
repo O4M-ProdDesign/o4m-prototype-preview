@@ -152,7 +152,7 @@ const relativeApptDate = (dateStr) => {
 const fmtDate = (d, opts = {}) => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...opts }) : ''
 const dayLabel = (dateStr) => {
   const today = new Date()
-  today.setHours(0, 0, 0, 0)
+  today.setHours(12, 0, 0, 0) // noon, to match the parsed date below — comparing noon-to-noon keeps deltaDays a clean integer (midnight-vs-noon left every date +0.5 → Math.round pushed today to "Tomorrow")
   const d = new Date(dateStr + 'T12:00:00')
   const deltaDays = Math.round((d - today) / 86400000)
   const thisYear = today.getFullYear() === d.getFullYear()
@@ -161,7 +161,7 @@ const dayLabel = (dateStr) => {
   if (deltaDays === -1) return { prefix: 'Yesterday', shortDate }
   if (deltaDays >= -7 && deltaDays <= -2) return { prefix: weekday, shortDate }
   if (deltaDays === 1) return { prefix: 'Tomorrow', shortDate }
-  if (deltaDays >= 2 && deltaDays <= 7) return { prefix: `Next ${weekday}`, shortDate }
+  if (deltaDays >= 2 && deltaDays <= 7) return { prefix: weekday, shortDate }
   return { prefix: null, shortDate }
 }
 const fmtDateRange = (s, e) => {
@@ -2553,20 +2553,20 @@ const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFla
   return (
     <div style={{ backgroundColor: C.bgApp }}>
       <div ref={sentinelRef} style={{ height: 0 }} data-date={day.date} data-label={day.isToday ? `Today · ${day.label}` : day.label}/>
-      <div style={{ position: 'sticky', top: 0, zIndex: 10, backgroundColor: C.bgApp, padding: '14px 16px 16px' }}>
+      <div style={{ position: 'sticky', top: 0, zIndex: 10, backgroundColor: C.bgApp, padding: '16px 16px 12px' }}>
         {day.isToday
-          ? <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
-              <span style={{ fontSize: 18, fontWeight: 800, color: C.primary, letterSpacing: '-0.3px', transition: 'opacity 0.15s', opacity: todayFlash ? 0.5 : 1 }}>Today</span>
-              <span style={{ fontSize: 16, color: C.textTertiary, fontWeight: 300 }}>·</span>
-              <span style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px' }}>{dayLabel(day.date).shortDate}</span>
+          ? <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+              <span style={{ fontSize: 16, fontWeight: 700, color: C.primary, letterSpacing: '-0.3px', transition: 'opacity 0.15s', opacity: todayFlash ? 0.5 : 1 }}>Today</span>
+              <span style={{ fontSize: 12, color: C.textTertiary, fontWeight: 400 }}>·</span>
+              <span style={{ fontSize: 16, fontWeight: 700, color: C.textSecondary, letterSpacing: '-0.3px' }}>{dayLabel(day.date).shortDate}</span>
             </div>
           : (() => { const { prefix, shortDate } = dayLabel(day.date); return prefix
-              ? <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
-                  <span style={{ fontSize: 18, fontWeight: 800, color: C.textPrimary, letterSpacing: '-0.3px' }}>{prefix}</span>
-                  <span style={{ fontSize: 16, color: C.textTertiary, fontWeight: 300 }}>·</span>
-                  <span style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px' }}>{shortDate}</span>
+              ? <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                  <span style={{ fontSize: 16, fontWeight: 700, color: C.textSecondary, letterSpacing: '-0.3px' }}>{prefix}</span>
+                  <span style={{ fontSize: 12, color: C.textTertiary, fontWeight: 400 }}>·</span>
+                  <span style={{ fontSize: 16, fontWeight: 700, color: C.textSecondary, letterSpacing: '-0.3px' }}>{shortDate}</span>
                 </div>
-              : <span style={{ fontSize: 18, fontWeight: 800, color: C.textPrimary, letterSpacing: '-0.3px' }}>{shortDate}</span>
+              : <span style={{ fontSize: 16, fontWeight: 700, color: C.textSecondary, letterSpacing: '-0.3px' }}>{shortDate}</span>
             })()
         }
       </div>
@@ -4937,19 +4937,25 @@ const routeChat = (raw, ctx) => {
   }
 
   // ── CAPTURE (first-person statements) — offer to save before answering ──
-  if (!has(/\?/) && has(/\b(i just started|i started taking|i'?ve started|i began taking|i'?m now on|started me on|i'?m taking)\b/)) {
-    const m = t.match(/(?:i just started|i started taking|i'?ve started|i began taking|started me on|i'?m now on|i'?m taking)\s+([a-z0-9][a-z0-9 \-]*)/)
-    // Capture just the first med: stop at punctuation or a conjunction ("Xeloda and Tylenol" → "Xeloda").
-    // Full multi-med capture is deferred; this keeps a two-drug mention from saving as one malformed record.
-    const raw = m ? m[1].replace(/[.?!,;].*$/, '').replace(/\s+(and|&|,|plus|along with|as well as)\b.*$/i, '').trim() : ''
-    const name = raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : ''
-    const low = raw.toLowerCase()
-    // Offer-gating: if the assistant can already see this med on record, silently continue —
-    // no capture prompt, no bookkeeping call-out (per PRD §14: suppress the prompt, keep it natural).
-    if (low && (ctx.medNames || []).some(n => n === low || n.includes(low) || low.includes(n))) {
-      return { kind:'answer', text:`Sounds good 👍` }
+  if (!has(/\?/) && has(/\b(i just started|i started taking|i started|i'?ve started|i began taking|i'?m now on|i'?m on|started me on|i'?m taking)\b/)) {
+    const m = t.match(/(?:i just started|i started taking|i started|i'?ve started|i began taking|started me on|i'?m now on|i'?m on|i'?m taking)\s+(.+)/)
+    // Strip a leading "taking "/"to take " the trigger didn't consume (e.g. "I just started taking X" → "X").
+    const rawAll = m ? m[1].replace(/^\s*(taking|to take)\s+/i, '').replace(/[.?!;].*$/, '') : ''
+    // Split a multi-drug mention ("Xeloda, Tylenol, and aspirin") into separate offers. Drug names are short, so
+    // drop long phrases (a naive guard against the greedy match grabbing trailing sentence text); cap generously.
+    const parts = rawAll.split(/\s*(?:,|&|\band\b|\bplus\b|\balong with\b|\bas well as\b)\s*/i)
+      .map(s => s.replace(/\s+(yesterday|today|this (morning|afternoon|evening|week)|now|recently|\d.*)$/i, '').trim())
+      .filter(p => p && p.split(/\s+/).length <= 3)
+      .slice(0, 8)
+    const meds = []
+    for (const p of parts) {
+      const low = p.toLowerCase()
+      // Offer-gating (PRD §14): if the assistant can already see this med on record, don't offer it.
+      if (low && (ctx.medNames || []).some(n => n === low || n.includes(low) || low.includes(n))) continue
+      meds.push(p.charAt(0).toUpperCase() + p.slice(1))
     }
-    return { kind:'answer', text:``, capture:{ type:'medication', log:'medication list', med: name || 'this medication', prefill: name ? { name } : null } }
+    if (!meds.length) return { kind:'answer', text:`Sounds good 👍` }
+    return { kind:'answer', text:``, capture:{ type:'medication', meds } }
   }
   if (has(/(appointment|appt|visit)\b/) && has(/\bi (have|'?ve got|booked|'?m seeing)\b|next (mon|tue|wed|thu|fri|sat|sun|week)|on (mon|tue|wed|thu|fri|sat|sun)/) && !has(/when|next (appointment|appt|visit|scan)\b/)) {
     return { kind:'answer', text:`Noted — I can keep that in mind for future chats if you add it to your plan.`, capture:{ log:'care plan' } }
@@ -5156,6 +5162,35 @@ const ChatTyping = () => (
   </div>
 )
 
+// Same pulse, but labelled — shown while a question is pending in the dock and the composer is locked.
+const ChatWaiting = () => (
+  <div style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 8, padding: '2px 2px' }}>
+    <span className="material-symbols-rounded" style={{ display: 'inline-block', fontSize: 22, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400", transformOrigin: 'center', animation: 'chatSpark 1.1s ease-in-out infinite' }}>auto_awesome</span>
+    <span style={{ fontSize: 13.5, color: C.textSecondary }}>Waiting for your response</span>
+  </div>
+)
+
+// Question dock — pinned above the composer. The user must resolve it (pick an option or Skip) before
+// the composer re-enables; consecutive questions step through a pager. Replaces inline offer blocks.
+const ChatQuestionDock = ({ q, onAnswer, onSkip }) => (
+  <div style={{ border: `1px solid ${C.borderMid}`, borderRadius: 16, backgroundColor: C.bgCard, boxShadow: '0 1px 3px rgba(0,0,0,0.06), 0 6px 16px rgba(0,0,0,0.07)', padding: '14px 8px 8px', marginBottom: 8 }}>
+    <div style={{ padding: '0 10px', marginBottom: 10 }}>
+      <div style={{ fontSize: 14.5, fontWeight: 600, color: C.textPrimary, lineHeight: 1.4 }}>{q.prompt}</div>
+    </div>
+    {q.options.map((opt, i) => (
+      <button key={i} className="chatRow" onClick={() => onAnswer(opt)} style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 12, padding: '11px 10px', border: 'none', borderRadius: 12, cursor: 'pointer' }}>
+        <span style={{ width: 22, height: 22, borderRadius: 6, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: C.textSecondary, flexShrink: 0 }}>{i + 1}</span>
+        <span style={{ flex: 1, fontSize: 14.5, color: C.textPrimary, fontWeight: 500 }}>{opt.label}</span>
+      </button>
+    ))}
+    {q.skip && (
+      <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 4, paddingTop: 6, display: 'flex', justifyContent: 'flex-end' }}>
+        <button onClick={onSkip} style={{ padding: '8px 16px', border: `1px solid ${C.border}`, borderRadius: 10, backgroundColor: 'transparent', fontSize: 13.5, fontWeight: 600, color: C.textSecondary, cursor: 'pointer' }}>Skip</button>
+      </div>
+    )}
+  </div>
+)
+
 const ChatAiBubble = ({ resp, providerName, onDeepLink, onCapture, msgIndex }) => {
   const isHardstop = resp.kind === 'hardstop'
   if (resp.kind === 'crisis') {
@@ -5167,10 +5202,9 @@ const ChatAiBubble = ({ resp, providerName, onDeepLink, onCapture, msgIndex }) =
         {resp.text}
         {resp.source && !resp._streaming && <ChatSource label={resp.source}/>}
       </div>
-      {!resp._streaming && (
+      {!resp._streaming && (resp.connect || resp.nurse) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {resp.connect && <ChatDeepLink {...resp.connect} onDeepLink={onDeepLink}/>}
-          {resp.capture && <ChatCapture capture={resp.capture} onCapture={onCapture} msgIndex={msgIndex}/>}
           {resp.nurse && <ChatNurseCTA onDeepLink={onDeepLink}/>}
         </div>
       )}
@@ -5186,7 +5220,7 @@ const ChatLegal = ({ compact }) => (
 )
 
 // Composer — send button inside the field, taller than a prompt chip
-const ChatComposer = ({ value, onChange, onSend, generating, disabled }) => {
+const ChatComposer = ({ value, onChange, onSend, generating, disabled, disabledText }) => {
   const canSend = value.trim() && !generating && !disabled
   const taRef = useRef(null)
   const MAX_H = 150
@@ -5202,7 +5236,7 @@ const ChatComposer = ({ value, onChange, onSend, generating, disabled }) => {
   }, [value])
   return (
     <div style={{ position: 'relative', backgroundColor: C.bgCard, border: `1px solid ${C.borderMid}`, borderRadius: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.05)', opacity: disabled ? 0.55 : 1 }}>
-      <textarea ref={taRef} value={value} onChange={e => onChange(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (canSend) onSend() } }} rows={1} disabled={disabled} placeholder={disabled ? 'Start a new chat to continue' : 'How can I help you today?'} style={{ width: '100%', boxSizing: 'border-box', minHeight: 58, maxHeight: MAX_H, resize: 'none', border: 'none', outline: 'none', background: 'transparent', padding: '16px 54px 16px 16px', fontSize: 15, lineHeight: 1.45, fontFamily: 'inherit', color: C.textPrimary, overflowY: 'hidden', cursor: disabled ? 'default' : 'text' }}/>
+      <textarea ref={taRef} value={value} onChange={e => onChange(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (canSend) onSend() } }} rows={1} disabled={disabled} placeholder={disabled ? (disabledText || 'Start a new chat to continue') : 'How can I help you today?'} style={{ width: '100%', boxSizing: 'border-box', minHeight: 58, maxHeight: MAX_H, resize: 'none', border: 'none', outline: 'none', background: 'transparent', padding: '16px 54px 16px 16px', fontSize: 15, lineHeight: 1.45, fontFamily: 'inherit', color: C.textPrimary, overflowY: 'hidden', cursor: disabled ? 'default' : 'text' }}/>
       <button onClick={() => canSend && onSend()} disabled={!canSend} aria-label="Send" style={{ position: 'absolute', right: 9, bottom: 9, width: 38, height: 38, borderRadius: 19, border: 'none', backgroundColor: canSend ? C.primary : C.border, cursor: canSend ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background-color 0.15s' }}>
         <span className="material-symbols-rounded" style={{ fontSize: 20, color: 'white', fontVariationSettings: "'FILL' 1, 'wght' 500" }}>arrow_upward</span>
       </button>
@@ -5229,6 +5263,9 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
   const [input, setInput] = useState(() => getChatDraft(threadId))  // restore unsent draft for this chat
   useEffect(() => { saveChatDraft(threadId, input) }, [input, threadId])  // persist per conversation; cleared on send (input → '')
   const [generating, setGenerating] = useState(false)
+  const [activeQ, setActiveQ] = useState(null)    // the current dock question; resolved (answer/Skip) before the composer re-enables. One at a time — the AI replies, then the next question pops up.
+  const qSeq = useRef(0)
+  const pendingCaptures = useRef([])              // "Add both" queues each med's add-flow, opened one after the other
   const scrollRef = useRef(null)
   const timerRef = useRef(null)
   const seededRef = useRef(false)
@@ -5239,27 +5276,78 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
 
   const handleCapture = (cap) => { if (onCapture) onCapture({ type: cap.type, prefill: cap.prefill, threadId, msgIndex: cap.msgIndex, answer: cap.answer }) }
 
+  // "Add both" walk-through: present the next queued med as its own confirm question (skippable). Each step
+  // advances on its own resolution — Add (→ flow → save ack) or Skip — so skipping one still triggers the next.
+  const stepChain = () => {
+    const next = pendingCaptures.current[0]
+    if (!next) return
+    setActiveQ({ id: 'q' + (qSeq.current++), prompt: `Next — want me to add ${next.prefill.name}?`, options: [{ label: `Add ${next.prefill.name}`, kind: 'chain', caps: [next] }], skip: true, chain: true })
+  }
+  const enqueueCapture = (cap) => {
+    let q = null
+    if (cap.type === 'medication' && cap.meds && cap.meds.length) {
+      const capOf = (name) => ({ type: 'medication', prefill: { name } })
+      const listNames = (a) => a.length === 2 ? `${a[0]} and ${a[1]}` : `${a.slice(0, -1).join(', ')}, and ${a[a.length - 1]}`
+      // One radio question: an "Add {med}" per med, plus "Add all" that walks each (skippable) — so it covers a
+      // single, all, or any subset (Add all → skip the ones you don't want). Meds already on record are filtered out.
+      const options = cap.meds.map(med => ({ label: `Add ${med}`, kind: 'capture', caps: [capOf(med)] }))
+      if (cap.meds.length > 1) options.push({ label: `${cap.meds.length === 2 ? 'Add both' : 'Add all'} (${listNames(cap.meds)})`, kind: 'capture', caps: cap.meds.map(capOf) })
+      const prompt = cap.meds.length > 1
+        ? `Keeping your medication list current helps me give better answers. Want me to add these to your medications?`
+        : `Keeping your medication list current helps me give better answers. Want me to add ${cap.meds[0]} to your medications?`
+      q = { id: 'q' + (qSeq.current++), prompt, options, skip: true }
+    } else if (cap.log) {
+      q = { id: 'q' + (qSeq.current++), prompt: `Want me to add this to your ${cap.log}?`, options: [{ label: 'Add it', kind: 'note' }], skip: true }
+    }
+    if (q) setActiveQ(q)
+  }
+  const openCap = (c, label) => { if (c && onCapture) onCapture({ type: c.type, prefill: c.prefill, threadId, answer: label }) }
+  const answerQ = (opt) => {
+    setMessages(prev => [...prev, { role: 'user', text: opt.label }])
+    setActiveQ(null)
+    if (opt.kind === 'capture') {
+      // From the initial question. Launch the first med's flow right away (a single "Add X", or the first of
+      // "Add all" — they just committed). Any remaining meds are confirmed one at a time via the chain.
+      pendingCaptures.current = (opt.caps || []).slice()
+      const first = pendingCaptures.current.shift()
+      openCap(first, first ? `Add ${first.prefill.name}` : opt.label)
+    } else if (opt.kind === 'chain') {
+      // A step in the "Add both" walk-through: consume this med and open its flow. The next step fires after its save ack.
+      pendingCaptures.current.shift()
+      openCap((opt.caps || [])[0], opt.label)
+    } else {
+      setGenerating(true)
+      if (timerRef.current) clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => { setGenerating(false); deliver({ kind: 'answer', text: `Got it — I'll keep that in mind for future chats.` }) }, 650 + Math.random() * 300)
+    }
+  }
+  const skipQ = () => {
+    const q = activeQ
+    // Skip is a soft "not now," not a permanent decline — tell them how to add it later: re-state "I started X".
+    const meds = q ? [...new Set((q.options || []).flatMap(o => (o.caps || []).map(c => c.prefill && c.prefill.name).filter(Boolean)))] : []
+    const text = meds.length === 1 ? `No problem. If you'd like to add it later, just tell me you started ${meds[0]}.`
+      : meds.length > 1 ? `No problem. If you'd like to add any of them later, just let me know you started it.`
+      : `No problem.`
+    setActiveQ(null)   // no "Not now" user bubble — a skip is a tap, not a typed message
+    const chained = q && q.chain
+    if (chained) pendingCaptures.current.shift()   // skip this step; the next med still gets asked below
+    setGenerating(true)
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => {
+      setGenerating(false)
+      deliver({ kind: 'answer', text })
+      if (chained && pendingCaptures.current.length) setTimeout(stepChain, 1000)
+    }, 600 + Math.random() * 300)
+  }
+
   // Stream a reply's text in progressively (no fade) — like live generation.
   // Attachments (citation / CTAs / capture) hold until the text finishes.
   const deliver = (resp) => {
+    // Pure question (empty text + capture): no message bubble — the ask lives entirely in the dock.
+    if (!(resp.text || '').trim() && resp.capture) { enqueueCapture(resp.capture); return }
     const tokens = (resp.text || '').split(/(\s+)/)  // words + whitespace preserved
     streamingRef.current = true
-    // Only one live medication offer per med: if this reply carries a new offer for a med
-    // that already has a standing (unresolved) offer, retire the older one's button so the
-    // newest is the single actionable CTA. Retired blocks render question-only (no button).
-    const newMed = resp.capture && resp.capture.type === 'medication' && (resp.capture.med || '').toLowerCase().trim()
-    setMessages(prev => {
-      const base = newMed
-        ? prev.map(m => {
-            const c = m.role === 'ai' && m.resp && m.resp.capture
-            if (c && c.type === 'medication' && !c.resolved && !c.retired && (c.med || '').toLowerCase().trim() === newMed) {
-              return { ...m, resp: { ...m.resp, capture: { ...c, retired: true } } }
-            }
-            return m
-          })
-        : prev
-      return [...base, { role: 'ai', resp: { ...resp, text: '', _streaming: true } }]
-    })
+    setMessages(prev => [...prev, { role: 'ai', resp: { ...resp, text: '', _streaming: true } }])
     let i = 0
     if (streamTimerRef.current) clearInterval(streamTimerRef.current)
     streamTimerRef.current = setInterval(() => {
@@ -5272,7 +5360,8 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
         if (last.role !== 'ai') return prev
         return prev.slice(0, -1).concat({ ...last, resp: { ...last.resp, text: shown, _streaming: !done } })
       })
-      if (done) { clearInterval(streamTimerRef.current); streamTimerRef.current = null; streamingRef.current = false }
+      // On completion, surface any capture as a dock question (after the answer text has landed).
+      if (done) { clearInterval(streamTimerRef.current); streamTimerRef.current = null; streamingRef.current = false; if (resp.capture) enqueueCapture(resp.capture) }
     }, 42)
   }
 
@@ -5280,47 +5369,19 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
     setGenerating(true)
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => {
-      let resp = routeChat(text, ctx)
-      // One offer per drug per conversation. If we've already offered this med in this thread
-      // (tapped or ignored), don't re-offer — just answer. Ignoring an offer is a soft "no";
-      // re-asking on every mention nags. The original offer stays tappable in the thread.
-      if (resp.capture && resp.capture.type === 'medication') {
-        const med = (resp.capture.med || '').toLowerCase().trim()
-        const alreadyOffered = messages.some(m => m.role === 'ai' && m.resp && m.resp.capture && m.resp.capture.type === 'medication' && (m.resp.capture.med || '').toLowerCase().trim() === med)
-        if (alreadyOffered) resp = { kind: 'answer', text: 'Got it 👍' }
-      }
+      const resp = routeChat(text, ctx)
+      // A re-offer is suppressed only when the med is actually on record (the on-record check inside routeChat).
+      // Skip and cancel are never permanent declines — re-stating "I started X" offers it again (that's the how-to
+      // the skip reply gives). So the only thing that stops a re-offer is the med genuinely being saved.
       setGenerating(false)
       deliver(resp)
     }, 850 + Math.random() * 500)
   }
+  // Composer send. The composer is locked while a question is pending, so there's no typed-affirmative
+  // path to reconcile anymore — the dock is the only way to resolve a question.
   const runSend = (text) => {
-    if (!text || generating) return
+    if (!text || generating || activeQ) return
     if (messages.length >= MSG_HARD_LIMIT) return  // session message cap reached (PRD §11)
-    // Affirmative typed against a standing capture offer → fire it, record the typed text
-    // inside the offer block (no separate user bubble); nothing else changes until confirmed.
-    // Typed response to a standing med offer. A loose affirmative ("sure", "ok", "add it") only
-    // fires when it's the IMMEDIATE reply to the offer (offer is the last message). Once the
-    // conversation has moved on, a bare "ok" must NOT reach back — only a specific instruction
-    // ("add metformin", "add it to my tracker/record/timeline") triggers it. Declines fall through
-    // to a normal reply (no add).
-    let pendingIdx = -1
-    for (let k = messages.length - 1; k >= 0; k--) {
-      const c = messages[k].resp && messages[k].resp.capture
-      if (c && c.type === 'medication' && !c.resolved) { pendingIdx = k; break }
-    }
-    if (pendingIdx >= 0) {
-      const c = messages[pendingIdx].resp.capture
-      const med = (c.med || '').toLowerCase()
-      const immediate = pendingIdx === messages.length - 1  // nothing sent since the offer
-      const looseYes = /^\s*(yes|yeah|yep|yup|sure|ok(ay)?|please|add it|do it|go ahead|sounds good|yes please|please do|let'?s( go| do it| add it)?)\b/i.test(text)
-      const specificAdd = /\badd\b/i.test(text) && ((med && text.toLowerCase().includes(med)) || /\b(record|tracker|timeline|list|profile|medications?)\b/i.test(text))
-      if ((immediate && looseYes) || specificAdd) {
-        setInput('')
-        if (onCapture) onCapture({ type: c.type, prefill: c.prefill, threadId, msgIndex: pendingIdx, answer: text })
-        return
-      }
-      // Anything else (a decline, a question, an unrelated message) falls through to a normal reply.
-    }
     setInput('')
     setMessages(prev => [...prev, { role: 'user', text }])
     generateReply(text)
@@ -5358,6 +5419,9 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
         setGenerating(false)
         deliver({ kind: 'answer', text: inject.text })
         if (onInjected) onInjected()
+        // "Add both": once this med's acknowledgment lands, ask about the next med as its own dock question —
+        // the acknowledgment stays readable, and the next flow only opens on confirm.
+        if (pendingCaptures.current.length) setTimeout(stepChain, 1100)
       }, 750 + Math.random() * 400)
     }
   }, [inject])
@@ -5384,7 +5448,7 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
           ? <ChatUserBubble key={i} text={m.text}/>
           : <ChatAiBubble key={i} resp={m.resp} providerName={providerName} onDeepLink={onDeepLink} onCapture={handleCapture} msgIndex={i}/>
         )}
-        {generating && <ChatTyping/>}
+        {generating ? <ChatTyping/> : activeQ ? <ChatWaiting/> : null}
       </div>
       <div style={{ flexShrink: 0, backgroundColor: C.bgCard, padding: '0 12px 8px' }}>
         {messages.length >= MSG_HARD_LIMIT ? (
@@ -5404,7 +5468,8 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
                 You're approaching the conversation limit — consider starting a new chat soon.
               </div>
             )}
-            <ChatComposer value={input} onChange={setInput} onSend={() => send()} generating={generating}/>
+            {activeQ && <ChatQuestionDock q={activeQ} onAnswer={answerQ} onSkip={skipQ}/>}
+            <ChatComposer value={input} onChange={setInput} onSend={() => send()} generating={generating} disabled={!!activeQ} disabledText="Answer above to continue"/>
           </>
         )}
         <ChatLegal compact/>
@@ -5701,7 +5766,7 @@ const YouScreen = ({ currentUser, onLogout }) => (
 const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap, onBack, onMenu, hideTitle, onOverflow, onNewChat, title }) => {
   const r = 19, circ = 2 * Math.PI * r, dash = 0.62 * circ
   return (
-    <div style={{ display: 'flex', alignItems: 'center', height: 60, padding: '0 20px', backgroundColor: C.bgCard, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+    <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: 60, padding: '0 20px', backgroundColor: C.bgCard, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
       <style>{`@keyframes hdrFade{from{opacity:0}to{opacity:1}}`}</style>
       {onBack ? (
         <button key="back" onClick={onBack} aria-label="Back" style={{ width: 46, height: 46, marginRight: 12, flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-start', animation: 'hdrFade 0.24s ease' }}>
@@ -5933,8 +5998,6 @@ export default function App() {
   const [revealedCards, setRevealedCards] = useState(new Set())
   const [generationDone, setGenerationDone] = useState(false)
   const [showTodayPill, setShowTodayPill] = useState(false)
-  const [hidePillOnScroll, setHidePillOnScroll] = useState(false) // slide the pill away while scrolling down, back on scroll up
-  const lastScrollTopRef = useRef(0)
   const [pullDistance, setPullDistance] = useState(0)
   const [refreshKey, setRefreshKey] = useState(0) // cards that have been revealed
   const justAddedRef = useRef(false) // set when the user adds an event, so the group-change replay yields to the add's own scroll/highlight
@@ -6295,35 +6358,17 @@ export default function App() {
     const container = scrollRef.current
     if (!container) return
     const onScroll = () => {
-      const st = container.scrollTop
-      const last = lastScrollTopRef.current
-      const delta = st - last
-      lastScrollTopRef.current = st
-
-      const todayDay = timelineWithRecs.find(d => d.isToday)
-      if (!todayDay) return
-      const el = sentinelRefs.current[todayDay.date]
+      // Show the "Today" control whenever today's header has moved off its resting position at the
+      // top of the timeline — in EITHER direction (up into the past, or down into the future / its
+      // own content). Keyed only on today's own sentinel vs the top edge, so it triggers
+      // symmetrically and doesn't depend on another day climbing to the top (which a side with less
+      // than a screen of content could never do). Position-based, no scroll-direction logic → no
+      // flicker. 2px deadband avoids jitter at the resting position.
+      const el = sentinelRefs.current[(timelineWithRecs.find(d => d.isToday) || {}).date]
       if (!el) return
-      const rect = el.getBoundingClientRect()
-      const cRect = container.getBoundingClientRect()
-      // Scrolled past today (today is above the viewport)
-      const isPinned = rect.top < cRect.top - 1
-      // Today is below the fold
-      const isBelowFold = rect.top > cRect.bottom
-      setShowTodayPill(isPinned || isBelowFold)
-
-      // Directional awareness — hide pill when scrolling TOWARD today, show when scrolling away.
-      // Use 4px deadband to avoid flickering from momentum/deceleration.
-      if (Math.abs(delta) > 4) {
-        const scrollingDown = delta > 0
-        if (isPinned) {
-          // Today is ABOVE viewport: scrolling UP (delta<0) = toward today → hide
-          setHidePillOnScroll(!scrollingDown)
-        } else if (isBelowFold) {
-          // Today is BELOW viewport: scrolling DOWN (delta>0) = toward today → hide
-          setHidePillOnScroll(scrollingDown)
-        }
-      }
+      const cTop = container.getBoundingClientRect().top
+      const offset = el.getBoundingClientRect().top - cTop
+      setShowTodayPill(Math.abs(offset) > 2)
     }
     container.addEventListener('scroll', onScroll, { passive: true })
     return () => container.removeEventListener('scroll', onScroll)
@@ -6830,7 +6875,7 @@ export default function App() {
       {flow === 'scan' && <AddScanFlow onClose={() => { setFlow(null); setFlowPreload(null) }} onComplete={handleComplete} preload={flowPreload?.type === 'scan' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
       {flow === 'medication' && <AddMedicationFlow onClose={() => { setFlow(null); setFlowPreload(null); pendingCaptureRef.current = null }} onComplete={handleComplete} preload={flowPreload?.type === 'medication' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
       {flow === 'appointment' && <AddAppointmentFlow onClose={() => setFlow(null)} onComplete={handleComplete}/>}
-      {onboarded && !anyDrillInOpen && activeTab === 'careplan' && showTodayPill && (
+      {onboarded && !anyDrillInOpen && activeTab === 'careplan' && (
         <div style={{
           position: 'fixed', bottom: 90, left: 0, right: 0, zIndex: 30,
           display: 'flex', justifyContent: 'center', pointerEvents: 'none',
@@ -6841,9 +6886,9 @@ export default function App() {
             boxShadow: '0 2px 12px rgba(0,0,0,0.12)',
             display: 'flex', alignItems: 'center', gap: 6,
             WebkitTapHighlightColor: 'transparent',
-            pointerEvents: hidePillOnScroll ? 'none' : 'auto',
-            transform: hidePillOnScroll ? 'translateY(120px)' : 'translateY(0)',
-            opacity: hidePillOnScroll ? 0 : 1,
+            pointerEvents: showTodayPill ? 'auto' : 'none',
+            transform: showTodayPill ? 'translateY(0)' : 'translateY(120px)',
+            opacity: showTodayPill ? 1 : 0,
             transition: 'transform 0.28s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.28s ease',
           }}>
             <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>today</span>
