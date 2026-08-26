@@ -1774,21 +1774,56 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
   )
 }
 
-const DailySummaryCard = ({ summary, isToday }) => {
+const DailySummaryCard = ({ summary, isToday, onAddEvent }) => {
+  const bullets = summary.bullets || []
+  // Signature drives the change/generating animation without parsing text (bullet ids + text).
+  const signature = bullets.map(b => b.id + ':' + b.text).join('|')
   const [open, setOpen] = useState(true)
   const [vote, setVote] = useState(null)  // 'up' | 'down' | null
+  const [forceFail, setForceFail] = useState(false)  // demo-only: preview the generation-failure state
   const castVote = (v) => (e) => { e.stopPropagation(); setVote(prev => prev === v ? null : v) }
 
-  const [shownText, setShownText] = useState(summary.text)
+  const [shownBullets, setShownBullets] = useState(bullets)
   const [generating, setGenerating] = useState(false)
   const [textOpacity, setTextOpacity] = useState(1)
   const [lastUpdated, setLastUpdated] = useState(() => new Date())
-  const prevTextRef = useRef(summary.text)
+  const prevSigRef = useRef(signature)
   const pendingRef = useRef(null)
   const genStartRef = useRef(0)
   const resolvingRef = useRef(false)
   const cardRef = useRef(null)
   const starRef = useRef(null)
+
+  // ── Change marking (Engineering Spec §6 / req 43) ────────────────────────────
+  // Diff the current bullets against the last version the patient has actually SEEN
+  // (matched by id + text), persisted to localStorage so a change stays flagged across
+  // reloads until viewed. New/updated bullets are highlighted; a change indicator shows while
+  // the card is collapsed. We never auto-open — the card stays as the user left it.
+  // Prototype note: this simulates the spec's server-side seen-state with localStorage.
+  const SEEN_KEY = 'o4m_summary_seen'
+  const [onScreen, setOnScreen] = useState(false)
+  const [seenSet, setSeenSet] = useState(() => {
+    try {
+      const raw = localStorage.getItem(SEEN_KEY)
+      if (raw) return new Set(JSON.parse(raw))
+    } catch {}
+    // First-ever view establishes the baseline — nothing is marked on first load.
+    const sig = (summary.bullets || []).map(b => b.id + ':' + b.text)
+    try { localStorage.setItem(SEEN_KEY, JSON.stringify(sig)) } catch {}
+    return new Set(sig)
+  })
+  const seenIds = new Set([...seenSet].map(s => s.slice(0, s.indexOf(':'))))
+  const changeOf = (b) => seenSet.has(b.id + ':' + b.text) ? null : (seenIds.has(b.id) ? 'updated' : 'new')
+  const hasChanges = shownBullets.some(b => changeOf(b))
+
+  // Card states (always rendered — overrides the spec's "no data → don't render"):
+  //   failure → couldn't generate; empty → no bullets at all; up-to-date → only plan_status,
+  //   so we keep it and append an "add events" nudge + CTA. Rich → has actionable bullets.
+  const isFailure = forceFail
+  const isEmpty = !isFailure && shownBullets.length === 0
+  const previewText = isFailure ? "Couldn't be generated" : isEmpty ? "Nothing new yet" : (shownBullets[0] ? shownBullets[0].text : '')
+  const onRetry = (e) => { e.stopPropagation(); setGenerating(true); setTimeout(() => { setForceFail(false); setGenerating(false) }, 900) }
+  const openAdd = (e) => { e.stopPropagation(); if (onAddEvent) onAddEvent() }
 
   const isVisible = useCallback(() => {
     const el = cardRef.current
@@ -1808,7 +1843,7 @@ const DailySummaryCard = ({ summary, isToday }) => {
     setTimeout(() => {
       setTextOpacity(0)
       setTimeout(() => {
-        setShownText(pendingRef.current)
+        setShownBullets(pendingRef.current)
         pendingRef.current = null
         setGenerating(false)
         requestAnimationFrame(() => setTextOpacity(1))
@@ -1818,23 +1853,23 @@ const DailySummaryCard = ({ summary, isToday }) => {
   }, [isVisible])
 
   useEffect(() => {
-    if (summary.text === prevTextRef.current) return
-    prevTextRef.current = summary.text
-    pendingRef.current = summary.text
+    if (signature === prevSigRef.current) return
+    prevSigRef.current = signature
+    pendingRef.current = bullets
     resolvingRef.current = false
     genStartRef.current = Date.now()
     setGenerating(true)
     setLastUpdated(new Date())
     tryDeliver()
-  }, [summary.text, tryDeliver])
+  }, [signature, tryDeliver])
 
   useEffect(() => {
     const el = cardRef.current
     let obs = null
     if (el && typeof IntersectionObserver !== 'undefined') {
-      obs = new IntersectionObserver(() => tryDeliver(), { threshold: [0, 0.25, 0.5] })
+      obs = new IntersectionObserver((entries) => { const e = entries[0]; if (e) setOnScreen(e.isIntersecting); tryDeliver() }, { threshold: [0, 0.25, 0.5] })
       obs.observe(el)
-    }
+    } else { setOnScreen(true) }
     let raf = 0
     const onScroll = () => {
       if (pendingRef.current == null || raf) return
@@ -1854,25 +1889,67 @@ const DailySummaryCard = ({ summary, isToday }) => {
     return () => anim.cancel()
   }, [generating])
 
+  // Acknowledge (clear marks) once the patient has actually viewed the card: open + on-screen for
+  // a short dwell. Commits the current bullets as "seen". Never fires while collapsed, so a change
+  // stays flagged until the user opens it. Diffs against last-seen, so two changes made without
+  // opening both stay marked until viewed.
+  useEffect(() => {
+    if (!open || !onScreen) return
+    const t = setTimeout(() => {
+      const sig = shownBullets.map(b => b.id + ':' + b.text)
+      setSeenSet(new Set(sig))
+      try { localStorage.setItem(SEEN_KEY, JSON.stringify(sig)) } catch {}
+    }, 2200)
+    return () => clearTimeout(t)
+  }, [open, onScreen, shownBullets])
+
   const textFade = { opacity: textOpacity, transition: 'opacity 0.28s ease' }
+  const ctaBtnStyle = { marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', backgroundColor: 'transparent', border: `1px solid ${C.border}`, borderRadius: 20, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: C.textPrimary }
 
   return (
     <button ref={cardRef} onClick={() => setOpen(o => !o)} style={{ position: 'relative', width: '100%', backgroundColor: C.bgCard, border: '1px solid transparent', borderRadius: 14, padding: '13px 16px', cursor: 'pointer', textAlign: 'left', WebkitTapHighlightColor: 'transparent' }}>
+      {/* demo-only: tiny hidden hotspot (top-left corner) toggles the failure-state preview */}
+      <span onClick={(e) => { e.stopPropagation(); setForceFail(f => !f) }} aria-hidden="true" style={{ position: 'absolute', top: 0, left: 0, width: 16, height: 16, zIndex: 2 }}/>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span ref={starRef} style={{ display: 'inline-flex', transformOrigin: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 17, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span></span><span style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary, flex: 1, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>Daily summary{!open && <span style={{ ...textFade, fontWeight: 400 }}> &bull; {shownText}</span>}</span><Ico.chevDown open={open}/>
+        <span ref={starRef} style={{ display: 'inline-flex', transformOrigin: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 17, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span></span><span style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary, flex: 1, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>Daily summary{!open && previewText && <span style={{ ...textFade, fontWeight: 400 }}> &bull; {previewText}</span>}</span>{!open && hasChanges && <span aria-label="Updated" style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: C.primary, flexShrink: 0, marginRight: 7 }}/>}<Ico.chevDown open={open}/>
       </div>
       <div style={{ display: 'grid', gridTemplateRows: open ? '1fr' : '0fr', transition: 'grid-template-rows 0.35s ease' }}>
         <div style={{ overflow: 'hidden', minHeight: 0 }}>
-          <p style={{ ...textFade, fontSize: 14, color: C.textPrimary, lineHeight: 1.6, margin: '12px 0' }}>{shownText}</p>
-          <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
-            <button onClick={castVote('up')} aria-pressed={vote === 'up'} style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: vote === 'up' ? C.primaryLight : 'transparent', border: 'none', borderRadius: 8, cursor: 'pointer', transition: 'background-color 0.15s' }}>
-              <svg width="15" height="15" viewBox="0 0 15 15" fill={vote === 'up' ? C.primary : 'none'}><path d="M1.5 7.5h2v5.5h-2zM3.5 7.5L5.5 3l1.5.5V6.5H11L10 12H3.5z" stroke={vote === 'up' ? C.primary : C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>
-            </button>
-            <button onClick={castVote('down')} aria-pressed={vote === 'down'} style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: vote === 'down' ? C.primaryLight : 'transparent', border: 'none', borderRadius: 8, cursor: 'pointer', transition: 'background-color 0.15s' }}>
-              <svg width="15" height="15" viewBox="0 0 15 15" fill={vote === 'down' ? C.primary : 'none'}><path d="M13.5 7.5h-2V2h2zM11.5 7.5L9.5 12l-1.5-.5V8H4L5 3h6.5z" stroke={vote === 'down' ? C.primary : C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>
-            </button>
-          </div>
-          <div style={{ fontSize: 12, color: C.textSecondary, lineHeight: 1.4 }}>AI-generated from your cancer health plan and recent clinical activity, accuracy may vary. Last updated {lastUpdated.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.</div>
+          {isFailure ? (
+            <div style={{ ...textFade, margin: '12px 0 4px' }}>
+              <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>Your summary couldn't be generated right now.</div>
+              <button onClick={onRetry} style={ctaBtnStyle}>
+                <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.primary }}>refresh</span>Try again
+              </button>
+            </div>
+          ) : isEmpty ? (
+            <div style={{ ...textFade, margin: '12px 0 4px' }}>
+              <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>Your summary will fill in as you add to your plan. New appointments, treatments, and events show up here.</div>
+              <button onClick={openAdd} style={ctaBtnStyle}>
+                <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.primary }}>add</span>Add an event
+              </button>
+            </div>
+          ) : (
+            <>
+              <div style={{ ...textFade, display: 'flex', flexDirection: 'column', gap: 9, margin: '12px 0' }}>
+                {shownBullets.map(b => { const ch = changeOf(b); return (
+                  <div key={b.id} style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}>
+                    <span style={{ width: 5, height: 5, borderRadius: '50%', backgroundColor: ch ? C.primary : C.textTertiary, marginTop: 7, flexShrink: 0 }}/>
+                    <span style={{ fontSize: 14, color: C.textPrimary, lineHeight: 1.5, flex: 1, fontWeight: ch ? 500 : 400 }}>{b.text}{ch && <span style={{ fontSize: 10, fontWeight: 700, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.05em', marginLeft: 7, whiteSpace: 'nowrap', verticalAlign: '1px' }}>{ch === 'new' ? 'New' : 'Updated'}</span>}</span>
+                  </div>
+                )})}
+              </div>
+              <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+                <button onClick={castVote('up')} aria-pressed={vote === 'up'} style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: vote === 'up' ? C.primaryLight : 'transparent', border: 'none', borderRadius: 8, cursor: 'pointer', transition: 'background-color 0.15s' }}>
+                  <svg width="15" height="15" viewBox="0 0 15 15" fill={vote === 'up' ? C.primary : 'none'}><path d="M1.5 7.5h2v5.5h-2zM3.5 7.5L5.5 3l1.5.5V6.5H11L10 12H3.5z" stroke={vote === 'up' ? C.primary : C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>
+                </button>
+                <button onClick={castVote('down')} aria-pressed={vote === 'down'} style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: vote === 'down' ? C.primaryLight : 'transparent', border: 'none', borderRadius: 8, cursor: 'pointer', transition: 'background-color 0.15s' }}>
+                  <svg width="15" height="15" viewBox="0 0 15 15" fill={vote === 'down' ? C.primary : 'none'}><path d="M13.5 7.5h-2V2h2zM11.5 7.5L9.5 12l-1.5-.5V8H4L5 3h6.5z" stroke={vote === 'down' ? C.primary : C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>
+                </button>
+              </div>
+              <div style={{ fontSize: 12, color: C.textSecondary, lineHeight: 1.4 }}>AI-generated from your care plan and recent clinical activity. Accuracy may vary. Last updated {lastUpdated.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.</div>
+            </>
+          )}
         </div>
       </div>
     </button>
@@ -2167,121 +2244,79 @@ const CANCER_NAMES = {
 
 // Build a real, dynamic daily-summary string from the person's timeline (past → present → future)
 // and their current recommendations. Reacts to any change in either.
+// Returns the AI Daily Summary as the Engineering Spec's structured bullets:
+// [{ id, text, source_refs }] with the fixed IDs (plan_status / today / upcoming /
+// treatments), in that order, max 4, omitting any bullet with no supporting data.
+// Copy follows the O4M plain-language standards (no "your cancer/plan", no staging
+// shorthand, no acronyms, no procedure names — surgery/treatment/appointment are fine).
+// Prototype note: this is a deterministic stand-in shaped like the spec's contract; the
+// real build generates these bullets from an LLM server-side. `source_refs` are populated
+// from the real record IDs the engine already has, to mirror the traceability requirement.
 const buildDailySummary = (ps, timeline = [], recs = null) => {
-  const cancerName = CANCER_NAMES[ps?.diagnosisCode] || ps?.cancerName || 'your cancer'
-  const stageLabel = ps?.stage ? `Stage ${ps.stage}` : null
-  const hist = ps?.biomarkers?.histology === 'clear-cell' ? 'clear cell ' : ''
-  const dx = [stageLabel, `${hist}${cancerName}`].filter(Boolean).join(' ')
-  const fmt = d => { try { return new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) } catch { return null } }
-
   const todayStr = localDateStr()
+  const monthName = d => { try { return new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'long' }) } catch { return null } }
+  const ref = e => (e && e.id) ? [`event:${e.id}`] : []
+
   const events = (timeline || []).flatMap(day => (day.events || []).map(e => ({ ...e, _date: day.date, _isToday: !!day.isToday })))
   const nonDx = events.filter(e => e.type !== 'diagnosis')
-  const surg = nonDx.find(e => /nephrectomy|prostatectomy|mastectomy|resection|ablation|surgery/i.test(e.name || ''))
+  const surg = nonDx.find(e => /nephrectomy|prostatectomy|mastectomy|lumpectomy|resection|ablation|surgery/i.test(e.name || ''))
   const path = nonDx.find(e => /patholog/i.test(e.name || ''))
   const todayEvents = nonDx.filter(e => e._isToday)
-
-  // Appointment awareness
-  const todayAppts = todayEvents.filter(e => e.type === 'appointment')
-  const futureAppts = nonDx
+  const todayAppt = todayEvents.find(e => e.type === 'appointment')
+  const todayMed = todayEvents.find(e => e.type === 'medication')
+  const todayOther = todayEvents.find(e => e !== todayAppt && e !== todayMed)
+  const nextAppt = nonDx
     .filter(e => e.type === 'appointment' && !e._isToday && e._date > todayStr)
-    .sort((a, b) => a._date.localeCompare(b._date))
-  const nextAppt = futureAppts[0] || null
-
-  // Appointment sentences
-  const apptSentences = (() => {
-    const parts = []
-    if (todayAppts.length > 0) {
-      const appt = todayAppts[0]
-      const dr = shortDrName(appt.provider || appt.name)
-      if (appt.appointmentType === 'Virtual') {
-        parts.push(`Virtual visit with ${dr} today.`)
-      } else if (appt.appointmentType === 'Phone Call') {
-        parts.push(`${dr} has a call scheduled today.`)
-      } else {
-        parts.push(`You're seeing ${dr} today.`)
-      }
-    }
-    if (nextAppt) {
-      const name = shortDrName(nextAppt.provider || nextAppt.name)
-      if (name) {
-        parts.push(`Your next appointment with ${name} is ${relativeApptDate(nextAppt._date)}.`)
-      } else {
-        parts.push(`Your next appointment is ${relativeApptDate(nextAppt._date)}.`)
-      }
-    }
-    return parts
-  })()
-
-  // Treatments the user has added from recommendations — this is what makes the summary react to adds.
+    .sort((a, b) => a._date.localeCompare(b._date))[0] || null
   const added = nonDx.filter(e => e.createdFromRecommendationId)
 
-  const recList = Array.isArray(recs) ? recs : []
-  const nextLabel = recList[0]?.stepLabel || null
-  const optionCount = recList.reduce((n, r) => n + (r.options?.length || 0), 0)
+  const bullets = []
 
-  const surgName = surg ? surg.name.replace(/\s*\(surgery\)/i, '').toLowerCase() : null
-  const surgWhen = surg ? fmt(surg._date) : null
-  const todayOther = todayEvents.filter(e => e !== surg && e !== path && !e.createdFromRecommendationId && e.type !== 'appointment')
-
-  // Assemble from clauses. `opts` toggles the optional pieces so we can drop them
-  // (never truncate mid-word) until the whole thought fits the soft budget.
-  const assemble = (opts) => {
-    const parts = []
-    // 1. Surgery/pathology context
-    if (surg && opts.surg) {
-      parts.push(`Following your ${surgWhen ? surgWhen + ' ' : ''}${surgName}${path ? ' and pathology review' : ''}, your ${dx || 'care'} plan is active.`)
-    } else if (dx) {
-      parts.push(`Your ${dx} care plan is active.`)
-    } else {
-      parts.push('Your care plan is active.')
-    }
-    // 2. Today's non-appointment clinical events
-    if (opts.today && todayOther.length) {
-      const names = todayOther.slice(0, 2).map(e => e.name.toLowerCase())
-      parts.push(`Today includes ${names.join(' and ')}.`)
-    }
-    // 3. Today's appointment
-    if (opts.todayAppt && apptSentences[0]) parts.push(apptSentences[0])
-    // 4. Next upcoming appointment
-    if (opts.nextAppt && apptSentences[1]) parts.push(apptSentences[1])
-    // 5. Committed plan: treatments the user has added
-    if (added.length && opts.added) {
-      const desc = added.length === 1 ? added[0].name.toLowerCase() : `${added.length} treatments`
-      parts.push(`Your plan now includes ${desc}.`)
-    }
-    // 6. Future (recommendations)
-    if (opts.next) {
-      if (added.length) {
-        parts.push('More treatment options are available to review below.')
-      } else if (nextLabel) {
-        const opt = (opts.count && optionCount) ? ` — ${optionCount} treatment option${optionCount > 1 ? 's' : ''} ready to review below` : ''
-        parts.push(`Next, your plan focuses on ${nextLabel.toLowerCase()}${opt}.`)
-      } else {
-        parts.push('Review your recommended next steps below.')
-      }
-    }
-    return parts.join(' ')
+  // plan_status — plain-language treatment history. Only emitted when there's real history to
+  // state; we do NOT assert an "active treatment plan" we can't verify (surveillance, remission,
+  // pre-treatment). When there's nothing to say, the card falls through to its empty state.
+  if (surg) {
+    const m = monthName(surg._date)
+    const text = `You had surgery${m ? ` in ${m}` : ''}${path ? ', and the results have been reviewed' : ''}.`
+    bullets.push({ id: 'plan_status', text, source_refs: [...ref(surg), ...ref(path)] })
   }
 
-  const BUDGET = 350
-  // Progressively drop optional clauses; first full thought that fits wins.
-  const variants = [
-    { surg: true,  today: true,  todayAppt: true,  nextAppt: true,  added: true,  next: true,  count: true  },
-    { surg: true,  today: false, todayAppt: true,  nextAppt: true,  added: true,  next: true,  count: true  },
-    { surg: true,  today: false, todayAppt: true,  nextAppt: true,  added: true,  next: true,  count: false },
-    { surg: true,  today: false, todayAppt: true,  nextAppt: false, added: true,  next: true,  count: false },
-    { surg: true,  today: false, todayAppt: true,  nextAppt: false, added: true,  next: false, count: false },
-    { surg: true,  today: false, todayAppt: false, nextAppt: false, added: true,  next: false, count: false },
-    { surg: false, today: false, todayAppt: false, nextAppt: false, added: true,  next: false, count: false },
-    { surg: false, today: false, todayAppt: false, nextAppt: false, added: false, next: false, count: false },
-  ]
-  for (const v of variants) {
-    const s = assemble(v)
-    if (s.length <= BUDGET) return s
+  // today — only when something is actually scheduled/logged today. Never manufactured.
+  {
+    let text = null
+    const refs = []
+    if (todayAppt) {
+      const dr = shortDrName(todayAppt.provider || todayAppt.name)
+      const at = todayAppt.time ? ` at ${todayAppt.time}` : ''
+      text = dr ? `You have an appointment with ${dr} today${at}.` : `You have an appointment today${at}.`
+      refs.push(...ref(todayAppt))
+    } else if (todayMed) {
+      text = `You started ${todayMed.name} today.`
+      refs.push(...ref(todayMed))
+    } else if (todayOther) {
+      text = `Today includes ${todayOther.name.toLowerCase()}.`
+      refs.push(...ref(todayOther))
+    }
+    if (text) bullets.push({ id: 'today', text, source_refs: refs })
   }
-  // Shortest complete form — returned whole even if it exceeds the soft budget (never cut mid-word).
-  return assemble({ surg: false, today: false, todayAppt: false, nextAppt: false, added: false, next: false, count: false })
+
+  // upcoming — the next scheduled appointment after today.
+  if (nextAppt) {
+    const dr = shortDrName(nextAppt.provider || nextAppt.name)
+    const when = relativeApptDate(nextAppt._date)
+    const text = dr ? `Your next appointment with ${dr} is ${when}.` : `Your next appointment is ${when}.`
+    bullets.push({ id: 'upcoming', text, source_refs: ref(nextAppt) })
+  }
+
+  // treatments — treatments the patient has added from recommendations.
+  if (added.length) {
+    const text = added.length === 1
+      ? `Your plan now includes ${added[0].name.toLowerCase()}.`
+      : `Your plan now includes ${added.length} new treatments.`
+    bullets.push({ id: 'treatments', text, source_refs: added.flatMap(ref) })
+  }
+
+  return bullets.slice(0, 4)
 }
 
 // ─── QUESTION CARD ────────────────────────────────────────────────
@@ -2527,12 +2562,12 @@ const RailItem = ({ icon, isToday, isLast, card }) => {
   )
 }
 
-const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFlash = false, summaryShown = true, onApproachSelect, addedIds = {}, onRemoveEvent, onEditClinical, visibleRecs = [], revealedCards = null, blockGenStates = {}, genText = null, genBlockId = null, generationDone = false, onSummarize = null }) => {
+const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFlash = false, summaryShown = true, onApproachSelect, addedIds = {}, onRemoveEvent, onEditClinical, visibleRecs = [], revealedCards = null, blockGenStates = {}, genText = null, genBlockId = null, generationDone = false, onSummarize = null, onAddEvent = null }) => {
   const allItems = []
   // The daily summary is absent while the timeline builds; it's inserted at the top of
   // Today right after the scroll-to-Today settles.
   const showSummary = day.summary && (!day.isToday || summaryShown)
-  if (showSummary) allItems.push({ key: 'summary', icon: null, card: <DailySummaryCard summary={day.summary} isToday={day.isToday}/> })
+  if (showSummary) allItems.push({ key: 'summary', icon: null, card: <DailySummaryCard summary={day.summary} isToday={day.isToday} onAddEvent={onAddEvent}/> })
   day.events.forEach(ev => allItems.push({
     key: ev.id, icon: null,
     card: ev.type === 'appointment'
@@ -6569,7 +6604,7 @@ export default function App() {
   const timelineWithRecs = timeline.map(day => {
     if (!day.isToday) return day
     const recs = visibleRecs.length > 0 ? visibleRecs : null
-    return { ...day, suggested: recs, summary: { text: buildDailySummary(patientState, timeline, recs) } }
+    return { ...day, suggested: recs, summary: { bullets: buildDailySummary(patientState, timeline, recs) } }
   })
 
   // When recommendation groups change mid-session, replay the generation animation
@@ -6795,6 +6830,7 @@ export default function App() {
                   genText={genText}
                   genBlockId={genBlockId}
                   onSummarize={(block) => setSummarizeBlock({ block, patientState, planItems: allPlanItems })}
+                  onAddEvent={() => setSheetOpen(true)}
                   sentinelRef={el => {
                     if (el) sentinelRefs.current[day.date] = el
                   }}
@@ -6808,7 +6844,7 @@ export default function App() {
       </div>
 
       {onboarded && !hideNav && !kbOpen && activeTab !== 'chat' && (
-        <div style={{ flexShrink: 0 }}>
+        <div style={{ flexShrink: 0, position: 'relative', zIndex: 35 }}>
           <BottomNav activeTab={activeTab} onTabChange={switchTab}/>
         </div>
       )}
