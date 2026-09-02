@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, createContext, useContext } from 'react'
 import ReactDOM from 'react-dom'
-import { findCoveringRule, findRuleMatchingItem, findMatchingRules, wouldImpactRecommendations, getImpactContext } from './services/recommendationService.js'
+import { findCoveringRule, findRuleMatchingItem, findMatchingRules, wouldImpactRecommendations, getImpactContext, isCancerSupported } from './services/recommendationService.js'
 import { hydrateState, savePatientState, saveTimeline, saveUserDecisions, clearPersistedState, saveMedications, loadMedications, getChatDraft, saveChatDraft } from './services/persistenceService.js'
 import { loadSession, login, createAccount, logout } from './services/authService.js'
 import { useRecommendations } from './hooks/useRecommendations.js'
@@ -1774,13 +1774,11 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
   )
 }
 
-const DailySummaryCard = ({ summary, isToday, onAddEvent }) => {
+const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true, onReviewRecs }) => {
   const bullets = summary.bullets || []
   // Signature drives the change/generating animation without parsing text (bullet ids + text).
   const signature = bullets.map(b => b.id + ':' + b.text).join('|')
-  const [open, setOpen] = useState(true)
   const [vote, setVote] = useState(null)  // 'up' | 'down' | null
-  const [forceFail, setForceFail] = useState(false)  // demo-only: preview the generation-failure state
   const castVote = (v) => (e) => { e.stopPropagation(); setVote(prev => prev === v ? null : v) }
 
   const [shownBullets, setShownBullets] = useState(bullets)
@@ -1794,19 +1792,18 @@ const DailySummaryCard = ({ summary, isToday, onAddEvent }) => {
   const cardRef = useRef(null)
   const starRef = useRef(null)
 
-  // ── Change marking (Engineering Spec §6 / req 43) ────────────────────────────
-  // Diff the current bullets against the last version the patient has actually SEEN
-  // (matched by id + text), persisted to localStorage so a change stays flagged across
-  // reloads until viewed. New/updated bullets are highlighted; a change indicator shows while
-  // the card is collapsed. We never auto-open — the card stays as the user left it.
-  // Prototype note: this simulates the spec's server-side seen-state with localStorage.
-  const SEEN_KEY = 'o4m_summary_seen'
+  // Change marking (§6): diff current bullets vs the last version the patient SAW (id + text),
+  // persisted to localStorage so a change stays flagged until viewed. Changed bullets carry an
+  // inline New/Updated tag; marks clear once the card has been on screen. (No collapsed state now.)
+  // Prototype change-marking (illustrative): diff the rendered bullet text, matched by id, against the
+  // last version the patient saw — catches adds/removes AND in-place edits. It can also flag purely
+  // time-driven re-wording (the "today" bullet at midnight), which won't surface in a demo session.
+  // Production should diff the underlying RECORD content instead — see the spec §6 note.
+  const SEEN_KEY = 'o4m_summary_seen_v3'
   const [onScreen, setOnScreen] = useState(false)
+  const [clearing, setClearing] = useState(false)  // brief fade-out phase before marks are committed as seen
   const [seenSet, setSeenSet] = useState(() => {
-    try {
-      const raw = localStorage.getItem(SEEN_KEY)
-      if (raw) return new Set(JSON.parse(raw))
-    } catch {}
+    try { const raw = localStorage.getItem(SEEN_KEY); if (raw) return new Set(JSON.parse(raw)) } catch {}
     // First-ever view establishes the baseline — nothing is marked on first load.
     const sig = (summary.bullets || []).map(b => b.id + ':' + b.text)
     try { localStorage.setItem(SEEN_KEY, JSON.stringify(sig)) } catch {}
@@ -1814,16 +1811,15 @@ const DailySummaryCard = ({ summary, isToday, onAddEvent }) => {
   })
   const seenIds = new Set([...seenSet].map(s => s.slice(0, s.indexOf(':'))))
   const changeOf = (b) => seenSet.has(b.id + ':' + b.text) ? null : (seenIds.has(b.id) ? 'updated' : 'new')
-  const hasChanges = shownBullets.some(b => changeOf(b))
 
-  // Card states (always rendered — overrides the spec's "no data → don't render"):
-  //   failure → couldn't generate; empty → no bullets at all; up-to-date → only plan_status,
-  //   so we keep it and append an "add events" nudge + CTA. Rich → has actionable bullets.
-  const isFailure = forceFail
-  const isEmpty = !isFailure && shownBullets.length === 0
-  const previewText = isFailure ? "Couldn't be generated" : isEmpty ? "Nothing new yet" : (shownBullets[0] ? shownBullets[0].text : '')
-  const onRetry = (e) => { e.stopPropagation(); setGenerating(true); setTimeout(() => { setForceFail(false); setGenerating(false) }, 900) }
+  // Card state — follows the Engineering Spec §3a matrix:
+  //   Rich      = supported + has a time-sensitive bullet (today / upcoming / treatments) → bullets
+  //   Plan-quiet = supported + nothing time-sensitive → point to treatment options
+  //   No-plan   = unsupported cancer → add events
+  const hasActionable = shownBullets.some(b => ['today', 'upcoming', 'treatments'].includes(b.id))
+  const state = !cancerSupported ? 'noplan' : (hasActionable ? 'rich' : 'quiet')
   const openAdd = (e) => { e.stopPropagation(); if (onAddEvent) onAddEvent() }
+  const reviewRecs = (e) => { e.stopPropagation(); if (onReviewRecs) onReviewRecs() }
 
   const isVisible = useCallback(() => {
     const el = cardRef.current
@@ -1836,19 +1832,21 @@ const DailySummaryCard = ({ summary, isToday, onAddEvent }) => {
 
   const tryDeliver = useCallback(() => {
     if (pendingRef.current == null || resolvingRef.current) return
-    if (!isVisible()) return
     resolvingRef.current = true
+    const commit = () => {
+      setShownBullets(pendingRef.current)
+      pendingRef.current = null
+      setGenerating(false)
+      resolvingRef.current = false
+    }
+    // Off screen: commit the new content immediately (no fade) so the summary is always current
+    // even when adding an event scrolls it out of view. The fade is only a nicety when visible.
+    if (!isVisible()) { setTextOpacity(1); commit(); return }
     const elapsed = Date.now() - genStartRef.current
     const wait = Math.max(160, 650 - elapsed)
     setTimeout(() => {
       setTextOpacity(0)
-      setTimeout(() => {
-        setShownBullets(pendingRef.current)
-        pendingRef.current = null
-        setGenerating(false)
-        requestAnimationFrame(() => setTextOpacity(1))
-        resolvingRef.current = false
-      }, 310)
+      setTimeout(() => { commit(); requestAnimationFrame(() => setTextOpacity(1)) }, 310)
     }, wait)
   }, [isVisible])
 
@@ -1859,6 +1857,7 @@ const DailySummaryCard = ({ summary, isToday, onAddEvent }) => {
     resolvingRef.current = false
     genStartRef.current = Date.now()
     setGenerating(true)
+    setClearing(false)  // new content arrived — don't let a stale fade hide fresh marks
     setLastUpdated(new Date())
     tryDeliver()
   }, [signature, tryDeliver])
@@ -1889,70 +1888,71 @@ const DailySummaryCard = ({ summary, isToday, onAddEvent }) => {
     return () => anim.cancel()
   }, [generating])
 
-  // Acknowledge (clear marks) once the patient has actually viewed the card: open + on-screen for
-  // a short dwell. Commits the current bullets as "seen". Never fires while collapsed, so a change
-  // stays flagged until the user opens it. Diffs against last-seen, so two changes made without
-  // opening both stay marked until viewed.
+  // Acknowledge (clear marks) once the patient has actually viewed the card — on screen for a
+  // short dwell. Commits the current bullets as "seen"; diffs against last-seen, so changes made
+  // between views stay marked until the card is actually looked at.
   useEffect(() => {
-    if (!open || !onScreen) return
+    if (!onScreen) return
+    let inner
     const t = setTimeout(() => {
       const sig = shownBullets.map(b => b.id + ':' + b.text)
-      setSeenSet(new Set(sig))
-      try { localStorage.setItem(SEEN_KEY, JSON.stringify(sig)) } catch {}
+      const hasMarks = shownBullets.some(b => changeOf(b))
+      const commit = () => {
+        setSeenSet(new Set(sig))
+        try { localStorage.setItem(SEEN_KEY, JSON.stringify(sig)) } catch {}
+        setClearing(false)
+      }
+      if (hasMarks) { setClearing(true); inner = setTimeout(commit, 520) }  // fade the marks, then commit
+      else commit()
     }, 2200)
-    return () => clearTimeout(t)
-  }, [open, onScreen, shownBullets])
+    return () => { clearTimeout(t); if (inner) clearTimeout(inner) }
+  }, [onScreen, shownBullets, seenSet])
 
   const textFade = { opacity: textOpacity, transition: 'opacity 0.28s ease' }
-  const ctaBtnStyle = { marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', backgroundColor: 'transparent', border: `1px solid ${C.border}`, borderRadius: 20, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: C.textPrimary }
+  const ctaBtnStyle = { marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', backgroundColor: C.bgApp, border: 'none', borderRadius: 20, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: C.textPrimary }
 
   return (
-    <button ref={cardRef} onClick={() => setOpen(o => !o)} style={{ position: 'relative', width: '100%', backgroundColor: C.bgCard, border: '1px solid transparent', borderRadius: 14, padding: '13px 16px', cursor: 'pointer', textAlign: 'left', WebkitTapHighlightColor: 'transparent' }}>
-      {/* demo-only: tiny hidden hotspot (top-left corner) toggles the failure-state preview */}
-      <span onClick={(e) => { e.stopPropagation(); setForceFail(f => !f) }} aria-hidden="true" style={{ position: 'absolute', top: 0, left: 0, width: 16, height: 16, zIndex: 2 }}/>
+    <div ref={cardRef} style={{ position: 'relative', width: '100%', backgroundColor: C.bgCard, border: '1px solid transparent', borderRadius: 14, padding: '13px 16px', textAlign: 'left' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span ref={starRef} style={{ display: 'inline-flex', transformOrigin: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 17, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span></span><span style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary, flex: 1, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>Daily summary{!open && previewText && <span style={{ ...textFade, fontWeight: 400 }}> &bull; {previewText}</span>}</span>{!open && hasChanges && <span aria-label="Updated" style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: C.primary, flexShrink: 0, marginRight: 7 }}/>}<Ico.chevDown open={open}/>
+        <span ref={starRef} style={{ display: 'inline-flex', transformOrigin: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 17, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span></span>
+        <span style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary }}>Daily summary</span>
       </div>
-      <div style={{ display: 'grid', gridTemplateRows: open ? '1fr' : '0fr', transition: 'grid-template-rows 0.35s ease' }}>
-        <div style={{ overflow: 'hidden', minHeight: 0 }}>
-          {isFailure ? (
-            <div style={{ ...textFade, margin: '12px 0 4px' }}>
-              <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>Your summary couldn't be generated right now.</div>
-              <button onClick={onRetry} style={ctaBtnStyle}>
-                <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.primary }}>refresh</span>Try again
-              </button>
-            </div>
-          ) : isEmpty ? (
-            <div style={{ ...textFade, margin: '12px 0 4px' }}>
-              <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>Your summary will fill in as you add to your plan. New appointments, treatments, and events show up here.</div>
-              <button onClick={openAdd} style={ctaBtnStyle}>
-                <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.primary }}>add</span>Add an event
-              </button>
-            </div>
-          ) : (
-            <>
-              <div style={{ ...textFade, display: 'flex', flexDirection: 'column', gap: 9, margin: '12px 0' }}>
-                {shownBullets.map(b => { const ch = changeOf(b); return (
-                  <div key={b.id} style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}>
-                    <span style={{ width: 5, height: 5, borderRadius: '50%', backgroundColor: ch ? C.primary : C.textTertiary, marginTop: 7, flexShrink: 0 }}/>
-                    <span style={{ fontSize: 14, color: C.textPrimary, lineHeight: 1.5, flex: 1, fontWeight: ch ? 500 : 400 }}>{b.text}{ch && <span style={{ fontSize: 10, fontWeight: 700, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.05em', marginLeft: 7, whiteSpace: 'nowrap', verticalAlign: '1px' }}>{ch === 'new' ? 'New' : 'Updated'}</span>}</span>
-                  </div>
-                )})}
-              </div>
-              <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
-                <button onClick={castVote('up')} aria-pressed={vote === 'up'} style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: vote === 'up' ? C.primaryLight : 'transparent', border: 'none', borderRadius: 8, cursor: 'pointer', transition: 'background-color 0.15s' }}>
-                  <svg width="15" height="15" viewBox="0 0 15 15" fill={vote === 'up' ? C.primary : 'none'}><path d="M1.5 7.5h2v5.5h-2zM3.5 7.5L5.5 3l1.5.5V6.5H11L10 12H3.5z" stroke={vote === 'up' ? C.primary : C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>
-                </button>
-                <button onClick={castVote('down')} aria-pressed={vote === 'down'} style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: vote === 'down' ? C.primaryLight : 'transparent', border: 'none', borderRadius: 8, cursor: 'pointer', transition: 'background-color 0.15s' }}>
-                  <svg width="15" height="15" viewBox="0 0 15 15" fill={vote === 'down' ? C.primary : 'none'}><path d="M13.5 7.5h-2V2h2zM11.5 7.5L9.5 12l-1.5-.5V8H4L5 3h6.5z" stroke={vote === 'down' ? C.primary : C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>
-                </button>
-              </div>
-              <div style={{ fontSize: 12, color: C.textSecondary, lineHeight: 1.4 }}>AI-generated from your care plan and recent clinical activity. Accuracy may vary. Last updated {lastUpdated.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.</div>
-            </>
-          )}
+      {state === 'noplan' ? (
+        <div style={{ ...textFade, margin: '12px 0 4px' }}>
+          <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>Your summary will fill in as you add to your plan. New appointments, treatments, and events show up here.</div>
+          <button onClick={openAdd} style={ctaBtnStyle}>
+            <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textSecondary }}>add</span>Add an event
+          </button>
         </div>
-      </div>
-    </button>
+      ) : state === 'quiet' ? (
+        <div style={{ ...textFade, margin: '12px 0 4px' }}>
+          <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>You have treatment options ready to explore. Add the ones you're considering to your plan to keep track of them here as you go.</div>
+          <button onClick={reviewRecs} style={ctaBtnStyle}>
+            <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textSecondary }}>arrow_downward</span>Explore treatment options
+          </button>
+        </div>
+      ) : (
+        <>
+          <div style={{ ...textFade, display: 'flex', flexDirection: 'column', gap: 9, margin: '12px 0' }}>
+            {shownBullets.map(b => { const ch = changeOf(b); return (
+              <div key={b.id} style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}>
+                <span style={{ width: 5, height: 5, borderRadius: '50%', backgroundColor: (ch && !clearing) ? C.primary : C.textTertiary, marginTop: 7, flexShrink: 0, transition: 'background-color 0.5s ease' }}/>
+                <span style={{ fontSize: 14, color: C.textPrimary, lineHeight: 1.5, flex: 1, fontWeight: ch ? 500 : 400 }}>{b.text}{ch && <span style={{ fontSize: 10, fontWeight: 700, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.05em', marginLeft: 7, whiteSpace: 'nowrap', verticalAlign: '1px', opacity: clearing ? 0 : 1, transition: 'opacity 0.5s ease' }}>{ch === 'new' ? 'New' : 'Updated'}</span>}</span>
+              </div>
+            )})}
+          </div>
+          <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+            <button onClick={castVote('up')} aria-pressed={vote === 'up'} aria-label="Helpful" style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: vote === 'up' ? C.primaryLight : 'transparent', border: 'none', borderRadius: 8, cursor: 'pointer', transition: 'background-color 0.15s' }}>
+              <svg width="15" height="15" viewBox="0 0 15 15" fill={vote === 'up' ? C.primary : 'none'}><path d="M1.5 7.5h2v5.5h-2zM3.5 7.5L5.5 3l1.5.5V6.5H11L10 12H3.5z" stroke={vote === 'up' ? C.primary : C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>
+            </button>
+            <button onClick={castVote('down')} aria-pressed={vote === 'down'} aria-label="Not helpful" style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: vote === 'down' ? C.primaryLight : 'transparent', border: 'none', borderRadius: 8, cursor: 'pointer', transition: 'background-color 0.15s' }}>
+              <svg width="15" height="15" viewBox="0 0 15 15" fill={vote === 'down' ? C.primary : 'none'}><path d="M13.5 7.5h-2V2h2zM11.5 7.5L9.5 12l-1.5-.5V8H4L5 3h6.5z" stroke={vote === 'down' ? C.primary : C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>
+            </button>
+          </div>
+          <div style={{ fontSize: 12, color: C.textSecondary, lineHeight: 1.4 }}>AI-generated from your care plan and recent clinical activity. Accuracy may vary. Last updated {lastUpdated.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.</div>
+        </>
+      )}
+    </div>
   )
 }
 
@@ -2037,33 +2037,55 @@ const ClinicalDetailInfoSheet = ({ onClose, onEdit }) => {
   )
 }
 
+// ─── CARD ACTION SHEET ────────────────────────────────────────────
+// Bottom sheet (the app's existing slide-up pattern) for event-card overflow actions —
+// replaces the flyout. User-added events: red trash "Delete" + centered "Cancel".
+// Clinical/onboarding events: "Edit" + a disabled "Delete" with a help affordance + "Cancel".
+const CardActionSheet = ({ isOnboarding = false, restoreNote = false, onDelete, onEdit, onInfo, onClose }) => {
+  const [vis, setVis] = useState(false)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const dismiss = (cb) => { setVis(false); setTimeout(() => { onClose && onClose(); if (cb) cb() }, 260) }
+  const row = { display: 'flex', alignItems: 'center', gap: 13, width: '100%', padding: '16px 20px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 600, textAlign: 'left', color: C.textPrimary, WebkitTapHighlightColor: 'transparent' }
+  const ic = (name, color) => <span className="material-symbols-rounded" style={{ fontSize: 20, color }}>{name}</span>
+  return ReactDOM.createPortal(
+    <div style={{ position: 'fixed', inset: 0, zIndex: 300 }}>
+      <div onClick={() => dismiss()} style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.4)', opacity: vis ? 1 : 0, transition: 'opacity 0.26s ease' }}/>
+      <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: C.bgCard, borderRadius: '18px 18px 0 0', boxShadow: '0 -6px 24px rgba(0,0,0,0.16)', paddingBottom: 8, transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.28s cubic-bezier(0.32,0.72,0,1)' }}>
+        {isOnboarding ? (
+          <>
+            <button onClick={() => dismiss(onEdit)} style={row}>{ic('edit', C.textPrimary)}Edit</button>
+            <div style={{ height: 1, backgroundColor: C.border, margin: '0 20px' }}/>
+            <div style={{ ...row, color: 'rgba(239,68,68,0.4)', cursor: 'default', justifyContent: 'space-between' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 13 }}>{ic('delete', 'rgba(239,68,68,0.4)')}Delete</span>
+              <button onClick={() => dismiss(onInfo)} aria-label="Why can't I delete this?" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, display: 'flex' }}><Ico.question/></button>
+            </div>
+          </>
+        ) : (
+          <>
+            <button onClick={() => dismiss(onDelete)} style={{ ...row, color: '#ef4444' }}>{ic('delete', '#ef4444')}Delete</button>
+            {restoreNote && <div style={{ padding: '0 20px 12px 53px', fontSize: 12, color: C.textTertiary, lineHeight: 1.4 }}>This will restore it as a suggestion</div>}
+          </>
+        )}
+        <div style={{ height: 1, backgroundColor: C.border, margin: '4px 0 0' }}/>
+        <button onClick={() => dismiss()} style={{ width: '100%', padding: '16px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 600, color: C.textSecondary, textAlign: 'center' }}>Cancel</button>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
 // ─── APPOINTMENT CARD ─────────────────────────────────────────────
 const AppointmentCard = ({ event, highlightId, onRemove, onEdit }) => {
   const [showRemove, setShowRemove] = useState(false)
-  const [menuPos,    setMenuPos]    = useState(null)
   const [showInfoSheet, setShowInfoSheet] = useState(false)
-  const menuRef = useRef(null)
   const isHighlighted = highlightId === event.id
 
   const openMenu = (e) => {
     e.stopPropagation()
     _closeActiveMenu?.()
-    const rect = e.currentTarget.getBoundingClientRect()
-    setMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
     setShowRemove(true)
-    _closeActiveMenu = () => { setShowRemove(false); setMenuPos(null) }
+    _closeActiveMenu = () => setShowRemove(false)
   }
-
-  useEffect(() => {
-    if (!showRemove) return
-    const handler = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) {
-        setShowRemove(false); setMenuPos(null); _closeActiveMenu = null
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [showRemove])
 
   const dateStr = event.date
     ? new Date(event.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
@@ -2076,32 +2098,7 @@ const AppointmentCard = ({ event, highlightId, onRemove, onEdit }) => {
     <div
       style={{ width: '100%', backgroundColor: isHighlighted ? '#E4EEFA' : C.bgCard, border: `1px solid ${isHighlighted ? '#A3B8C9' : 'transparent'}`, borderRadius: 14, padding: '12px 16px', transition: 'background 1.8s ease, border-color 1.8s ease', position: 'relative' }}
       onClick={() => { if (showRemove) { setShowRemove(false); _closeActiveMenu = null } }}>
-      {showRemove && menuPos && ReactDOM.createPortal(
-        <div ref={menuRef} style={{ position: 'fixed', top: menuPos.top, right: menuPos.right, zIndex: 200, minWidth: 210, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 4px 16px rgba(0,0,0,0.14)', animation: 'flyoutIn 0.14s ease-out', transformOrigin: 'top right' }}>
-          {event.source === 'onboarding' ? (
-            <>
-              <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; onEdit && onEdit(event) }}
-                style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: C.textPrimary, textAlign: 'left', whiteSpace: 'nowrap' }}>
-                Edit
-              </button>
-              <div style={{ height: 1, backgroundColor: C.border, margin: '0 12px' }}/>
-              <div style={{ display: 'flex', alignItems: 'center', padding: '11px 18px', gap: 8 }}>
-                <span style={{ flex: 1, fontSize: 14, fontWeight: 500, color: 'rgba(239,68,68,0.4)', whiteSpace: 'nowrap' }}>Delete</span>
-                <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; setShowInfoSheet(true) }}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center', flexShrink: 0 }}>
-                  <Ico.question/>
-                </button>
-              </div>
-            </>
-          ) : (
-            <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; onRemove() }}
-              style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: '#ef4444', textAlign: 'left', whiteSpace: 'nowrap' }}>
-              Delete
-            </button>
-          )}
-        </div>,
-        document.body
-      )}
+      {showRemove && <CardActionSheet isOnboarding={event.source === 'onboarding'} onDelete={onRemove} onEdit={() => onEdit && onEdit(event)} onInfo={() => setShowInfoSheet(true)} onClose={() => { setShowRemove(false); _closeActiveMenu = null }}/>}
       {showInfoSheet && <ClinicalDetailInfoSheet onClose={() => setShowInfoSheet(false)} onEdit={() => onEdit && onEdit(event)}/>}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
         <div style={{ flexShrink: 0, alignSelf: 'center' }}>{railIcon('appointment', 40)}</div>
@@ -2134,31 +2131,16 @@ const AppointmentCard = ({ event, highlightId, onRemove, onEdit }) => {
 
 const EventCard = ({ event, highlightId, onRemove, onEdit, visibleRecs = [] }) => {
   const [showRemove, setShowRemove] = useState(false)
-  const [menuPos,    setMenuPos]    = useState(null)
   const [showInfoSheet, setShowInfoSheet] = useState(false)
-  const menuRef = useRef(null)
   const label = typeLabel[event.type] || 'Event'
   const isHighlighted = highlightId === event.id
 
   const openMenu = (e) => {
     e.stopPropagation()
     _closeActiveMenu?.()
-    const rect = e.currentTarget.getBoundingClientRect()
-    setMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
     setShowRemove(true)
-    _closeActiveMenu = () => { setShowRemove(false); setMenuPos(null) }
+    _closeActiveMenu = () => setShowRemove(false)
   }
-
-  useEffect(() => {
-    if (!showRemove) return
-    const handler = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) {
-        setShowRemove(false); setMenuPos(null); _closeActiveMenu = null
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [showRemove])
   // Check if this item is covered by any currently active recommendation
   const coveringRule = findCoveringRule(event, visibleRecs)
   const du = event.startDate && event.endDate ? fmtDateRange(event.startDate, event.endDate) : event.startDate ? fmtDate(event.startDate) : event.date ? fmtDate(event.date) : ''
@@ -2167,39 +2149,7 @@ const EventCard = ({ event, highlightId, onRemove, onEdit, visibleRecs = [] }) =
     <div style={{ width: '100%', backgroundColor: isHighlighted ? '#E4EEFA' : C.bgCard, border: `1px solid ${isHighlighted ? '#A3B8C9' : 'transparent'}`, borderRadius: 14, padding: '12px 16px', transition: 'background 1.8s ease, border-color 1.8s ease', position: 'relative' }}
       onClick={() => { if (showRemove) { setShowRemove(false); _closeActiveMenu = null } }}>
       {/* Overflow flyout — portal-rendered so it escapes parent overflow clipping */}
-      {showRemove && menuPos && ReactDOM.createPortal(
-        <div ref={menuRef} style={{ position: 'fixed', top: menuPos.top, right: menuPos.right, zIndex: 200, minWidth: 210, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 4px 16px rgba(0,0,0,0.14)', animation: 'flyoutIn 0.14s ease-out', transformOrigin: 'top right' }}>
-          {event.source === 'onboarding' ? (
-            <>
-              <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; onEdit && onEdit(event) }}
-                style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: C.textPrimary, textAlign: 'left', whiteSpace: 'nowrap' }}>
-                Edit
-              </button>
-              <div style={{ height: 1, backgroundColor: C.border, margin: '0 12px' }}/>
-              <div style={{ display: 'flex', alignItems: 'center', padding: '11px 18px', gap: 8 }}>
-                <span style={{ flex: 1, fontSize: 14, fontWeight: 500, color: 'rgba(239,68,68,0.4)', whiteSpace: 'nowrap' }}>Delete</span>
-                <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; setShowInfoSheet(true) }}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center', flexShrink: 0 }}>
-                  <Ico.question/>
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <button onClick={e => { e.stopPropagation(); setShowRemove(false); setMenuPos(null); _closeActiveMenu = null; onRemove() }}
-                style={{ display: 'block', width: '100%', padding: '11px 18px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 500, color: '#ef4444', textAlign: 'left', whiteSpace: 'nowrap' }}>
-                Delete
-              </button>
-              {coveringRule && (
-                <div style={{ padding: '0 18px 10px', fontSize: 11, color: C.textTertiary, lineHeight: 1.4 }}>
-                  This will restore it as a suggestion
-                </div>
-              )}
-            </>
-          )}
-        </div>,
-        document.body
-      )}
+      {showRemove && <CardActionSheet isOnboarding={event.source === 'onboarding'} restoreNote={!!coveringRule} onDelete={onRemove} onEdit={() => onEdit && onEdit(event)} onInfo={() => setShowInfoSheet(true)} onClose={() => { setShowRemove(false); _closeActiveMenu = null }}/>}
       {showInfoSheet && <ClinicalDetailInfoSheet onClose={() => setShowInfoSheet(false)} onEdit={() => onEdit && onEdit(event)}/>}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
         {/* Icon — flush left, semantic anchor */}
@@ -2562,12 +2512,12 @@ const RailItem = ({ icon, isToday, isLast, card }) => {
   )
 }
 
-const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFlash = false, summaryShown = true, onApproachSelect, addedIds = {}, onRemoveEvent, onEditClinical, visibleRecs = [], revealedCards = null, blockGenStates = {}, genText = null, genBlockId = null, generationDone = false, onSummarize = null, onAddEvent = null }) => {
+const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFlash = false, summaryShown = true, onApproachSelect, addedIds = {}, onRemoveEvent, onEditClinical, visibleRecs = [], revealedCards = null, blockGenStates = {}, genText = null, genBlockId = null, generationDone = false, onSummarize = null, onAddEvent = null, cancerSupported = true, onReviewRecs = null }) => {
   const allItems = []
   // The daily summary is absent while the timeline builds; it's inserted at the top of
   // Today right after the scroll-to-Today settles.
   const showSummary = day.summary && (!day.isToday || summaryShown)
-  if (showSummary) allItems.push({ key: 'summary', icon: null, card: <DailySummaryCard summary={day.summary} isToday={day.isToday} onAddEvent={onAddEvent}/> })
+  if (showSummary) allItems.push({ key: 'summary', icon: null, card: <DailySummaryCard summary={day.summary} isToday={day.isToday} onAddEvent={onAddEvent} cancerSupported={cancerSupported} onReviewRecs={onReviewRecs}/> })
   day.events.forEach(ev => allItems.push({
     key: ev.id, icon: null,
     card: ev.type === 'appointment'
@@ -2653,7 +2603,7 @@ const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFla
 
           // icon row: full width card, line left-aligned with icon center
           return (
-            <div key={item.key} data-cardkey={cardKey} style={{ ...animStyle }}>
+            <div key={item.key} data-cardkey={cardKey} data-recs={isSuggested ? '1' : undefined} style={{ ...animStyle }}>
               {item.card}
               {lineBelow && (
                 <div style={{ height: 32, paddingTop: 8, paddingBottom: 8, paddingLeft: 35, boxSizing: 'border-box' }}>
@@ -6439,6 +6389,39 @@ export default function App() {
     setShowTodayPill(false)
   }
 
+  // "Explore treatment options" (summary Plan-quiet state) → scroll to the first recommendation
+  // block, and always pulse it so the tap gives feedback even when the block is already in view.
+  const scrollToRecs = () => {
+    const container = scrollRef.current
+    const el = container && container.querySelector('[data-recs="1"]')
+    if (!container || !el) return
+    const cRect = container.getBoundingClientRect()
+    const elRect = el.getBoundingClientRect()
+    const inView = elRect.top >= cRect.top && elRect.bottom <= cRect.bottom
+    if (!inView) {
+      const target = container.scrollTop + (elRect.top - cRect.top) - 12
+      container.scrollTo({ top: Math.max(0, target), behavior: 'smooth' })
+    }
+    // Subtle gray wash behind the block's content (same idea as the new-event highlight, quieter and
+    // neutral). A rounded overlay sits behind the content, so it shows through the header/gaps and is
+    // hidden behind the opaque explain card + options, then fades to transparent. Nothing moves.
+    const block = el.firstElementChild
+    if (block && block.animate) {
+      const prevPos = block.style.position, prevZ = block.style.zIndex
+      block.style.position = 'relative'
+      block.style.zIndex = '0'
+      // Expanded → gray fades to transparent down the block (recedes behind the explain card +
+      // options). Collapsed → solid gray wash over the single card.
+      const expanded = block.children.length > 1
+      const ov = document.createElement('div')
+      ov.style.cssText = 'position:absolute;left:0;top:0;right:0;bottom:0;border-radius:13px;pointer-events:none;z-index:-1'
+      ov.style.background = expanded ? 'linear-gradient(to bottom, #EAEAEE 0%, rgba(234,234,238,0) 70%)' : '#EAEAEE'
+      block.appendChild(ov)
+      const anim = ov.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 1400, easing: 'ease-out', delay: inView ? 0 : 260, fill: 'forwards' })
+      anim.onfinish = () => { ov.remove(); block.style.position = prevPos; block.style.zIndex = prevZ }
+    }
+  }
+
   const openFlow = (type) => { setSheetOpen(false); setTimeout(() => setFlow(type), 310) }
 
   // Chat-initiated capture: open the existing add-flow prefilled; handleComplete routes the result back to chat.
@@ -6470,7 +6453,7 @@ export default function App() {
         : ev?.type === 'medication' ? 'Medication'
         : 'Event'
       setToast({
-        message: `${ev?.name || typeLabel} removed`,
+        message: `${typeLabel} removed`,
         action: ev ? {
           label: 'Undo',
           onAction: () => {
@@ -6831,6 +6814,8 @@ export default function App() {
                   genBlockId={genBlockId}
                   onSummarize={(block) => setSummarizeBlock({ block, patientState, planItems: allPlanItems })}
                   onAddEvent={() => setSheetOpen(true)}
+                  cancerSupported={isCancerSupported(patientState)}
+                  onReviewRecs={scrollToRecs}
                   sentinelRef={el => {
                     if (el) sentinelRefs.current[day.date] = el
                   }}

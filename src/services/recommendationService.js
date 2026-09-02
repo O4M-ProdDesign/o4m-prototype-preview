@@ -1,9 +1,16 @@
 import { RECOMMENDATION_RULES } from '../data/recommendationRules.js'
 
+// Cancers we currently generate a plan for. An unsupported cancer never yields recommendations
+// (and therefore no plan) anywhere — timeline, chat context, and the daily summary all agree.
+export const SUPPORTED_CANCERS = new Set(['RCC', 'BREAST', 'LUNG', 'PROS', 'BLAD'])
+export const isCancerSupported = (patientState) => !!(patientState && SUPPORTED_CANCERS.has(patientState.diagnosisCode))
+
 // ─── RECOMMENDATION ENGINE ────────────────────────────────────────
 // Pure function — same inputs always produce same outputs.
 // Returns recommendation objects grouped into SuggestedBlocks.
 export const deriveRecommendations = (patientState, planItems) => {
+  // Gate: unsupported cancer → no plan.
+  if (!isCancerSupported(patientState)) return []
   const active = RECOMMENDATION_RULES.filter(rule => {
     try { return rule.condition(patientState, planItems) }
     catch { return false }
