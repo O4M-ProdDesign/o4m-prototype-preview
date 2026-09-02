@@ -1,5 +1,8 @@
 # Prototype Update Notes
 
+## v2.6 — remove "restore as a suggestion" note from delete sheet
+Removed the "This will restore it as a suggestion" note under Delete in the event bottom sheet. The prototype still restores the recommendation when an added treatment is deleted (illustrative — production doesn't do this), but we no longer call attention to it.
+
 ## v2.5 — AI Daily Summary finalized to spec + timeline-event delete
 **AI Daily Summary** brought in line with the Engineering Spec's state model and copy. (1) **States (per spec §3a):** the card always renders in one of — Rich (supported cancer with a today/upcoming/added-treatment bullet → the bullets), Plan-quiet (supported, nothing time-sensitive → "You have treatment options ready to explore…" + Explore treatment options, which scrolls to and gently gray-washes the first recommendation set), or No-plan (unsupported cancer → "Your summary will fill in…" + Add an event). Failure is deferred (not rendered). (2) **Collapse/expand and the failure UI removed** — the card is always expanded; change indication is inline only. (3) **Copy:** `plan_status` states verifiable history only and no longer asserts "treatment plan is active" (a prototype decision pending spec update). (4) **Change-marking:** changed bullets show an inline New/Updated tag that fades out once the card has been viewed; the summary now updates immediately even when adding an event scrolls it off screen. (5) **Recommendations gated to a supported-cancer allowlist** (RCC/Breast/Lung/Prostate/Bladder) — unsupported cancers get no plan anywhere.
 

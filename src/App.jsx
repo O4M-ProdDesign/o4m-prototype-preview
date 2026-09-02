@@ -2061,10 +2061,7 @@ const CardActionSheet = ({ isOnboarding = false, restoreNote = false, onDelete, 
             </div>
           </>
         ) : (
-          <>
-            <button onClick={() => dismiss(onDelete)} style={{ ...row, color: '#ef4444' }}>{ic('delete', '#ef4444')}Delete</button>
-            {restoreNote && <div style={{ padding: '0 20px 12px 53px', fontSize: 12, color: C.textTertiary, lineHeight: 1.4 }}>This will restore it as a suggestion</div>}
-          </>
+          <button onClick={() => dismiss(onDelete)} style={{ ...row, color: '#ef4444' }}>{ic('delete', '#ef4444')}Delete</button>
         )}
         <div style={{ height: 1, backgroundColor: C.border, margin: '4px 0 0' }}/>
         <button onClick={() => dismiss()} style={{ width: '100%', padding: '16px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 600, color: C.textSecondary, textAlign: 'center' }}>Cancel</button>
