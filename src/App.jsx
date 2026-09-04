@@ -110,16 +110,16 @@ const INITIAL_USER_DECISIONS = []
 
 // ─── PROVIDER DATABASE ────────────────────────────────────────────
 const PROVIDERS = [
-  { name: 'Dr. Sarah Chen',      subtitle: 'Medical Oncologist',            searchTerms: ['sarah', 'chen', 'oncologist', 'medical oncologist', 'kidney', 'rcc'], location: '300 Longwood Ave Boston MA',       avatar: 'SC' },
-  { name: 'Dr. Michael Torres',  subtitle: 'Surgical Oncologist',           searchTerms: ['michael', 'torres', 'surgical', 'surgery', 'surgeon'],              location: '55 Fruit St Boston MA',            avatar: 'MT' },
-  { name: 'Dr. Amanda Park',     subtitle: 'Radiation Oncologist',          searchTerms: ['amanda', 'park', 'radiation', 'radiotherapy', 'sbrt'],              location: '1400 Pelham Pkwy S Bronx NY',      avatar: 'AP' },
-  { name: 'Dr. Lisa Nguyen',     subtitle: 'Hematologist',                  searchTerms: ['lisa', 'nguyen', 'hematologist', 'blood', 'hematology'],            location: '221 Longwood Ave Boston MA',       avatar: 'LN' },
-  { name: 'Dr. Robert Kim',      subtitle: 'Radiologist',                   searchTerms: ['robert', 'kim', 'radiologist', 'radiology', 'imaging'],             location: '75 Francis St Boston MA',          avatar: 'RK' },
+  { name: 'Dr. Sarah Chen',      subtitle: 'Medical Oncologist',            searchTerms: ['sarah', 'chen', 'oncologist', 'medical oncologist', 'kidney', 'rcc'], location: '300 Longwood Ave Boston MA 02115',       avatar: 'SC' },
+  { name: 'Dr. Michael Torres',  subtitle: 'Surgical Oncologist',           searchTerms: ['michael', 'torres', 'surgical', 'surgery', 'surgeon'],              location: '55 Fruit St Boston MA 02114',            avatar: 'MT' },
+  { name: 'Dr. Amanda Park',     subtitle: 'Radiation Oncologist',          searchTerms: ['amanda', 'park', 'radiation', 'radiotherapy', 'sbrt'],              location: '1400 Pelham Pkwy S Bronx NY 10461',      avatar: 'AP' },
+  { name: 'Dr. Lisa Nguyen',     subtitle: 'Hematologist',                  searchTerms: ['lisa', 'nguyen', 'hematologist', 'blood', 'hematology'],            location: '221 Longwood Ave Boston MA 02115',       avatar: 'LN' },
+  { name: 'Dr. Robert Kim',      subtitle: 'Radiologist',                   searchTerms: ['robert', 'kim', 'radiologist', 'radiology', 'imaging'],             location: '75 Francis St Boston MA 02115',          avatar: 'RK' },
   { name: 'Dr. James Wilson',    subtitle: 'Palliative Care Specialist',    searchTerms: ['james', 'wilson', 'palliative', 'comfort', 'hospice'],              location: '',                                 avatar: 'JW' },
-  { name: 'Dr. Emily Rodriguez', subtitle: 'Oncology Nurse Practitioner',   searchTerms: ['emily', 'rodriguez', 'nurse', 'np', 'practitioner'],               location: '300 Longwood Ave Boston MA',       avatar: 'ER' },
+  { name: 'Dr. Emily Rodriguez', subtitle: 'Oncology Nurse Practitioner',   searchTerms: ['emily', 'rodriguez', 'nurse', 'np', 'practitioner'],               location: '300 Longwood Ave Boston MA 02115',       avatar: 'ER' },
   { name: 'Dr. David Patel',     subtitle: 'Oncology Pharmacist',           searchTerms: ['david', 'patel', 'pharmacist', 'pharmacy', 'medication'],           location: '',                                 avatar: 'DP' },
-  { name: 'Dr. Jennifer Lee',    subtitle: 'Clinical Nutritionist Oncology',searchTerms: ['jennifer', 'lee', 'nutritionist', 'dietitian', 'nutrition', 'diet'],location: '1 Medical Center Blvd',            avatar: 'JL' },
-  { name: 'Dr. Marcus Brown',    subtitle: 'Pain Management Specialist',    searchTerms: ['marcus', 'brown', 'pain', 'management', 'analgesic'],               location: '500 University Ave',               avatar: 'MB' },
+  { name: 'Dr. Jennifer Lee',    subtitle: 'Clinical Nutritionist Oncology',searchTerms: ['jennifer', 'lee', 'nutritionist', 'dietitian', 'nutrition', 'diet'],location: '1 Medical Center Blvd Winston-Salem NC 27157',            avatar: 'JL' },
+  { name: 'Dr. Marcus Brown',    subtitle: 'Pain Management Specialist',    searchTerms: ['marcus', 'brown', 'pain', 'management', 'analgesic'],               location: '500 University Ave Sacramento CA 95817',               avatar: 'MB' },
   { name: 'Dr. Aisha Johnson',   subtitle: 'Oncology Social Worker',        searchTerms: ['aisha', 'johnson', 'social', 'worker', 'support'],                 location: '',                                 avatar: 'AJ' },
 ]
 const CARE_TEAM = PROVIDERS.slice(0, 3)
@@ -1449,13 +1449,84 @@ const ProviderSearchStep = ({ onSelect, onSkip, setNav, dismiss, careTeam }) => 
 
 // ─── ADD APPOINTMENT FLOW ─────────────────────────────────────────
 const parseProviderLocation = (loc) => {
-  if (!loc) return { street: '', city: '', stateAbbr: '' }
-  const parts = loc.trim().split(' ')
+  if (!loc) return { street: '', city: '', stateAbbr: '', zip: '' }
+  let s = loc.trim()
+  let zip = ''
+  const zipM = s.match(/\s(\d{5})(?:-\d{4})?$/)
+  if (zipM) { zip = zipM[1]; s = s.slice(0, zipM.index).trim() }
+  const parts = s.split(/\s+/)
   const last = parts[parts.length - 1]
-  if (parts.length >= 3 && last.length === 2 && /^[A-Z]+$/.test(last)) {
-    return { street: parts.slice(0, parts.length - 2).join(' '), city: parts[parts.length - 2], stateAbbr: last }
+  if (parts.length >= 3 && last.length === 2 && /^[A-Z]{2}$/.test(last)) {
+    return { street: parts.slice(0, parts.length - 2).join(' '), city: parts[parts.length - 2], stateAbbr: last, zip }
   }
-  return { street: loc, city: '', stateAbbr: '' }
+  return { street: s, city: '', stateAbbr: '', zip }
+}
+
+// Stubbed address lookup for the prototype (deterministic — production would call a geocoder).
+const MOCK_ADDRESS_BOOK = [
+  { street: '300 Longwood Ave', city: 'Boston', stateAbbr: 'MA', zip: '02115' },
+  { street: '320 Longwood Ave', city: 'Boston', stateAbbr: 'MA', zip: '02115' },
+  { street: '221 Longwood Ave', city: 'Boston', stateAbbr: 'MA', zip: '02115' },
+  { street: '25 Shattuck St', city: 'Boston', stateAbbr: 'MA', zip: '02115' },
+  { street: '75 Francis St', city: 'Boston', stateAbbr: 'MA', zip: '02115' },
+  { street: '55 Fruit St', city: 'Boston', stateAbbr: 'MA', zip: '02114' },
+  { street: '100 Cambridge St', city: 'Boston', stateAbbr: 'MA', zip: '02114' },
+  { street: '330 Brookline Ave', city: 'Boston', stateAbbr: 'MA', zip: '02215' },
+  { street: '450 Brookline Ave', city: 'Boston', stateAbbr: 'MA', zip: '02215' },
+  { street: '185 Pilgrim Rd', city: 'Boston', stateAbbr: 'MA', zip: '02215' },
+  { street: '1153 Centre St', city: 'Boston', stateAbbr: 'MA', zip: '02130' },
+  { street: '1400 Pelham Pkwy S', city: 'Bronx', stateAbbr: 'NY', zip: '10461' },
+  { street: '1275 York Ave', city: 'New York', stateAbbr: 'NY', zip: '10065' },
+  { street: '1 Medical Center Blvd', city: 'Winston-Salem', stateAbbr: 'NC', zip: '27157' },
+  { street: '500 University Ave', city: 'Sacramento', stateAbbr: 'CA', zip: '95817' },
+]
+const searchAddressBook = (q) => {
+  const s = (q || '').trim().toLowerCase()
+  if (s.length < 3) return []
+  return MOCK_ADDRESS_BOOK.filter(a => `${a.street} ${a.city} ${a.stateAbbr} ${a.zip}`.toLowerCase().includes(s)).slice(0, 5)
+}
+
+// Street-address input with a live results dropdown. Selecting a result fills every field;
+// typing text with no results simply stands as a custom address.
+const AddressAutocomplete = ({ value, onChange, onPick, placeholder }) => {
+  const [on, setOn] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [results, setResults] = useState([])
+  const suppress = useRef(false)
+  const recompute = (v) => { const r = searchAddressBook(v); setResults(r); setOpen(r.length > 0) }
+  const handleChange = (v) => {
+    onChange(v)
+    if (suppress.current) { suppress.current = false; setOpen(false); return }
+    recompute(v)
+  }
+  const pick = (r) => { suppress.current = true; onPick(r); setOpen(false); setResults([]) }
+  return (
+    <div style={{ marginBottom: 16, position: 'relative' }}>
+      <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 5 }}>Street address</div>
+      <div style={{ border: on ? `2px solid ${C.primary}` : `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: '12px', backgroundColor: C.bgCard }}>
+        <input type="text" value={value}
+          onChange={e => handleChange(e.target.value)}
+          onFocus={() => { setOn(true); if (value && !suppress.current) recompute(value) }}
+          onBlur={() => { setOn(false); setTimeout(() => setOpen(false), 140) }}
+          placeholder={placeholder}
+          style={{ fontSize: 16, color: C.textPrimary, border: 'none', outline: 'none', background: 'transparent', fontFamily: 'Inter,sans-serif', width: '100%' }}/>
+      </div>
+      {open && results.length > 0 && (
+        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 6, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, boxShadow: '0 8px 28px rgba(0,0,0,0.16)', overflow: 'hidden', zIndex: 30 }}>
+          {results.map((r, i) => (
+            <button key={i} onMouseDown={e => e.preventDefault()} onClick={() => pick(r)}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '12px 14px', background: 'none', border: 'none', borderBottom: i < results.length - 1 ? `1px solid ${C.border}` : 'none', cursor: 'pointer', textAlign: 'left' }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary, fontVariationSettings: "'FILL' 0, 'wght' 400", flexShrink: 0 }}>location_on</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.street}</div>
+                <div style={{ fontSize: 13, color: C.textSecondary }}>{r.city}, {r.stateAbbr} {r.zip}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 const AddAppointmentFlow = ({ onClose, onComplete }) => {
@@ -1492,48 +1563,10 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
   const [city, setCity] = useState('')
   const [stateAbbr, setStateAbbr] = useState('')
   const [zip, setZip] = useState('')
-  const [zipLoading, setZipLoading] = useState(false)
-  const [zipError, setZipError] = useState('')
+  const [addrSkipped, setAddrSkipped] = useState(false)
   const [notes, setNotes] = useState('')
-  // Edit-address sheet (temp state so cancel reverts)
-  const [locationSheetOpen, setLocationSheetOpen] = useState(false)
-  const [locationSheetVisible, setLocationSheetVisible] = useState(false)
-  const [editStreet, setEditStreet] = useState('')
-  const [editCity, setEditCity] = useState('')
-  const [editStateAbbr, setEditStateAbbr] = useState('')
-  const [editZip, setEditZip] = useState('')
-  const [editZipLoading, setEditZipLoading] = useState(false)
-  const [editZipError, setEditZipError] = useState('')
 
   const hasAnyInput = !!(provider || apptDate || apptTime || apptType || street || city || zip || notes)
-
-  const lookupZip = async (z, setCityFn, setStateFn, setErrFn, setLoadFn) => {
-    if (z.length !== 5 || !/^\d{5}$/.test(z)) return
-    setLoadFn(true); setErrFn('')
-    try {
-      const res = await fetch(`https://api.zippopotam.us/us/${z}`)
-      if (!res.ok) throw new Error()
-      const data = await res.json()
-      const place = data.places?.[0]
-      if (place) { setCityFn(place['place name']); setStateFn(place['state abbreviation']) }
-    } catch { setErrFn('ZIP not found') }
-    finally { setLoadFn(false) }
-  }
-
-  const openLocationSheet = () => {
-    setEditStreet(street); setEditCity(city); setEditStateAbbr(stateAbbr); setEditZip(zip)
-    setEditZipError('')
-    setLocationSheetOpen(true)
-    requestAnimationFrame(() => requestAnimationFrame(() => setLocationSheetVisible(true)))
-  }
-  const closeLocationSheet = () => {
-    setLocationSheetVisible(false)
-    setTimeout(() => setLocationSheetOpen(false), 380)
-  }
-  const saveLocationSheet = () => {
-    setStreet(editStreet); setCity(editCity); setStateAbbr(editStateAbbr); setZip(editZip)
-    closeLocationSheet()
-  }
 
   return (
     <FlowShell onClose={onClose} confirmClose={hasAnyInput}>
@@ -1541,12 +1574,14 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
         const [step, setStep] = useState(0)
         const locationRequired = LOCATION_REQUIRED_TYPES.includes(apptType)
         const hasPrefilledLocation = !!(street || city || stateAbbr)
+        const addrComplete = !!(street.trim() && city.trim() && stateAbbr.trim() && zip.trim())
 
         const handleProviderSelect = (p) => {
           setProvider(p)
+          setAddrSkipped(false)
           if (p.location) {
             const parsed = parseProviderLocation(p.location)
-            setStreet(parsed.street); setCity(parsed.city); setStateAbbr(parsed.stateAbbr)
+            setStreet(parsed.street); setCity(parsed.city); setStateAbbr(parsed.stateAbbr); setZip(parsed.zip || '')
           } else {
             setStreet(''); setCity(''); setStateAbbr(''); setZip('')
           }
@@ -1560,6 +1595,7 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
 
         const handleSkipProvider = () => {
           setProvider(null)
+          setAddrSkipped(false)
           setStreet(''); setCity(''); setStateAbbr(''); setZip('')
           setStep(1)
         }
@@ -1573,6 +1609,8 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
         const finish = () => {
           const providerName = provider?.name || ''
           const locationStr = [street, [city, stateAbbr].filter(Boolean).join(' '), zip].filter(Boolean).join(', ')
+          // Address is only saved when the location step ran, wasn't skipped, and is complete.
+          const saveLocation = locationRequired && !addrSkipped && addrComplete
           onComplete({
             id: `appt-${Date.now()}`,
             type: 'appointment',
@@ -1581,7 +1619,7 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
             date: apptDate,
             time: apptTime || null,
             appointmentType: apptType,
-            location: locationStr || null,
+            location: saveLocation ? locationStr : null,
             notes: notes || null,
           })
           dismiss()
@@ -1644,83 +1682,33 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
               </div>
             </StepView>
           ),
-          // Step 4: Location — confirm pre-filled or enter; edit via slide-up sheet
+          // Step 4: Location — editable prefilled form; street field has an address lookup
           () => (
             <StepView>
               <div style={{ flex: 1, overflowY: 'auto', padding: '32px 20px 120px' }}>
                 <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 6, lineHeight: 1.15 }}>Location</div>
-                {hasPrefilledLocation ? (
-                  <>
-                    <div style={{ fontSize: 14, color: C.textSecondary, marginBottom: 20 }}>From {shortDrName(provider?.name)}'s profile</div>
-                    <button onClick={openLocationSheet} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, backgroundColor: C.bgCard, border: `1.5px solid ${C.border}`, borderRadius: 14, padding: '14px 16px', cursor: 'pointer', textAlign: 'left' }}>
-                      <div style={{ flex: 1 }}>
-                        {street && <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary, marginBottom: 2 }}>{street}</div>}
-                        <div style={{ fontSize: 14, color: C.textSecondary }}>{[city, stateAbbr].filter(Boolean).join(', ')}{zip ? ` ${zip}` : ''}</div>
-                      </div>
-                      <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary, fontVariationSettings: "'FILL' 0, 'wght' 400", flexShrink: 0 }}>edit</span>
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <div style={{ fontSize: 14, color: C.textSecondary, marginBottom: 20 }}>Optional</div>
-                    <TextInputField label="Street address" value={street} onChange={setStreet} placeholder="e.g. 300 Longwood Ave"/>
-                    <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-                      <div style={{ flex: '0 0 110px', position: 'relative' }}>
-                        <TextInputField label="ZIP code" value={zip} onChange={v => { setZip(v); if (v.length === 5) lookupZip(v, setCity, setStateAbbr, setZipError, setZipLoading) }} placeholder="02115"/>
-                        {zipLoading && <div style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: C.textSecondary }}>…</div>}
-                        {zipError && <div style={{ fontSize: 11, color: '#ef4444', marginTop: 3 }}>{zipError}</div>}
-                      </div>
-                      <div style={{ flex: 1 }}><TextInputField label="City" value={city} onChange={setCity} placeholder="Boston"/></div>
-                      <div style={{ flex: '0 0 64px' }}><TextInputField label="State" value={stateAbbr} onChange={setStateAbbr} placeholder="MA"/></div>
-                    </div>
-                  </>
-                )}
-              </div>
-              <DockedButton label="Next" onClick={() => setStep(5)}/>
-
-              {/* Edit address slide-up sheet */}
-              {locationSheetOpen && (
-                <div style={{ position: 'absolute', inset: 0, zIndex: 50 }}>
-                  {/* Backdrop */}
-                  <div onClick={closeLocationSheet} style={{ position: 'absolute', inset: 0, backgroundColor: locationSheetVisible ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0)', transition: 'background-color 0.35s ease' }}/>
-                  {/* Sheet */}
-                  <div style={{
-                    position: 'absolute', bottom: 0, left: 0, right: 0,
-                    backgroundColor: C.bgApp, borderRadius: '20px 20px 0 0',
-                    padding: '0 0 32px',
-                    transform: locationSheetVisible ? 'translateY(0)' : 'translateY(100%)',
-                    transition: 'transform 0.38s cubic-bezier(0.32,0.72,0,1)',
-                    boxShadow: '0 -4px 32px rgba(0,0,0,0.12)'
-                  }}>
-                    {/* Sheet header */}
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 20px 16px' }}>
-                      <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary }}>Edit address</div>
-                      <button onClick={closeLocationSheet} style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(0,0,0,0.07)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>close</span>
-                      </button>
-                    </div>
-                    {/* Form */}
-                    <div style={{ padding: '0 20px 20px' }}>
-                      <TextInputField label="Street address" value={editStreet} onChange={setEditStreet} placeholder="e.g. 300 Longwood Ave"/>
-                      <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-                        <div style={{ flex: '0 0 110px', position: 'relative' }}>
-                          <TextInputField label="ZIP code" value={editZip} onChange={v => { setEditZip(v); setEditZipError(''); if (v.length === 5) lookupZip(v, setEditCity, setEditStateAbbr, setEditZipError, setEditZipLoading) }} placeholder="02115"/>
-                          {editZipLoading && <div style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: C.textSecondary }}>…</div>}
-                          {editZipError && <div style={{ fontSize: 11, color: '#ef4444', marginTop: 3 }}>{editZipError}</div>}
-                        </div>
-                        <div style={{ flex: 1 }}><TextInputField label="City" value={editCity} onChange={setEditCity} placeholder="Boston"/></div>
-                        <div style={{ flex: '0 0 64px' }}><TextInputField label="State" value={editStateAbbr} onChange={setEditStateAbbr} placeholder="MA"/></div>
-                      </div>
-                    </div>
-                    {/* Save button */}
-                    <div style={{ padding: '0 20px' }}>
-                      <button onClick={saveLocationSheet} style={{ width: '100%', padding: '16px', backgroundColor: C.primary, color: '#fff', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 700, cursor: 'pointer' }}>
-                        Save
-                      </button>
-                    </div>
-                  </div>
+                <div style={{ fontSize: 14, color: C.textSecondary, marginBottom: 20 }}>
+                  {hasPrefilledLocation ? `From ${shortDrName(provider?.name)}'s profile — edit if needed` : 'Start typing a street address to search'}
                 </div>
-              )}
+                <AddressAutocomplete
+                  value={street}
+                  onChange={setStreet}
+                  onPick={(r) => { setStreet(r.street); setCity(r.city); setStateAbbr(r.stateAbbr); setZip(r.zip) }}
+                  placeholder="e.g. 300 Longwood Ave"
+                />
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <div style={{ flex: '0 0 110px' }}><TextInputField label="ZIP code" value={zip} onChange={setZip} placeholder="02115"/></div>
+                  <div style={{ flex: 1 }}><TextInputField label="City" value={city} onChange={setCity} placeholder="Boston"/></div>
+                  <div style={{ flex: '0 0 64px' }}><TextInputField label="State" value={stateAbbr} onChange={setStateAbbr} placeholder="MA"/></div>
+                </div>
+              </div>
+              <DockedButton
+                label="Next"
+                onClick={() => { setAddrSkipped(false); setStep(5) }}
+                disabled={!addrComplete}
+                secondaryLabel="Skip"
+                onSecondary={() => { setAddrSkipped(true); setStep(5) }}
+              />
             </StepView>
           ),
           // Step 5: Notes + Save
