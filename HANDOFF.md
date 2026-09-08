@@ -147,6 +147,26 @@ const C = {
 
 ## Key architectural patterns
 
+### Experiments (variant flags)
+Reversible variant switches live near the top of `App.jsx` (`EXPERIMENT_DEFAULTS` / `EXPERIMENT_META` / `exp()`), so new ideas slot in beside the existing behavior instead of replacing it. Every flag ships in the build — no rebuild needed to compare options.
+
+- Read a flag with `exp('flagName')`; gate the variant JSX on its value.
+- Defaults live in `EXPERIMENT_DEFAULTS`. Precedence: defaults ← in-app panel (localStorage) ← `?exp=` URL param (wins, for eng).
+- **In-app panel:** Profile (You) screen → **Experiments** section renders a toggle per flag from `EXPERIMENT_META`. `setExperiment(key, value)` persists to localStorage and reloads (session + timeline survive the reload); `resetExperiments()` clears overrides.
+- URL override still works for eng: `?exp=addressLookup:off` (comma-separate multiple: `?exp=addressLookup:off,foo:v2`).
+- `EXPERIMENT_META` lists each flag's label + allowed values; add an entry here to make a new flag show up in the panel.
+- **Prune rejected flags** — once an experiment is decided, delete the loser branch and the flag so `App.jsx` doesn't accumulate dead paths.
+- Current flags:
+  - `addressLookup` (`on` = Location step street field autocompletes; `off` = plain input).
+  - `engagementModal` (`on` = connect-records nudge after high-intent manual effort; `off` = never). A **signal** = a manually saved event (`handleComplete`) OR a **"Leave without saving"** abandon of a FAB add-flow (`closeAddFlow`; the abandon counts only when the user confirms the leave dialog — FlowShell passes `viaConfirm` through `onClose`). Excluded: onboarding, system-generated, and chat-capture events. Gating is persisted (`ENGAGEMENT_KEY`, survives reloads) via `registerEngagementSignal`:
+    - Shows after `ENGAGEMENT_SIGNAL_THRESHOLD` (2) signals.
+    - After a show: resets the signal count, stamps `lastShownAt`, increments `shownCount`. Re-show requires the `ENGAGEMENT_COOLDOWN_MS` (7 days) to elapse **and** 2 fresh signals — plus never twice per session (`engagementShownThisSessionRef`).
+    - Lifetime cap `ENGAGEMENT_MAX_SHOWS` (3); after that it stops.
+    - **Terminal:** once records are connected (`markRecordsConnected()` — set by the chat connect-records action, read via `areRecordsConnected()`) it never shows again.
+    - Dismiss is soft ("Not now" / close) only — no "don't remind me" yet.
+    - **Records-not-synced card:** dismissing the nudge without connecting drops a persistent, dismissible card into the timeline directly below the daily summary ("Health records not synced" + "Open settings" → Profile). It persists across reloads (`cardActive`), hides once records connect, and closing it (`cardDismissed`) removes it for good. `RecordsNotSyncedCard` renders in `DaySection` on Today; App state `recordsCardVisible`.
+    - **Testing:** Profile → Experiments → *Reset to defaults* also clears the engagement + records-connected state so the nudge can be re-tested (otherwise the 7-day cooldown blocks a quick re-show).
+
 ### State — all in App component
 All state lives in the root `App` component. There is no Redux, no context for timeline state. Props are drilled down. Key state variables:
 

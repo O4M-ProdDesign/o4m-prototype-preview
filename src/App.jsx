@@ -126,6 +126,87 @@ const CARE_TEAM = PROVIDERS.slice(0, 3)
 const APPOINTMENT_TYPES = ['In Office', 'Virtual', 'Phone Call', 'Lab Work', 'Imaging', 'Other']
 const LOCATION_REQUIRED_TYPES = ['In Office', 'Lab Work', 'Imaging']
 
+// ─── EXPERIMENTS ─────────────────────────────────────────────────
+// Reversible variant switches. Each flag ships in the build, so eng/product
+// can compare options without a rebuild. Defaults live here; override at
+// runtime with a URL param, e.g.  ?exp=addressLookup:off  (comma-separate
+// multiple:  ?exp=addressLookup:off,foo:v2 ). Prune rejected flags so they
+// don't accumulate in App.jsx.
+const EXPERIMENT_DEFAULTS = {
+  addressLookup: 'on',     // Location step street field — 'on' = autocomplete dropdown, 'off' = plain input
+  engagementModal: 'off',  // 'on' = connect-records nudge after high-intent manual effort (see ENGAGEMENT_* rules)
+}
+// For reference / the in-app experiments panel: label + allowed values per flag.
+const EXPERIMENT_META = {
+  addressLookup: { label: 'Address lookup on Location step', values: ['on', 'off'] },
+  engagementModal: { label: 'Engagement modal (2 manual events)', values: ['off', 'on'] },
+}
+const EXP_LS_KEY = 'o4m_experiments'
+const _readExpLS = () => { try { return JSON.parse(localStorage.getItem(EXP_LS_KEY) || '{}') } catch { return {} } }
+const _expUrlOverrides = (() => {
+  try {
+    const raw = new URLSearchParams(window.location.search).get('exp')
+    if (!raw) return {}
+    return Object.fromEntries(raw.split(',').map(s => s.split(':').map(x => x.trim())).filter(a => a.length === 2 && a[0]))
+  } catch { return {} }
+})()
+// Precedence: defaults ← in-app panel (localStorage) ← ?exp= URL param (wins, for eng).
+const EXPERIMENTS = { ...EXPERIMENT_DEFAULTS, ..._readExpLS(), ..._expUrlOverrides }
+const exp = (key) => EXPERIMENTS[key]
+// Set from the in-app panel: persist, drop any ?exp= override, and reload so every exp() reflects it.
+const setExperiment = (key, value) => {
+  try { const cur = _readExpLS(); cur[key] = value; localStorage.setItem(EXP_LS_KEY, JSON.stringify(cur)) } catch {}
+  try { const u = new URL(window.location.href); u.searchParams.delete('exp'); window.history.replaceState(null, '', u) } catch {}
+  window.location.reload()
+}
+const resetExperiments = () => {
+  try { localStorage.removeItem(EXP_LS_KEY) } catch {}
+  try { localStorage.removeItem(ENGAGEMENT_KEY); localStorage.removeItem(RECORDS_CONNECTED_KEY) } catch {} // restart the nudge for testing
+  window.location.reload()
+}
+
+// ─── ENGAGEMENT NUDGE (connect-records) ──────────────────────────
+// Nudges the user to connect their medical records once they show high intent via manual effort.
+// A "signal" = a manually saved event OR a "Leave without saving" abandon of a manual add-flow.
+// Rules: show after N signals; after showing, require the cooldown to elapse AND N fresh signals
+// before re-showing; never more than once per session; hard cap on lifetime shows; and once
+// records are connected it never shows again. All state is persisted (survives reloads).
+const ENGAGEMENT_KEY = 'o4m_engagement_v1'
+const RECORDS_CONNECTED_KEY = 'o4m_records_connected'
+const ENGAGEMENT_SIGNAL_THRESHOLD = 2                       // signals needed to (re)show
+const ENGAGEMENT_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000      // 7 days between shows
+const ENGAGEMENT_MAX_SHOWS = 3                              // lifetime impression cap
+const ENGAGEMENT_SHOW_DELAY_MS = 1400                       // beat after the user completes the action, so the nudge doesn't interrupt
+const _readEngagement = () => {
+  try { return { shownCount: 0, lastShownAt: 0, signals: 0, ...JSON.parse(localStorage.getItem(ENGAGEMENT_KEY) || '{}') } }
+  catch { return { shownCount: 0, lastShownAt: 0, signals: 0 } }
+}
+const _writeEngagement = (patch) => {
+  try { localStorage.setItem(ENGAGEMENT_KEY, JSON.stringify({ ..._readEngagement(), ...patch })) } catch {}
+}
+const areRecordsConnected = () => { try { return localStorage.getItem(RECORDS_CONNECTED_KEY) === '1' } catch { return false } }
+const markRecordsConnected = () => { try { localStorage.setItem(RECORDS_CONNECTED_KEY, '1') } catch {} }
+// Persistent "records not synced" timeline card: activated when the nudge is dismissed without
+// connecting; dismissed for good by the user; hidden once records are connected.
+const activateRecordsCard = () => _writeEngagement({ cardActive: true })
+const dismissRecordsCard = () => _writeEngagement({ cardDismissed: true })
+const shouldShowRecordsCard = () => { const s = _readEngagement(); return !!s.cardActive && !s.cardDismissed && !areRecordsConnected() }
+// Record one high-intent signal. Returns true if the nudge should show now.
+// sessionShown = has it already shown this session (in-memory, enforces once-per-session).
+const registerEngagementSignal = ({ sessionShown }) => {
+  if (areRecordsConnected()) return false                  // terminal: goal achieved
+  const s = _readEngagement()
+  if (s.shownCount >= ENGAGEMENT_MAX_SHOWS) return false    // lifetime cap reached
+  const signals = (s.signals || 0) + 1
+  const cooledDown = !s.lastShownAt || (Date.now() - s.lastShownAt) >= ENGAGEMENT_COOLDOWN_MS
+  if (signals >= ENGAGEMENT_SIGNAL_THRESHOLD && cooledDown && !sessionShown) {
+    _writeEngagement({ signals: 0, lastShownAt: Date.now(), shownCount: s.shownCount + 1 })
+    return true
+  }
+  _writeEngagement({ signals })                            // accumulate toward the next show
+  return false
+}
+
 // ─── HELPERS ─────────────────────────────────────────────────────
 const fmtTime12 = (t) => {
   if (!t) return ''
@@ -739,10 +820,11 @@ const FlowShell = ({ onClose, children, zIndex = 60, confirmClose = false }) => 
   const [nav, setNav] = useState({ title: '', subtitle: null, onBack: null })
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false)
   useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
-  const reallyDismiss = () => { setVis(false); setTimeout(onClose, 340) }
+  // viaConfirm = true only when the user went through the "Leave without saving" confirm dialog.
+  const reallyDismiss = (viaConfirm = false) => { setVis(false); setTimeout(() => onClose(viaConfirm), 340) }
   const dismiss = () => {
     if (confirmClose) setShowLeaveConfirm(true)
-    else reallyDismiss()
+    else reallyDismiss(false)
   }
   return (
     <div style={{
@@ -763,7 +845,7 @@ const FlowShell = ({ onClose, children, zIndex = 60, confirmClose = false }) => 
       {showLeaveConfirm && (
         <ConfirmLeaveDialog
           onKeepEditing={() => setShowLeaveConfirm(false)}
-          onLeave={() => { setShowLeaveConfirm(false); reallyDismiss() }}
+          onLeave={() => { setShowLeaveConfirm(false); reallyDismiss(true) }}
         />
       )}
     </div>
@@ -1565,8 +1647,11 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
   const [zip, setZip] = useState('')
   const [addrSkipped, setAddrSkipped] = useState(false)
   const [notes, setNotes] = useState('')
+  const [providerStepDone, setProviderStepDone] = useState(false) // true once past provider (incl. "I don't know yet")
 
-  const hasAnyInput = !!(provider || apptDate || apptTime || apptType || street || city || zip || notes)
+  // providerStepDone makes "I don't know yet" (provider stays null) still count as progress,
+  // so leaving afterward triggers the "Leave without saving" warning like selecting a provider.
+  const hasAnyInput = !!(provider || providerStepDone || apptDate || apptTime || apptType || street || city || zip || notes)
 
   return (
     <FlowShell onClose={onClose} confirmClose={hasAnyInput}>
@@ -1578,6 +1663,7 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
 
         const handleProviderSelect = (p) => {
           setProvider(p)
+          setProviderStepDone(true)
           setAddrSkipped(false)
           if (p.location) {
             const parsed = parseProviderLocation(p.location)
@@ -1595,6 +1681,7 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
 
         const handleSkipProvider = () => {
           setProvider(null)
+          setProviderStepDone(true)
           setAddrSkipped(false)
           setStreet(''); setCity(''); setStateAbbr(''); setZip('')
           setStep(1)
@@ -1690,12 +1777,16 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
                 <div style={{ fontSize: 14, color: C.textSecondary, marginBottom: 20 }}>
                   {hasPrefilledLocation ? `From ${shortDrName(provider?.name)}'s profile — edit if needed` : 'Start typing a street address to search'}
                 </div>
-                <AddressAutocomplete
-                  value={street}
-                  onChange={setStreet}
-                  onPick={(r) => { setStreet(r.street); setCity(r.city); setStateAbbr(r.stateAbbr); setZip(r.zip) }}
-                  placeholder="e.g. 300 Longwood Ave"
-                />
+                {exp('addressLookup') === 'on' ? (
+                  <AddressAutocomplete
+                    value={street}
+                    onChange={setStreet}
+                    onPick={(r) => { setStreet(r.street); setCity(r.city); setStateAbbr(r.stateAbbr); setZip(r.zip) }}
+                    placeholder="e.g. 300 Longwood Ave"
+                  />
+                ) : (
+                  <TextInputField label="Street address" value={street} onChange={setStreet} placeholder="e.g. 300 Longwood Ave"/>
+                )}
                 <div style={{ display: 'flex', gap: 10 }}>
                   <div style={{ flex: '0 0 110px' }}><TextInputField label="ZIP code" value={zip} onChange={setZip} placeholder="02115"/></div>
                   <div style={{ flex: 1 }}><TextInputField label="City" value={city} onChange={setCity} placeholder="Boston"/></div>
@@ -1761,6 +1852,27 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
     </FlowShell>
   )
 }
+
+// Persistent, dismissible timeline card nudging the user to sync health records.
+const RecordsNotSyncedCard = ({ onOpenSettings, onDismiss }) => (
+  <div style={{ position: 'relative', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px' }}>
+    <button onClick={onDismiss} aria-label="Dismiss" style={{ position: 'absolute', top: 10, right: 10, width: 28, height: 28, borderRadius: 14, background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textTertiary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>close</span>
+    </button>
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+      <div style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>sync_problem</span>
+      </div>
+      <div style={{ flex: 1, minWidth: 0, paddingRight: 20 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 3 }}>Health records not synced</div>
+        <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.45, marginBottom: 12 }}>You can sync your records in your profile under settings.</div>
+        <button onClick={onOpenSettings} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', backgroundColor: C.primaryLight, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }}>
+          Open settings
+        </button>
+      </div>
+    </div>
+  </div>
+)
 
 const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true, onReviewRecs }) => {
   const bullets = summary.bullets || []
@@ -1903,7 +2015,7 @@ const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true
     <div ref={cardRef} style={{ position: 'relative', width: '100%', backgroundColor: C.bgCard, border: '1px solid transparent', borderRadius: 14, padding: '13px 16px', textAlign: 'left' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span ref={starRef} style={{ display: 'inline-flex', transformOrigin: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 17, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span></span>
-        <span style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary }}>Daily summary</span>
+        <span style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary }}>Daily summary</span>
       </div>
       {state === 'noplan' ? (
         <div style={{ ...textFade, margin: '12px 0 4px' }}>
@@ -2497,12 +2609,14 @@ const RailItem = ({ icon, isToday, isLast, card }) => {
   )
 }
 
-const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFlash = false, summaryShown = true, onApproachSelect, addedIds = {}, onRemoveEvent, onEditClinical, visibleRecs = [], revealedCards = null, blockGenStates = {}, genText = null, genBlockId = null, generationDone = false, onSummarize = null, onAddEvent = null, cancerSupported = true, onReviewRecs = null }) => {
+const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFlash = false, summaryShown = true, onApproachSelect, addedIds = {}, onRemoveEvent, onEditClinical, visibleRecs = [], revealedCards = null, blockGenStates = {}, genText = null, genBlockId = null, generationDone = false, onSummarize = null, onAddEvent = null, cancerSupported = true, onReviewRecs = null, showRecordsCard = false, onOpenSettings = null, onDismissRecordsCard = null }) => {
   const allItems = []
   // The daily summary is absent while the timeline builds; it's inserted at the top of
   // Today right after the scroll-to-Today settles.
   const showSummary = day.summary && (!day.isToday || summaryShown)
   if (showSummary) allItems.push({ key: 'summary', icon: null, card: <DailySummaryCard summary={day.summary} isToday={day.isToday} onAddEvent={onAddEvent} cancerSupported={cancerSupported} onReviewRecs={onReviewRecs}/> })
+  // Persistent "records not synced" card sits directly below the summary on Today.
+  if (day.isToday && showSummary && showRecordsCard) allItems.push({ key: 'records-card', icon: null, card: <RecordsNotSyncedCard onOpenSettings={onOpenSettings} onDismiss={onDismissRecordsCard}/> })
   day.events.forEach(ev => allItems.push({
     key: ev.id, icon: null,
     card: ev.type === 'appointment'
@@ -5492,7 +5606,7 @@ const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink,
   // records-connected flag (same flag the parked gating work will read); everything
   // else delegates to the app-level handler.
   const handleLink = (target) => {
-    if (target === 'connect-records') setRecordsConnected(true)
+    if (target === 'connect-records') { setRecordsConnected(true); markRecordsConnected() } // terminal: stops the engagement nudge
     onDeepLink(target)
   }
 
@@ -5718,6 +5832,42 @@ const YouScreen = ({ currentUser, onLogout }) => (
           <span style={{ color: C.textTertiary, fontSize: 13 }}>›</span>
         </div>
       ))}
+    </div>
+
+    {/* Experiments panel — prototype variant switches */}
+    <div style={{ padding: '20px 20px 8px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>science</span>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Experiments</div>
+      </div>
+      <div style={{ fontSize: 12, color: C.textTertiary, marginBottom: 14 }}>Prototype variant switches. Changing one reloads the app.</div>
+      <div style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, overflow: 'hidden' }}>
+        {Object.keys(EXPERIMENT_META).map((key, i, arr) => {
+          const meta = EXPERIMENT_META[key]
+          const current = exp(key)
+          return (
+            <div key={key} style={{ padding: '13px 14px', borderBottom: i < arr.length - 1 ? `1px solid ${C.border}` : 'none' }}>
+              <div style={{ fontSize: 14, fontWeight: 500, color: C.textPrimary, marginBottom: 9 }}>{meta.label}</div>
+              <div style={{ display: 'inline-flex', backgroundColor: C.bgApp, borderRadius: 9, padding: 3, gap: 3 }}>
+                {meta.values.map(v => {
+                  const active = current === v
+                  return (
+                    <button key={v} onClick={() => { if (!active) setExperiment(key, v) }}
+                      style={{ padding: '6px 16px', borderRadius: 7, border: 'none', cursor: active ? 'default' : 'pointer', fontSize: 13, fontWeight: 600, textTransform: 'capitalize',
+                        backgroundColor: active ? C.bgCard : 'transparent', color: active ? C.textPrimary : C.textSecondary,
+                        boxShadow: active ? '0 1px 2px rgba(0,0,0,0.12)' : 'none' }}>
+                      {v}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <button onClick={resetExperiments} style={{ marginTop: 10, background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: C.textSecondary, padding: '4px 0' }}>
+        Reset to defaults
+      </button>
     </div>
 
     {/* Logout */}
@@ -6001,6 +6151,27 @@ export default function App() {
   const [chatDeleteSignal, setChatDeleteSignal] = useState(0)
   const [captureAck, setCaptureAck] = useState(null)      // {threadId, id, text} injected into the active chat thread
   const pendingCaptureRef = useRef(null)                  // {type, threadId} while a chat-initiated flow is open
+  // Engagement nudge (feature-flagged, engagementModal): a manual event add OR a "Leave without
+  // saving" abandon is a high-intent signal. Persisted gating (registerEngagementSignal) decides
+  // when to show / re-show. Onboarding, system-generated, and chat-capture events don't count.
+  const [engagementModalOpen, setEngagementModalOpen] = useState(false)
+  const [recordsCardVisible, setRecordsCardVisible] = useState(shouldShowRecordsCard) // persistent timeline card
+  const engagementShownThisSessionRef = useRef(false) // enforce once-per-session
+  const flowJustCompletedRef = useRef(false)          // set on a save so the trailing onClose isn't miscounted as an abandon
+  const signalEngagement = () => {
+    if (exp('engagementModal') !== 'on') return
+    if (registerEngagementSignal({ sessionShown: engagementShownThisSessionRef.current })) {
+      engagementShownThisSessionRef.current = true
+      // Wait a beat so the modal lands after the user feels they finished — never mid-action.
+      setTimeout(() => setEngagementModalOpen(true), ENGAGEMENT_SHOW_DELAY_MS)
+    }
+  }
+  // Dismissing the nudge without connecting drops a persistent "records not synced" card into the timeline.
+  const dismissEngagementNudge = () => {
+    setEngagementModalOpen(false)
+    if (!areRecordsConnected()) { activateRecordsCard(); setRecordsCardVisible(true) }
+  }
+  const handleDismissRecordsCard = () => { dismissRecordsCard(); setRecordsCardVisible(false) }
   const [appReveal, setAppReveal] = useState(false)
   const [currentUser, setCurrentUser] = useState(loadSession)
   const [selectedCommunity, setSelectedCommunity] = useState(null)
@@ -6409,6 +6580,18 @@ export default function App() {
 
   const openFlow = (type) => { setSheetOpen(false); setTimeout(() => setFlow(type), 310) }
 
+  // Close a FAB add-flow. Only a "Leave without saving" confirm (viaConfirm) counts as an
+  // abandoned manual event — a plain close with nothing entered doesn't. Chat-capture excluded.
+  const closeAddFlow = (viaConfirm) => {
+    const wasCapture = !!pendingCaptureRef.current
+    if (viaConfirm && !wasCapture && !flowJustCompletedRef.current) {
+      signalEngagement()
+    }
+    flowJustCompletedRef.current = false
+    pendingCaptureRef.current = null
+    setFlow(null); setFlowPreload(null)
+  }
+
   // Chat-initiated capture: open the existing add-flow prefilled; handleComplete routes the result back to chat.
   const openCaptureFlow = ({ type, prefill, threadId, msgIndex, answer }) => {
     pendingCaptureRef.current = { type, threadId, msgIndex, answer }
@@ -6496,6 +6679,8 @@ export default function App() {
 
   const handleComplete = (event) => {
     justAddedRef.current = true // the group-change replay should yield to this add's scroll/highlight
+    // A manual add is a high-intent signal, unless it's a chat-initiated capture (excluded).
+    if (!pendingCaptureRef.current) { flowJustCompletedRef.current = true }
     const dateKey = event.date || event.startDate || localDateStr()
     setTimeline(prev => {
       const existing = prev.find(d => d.date === dateKey)
@@ -6559,7 +6744,7 @@ export default function App() {
       }
     }
     requestAnimationFrame(waitForCard)
-
+    if (!pendingCaptureRef.current) signalEngagement() // delay handled inside (ENGAGEMENT_SHOW_DELAY_MS)
   }
 
   // Derive recommendations, addedIds, and allPlanItems from current state
@@ -6801,6 +6986,9 @@ export default function App() {
                   onAddEvent={() => setSheetOpen(true)}
                   cancerSupported={isCancerSupported(patientState)}
                   onReviewRecs={scrollToRecs}
+                  showRecordsCard={recordsCardVisible && !areRecordsConnected()}
+                  onOpenSettings={() => setShowYou(true)}
+                  onDismissRecordsCard={handleDismissRecordsCard}
                   sentinelRef={el => {
                     if (el) sentinelRefs.current[day.date] = el
                   }}
@@ -6877,10 +7065,24 @@ export default function App() {
         />
       )}
       {sheetOpen && <AddEventSheet onClose={() => setSheetOpen(false)} onSelectProcedure={() => openFlow('procedure')} onSelectScan={() => openFlow('scan')} onSelectMedication={() => openFlow('medication')} onSelectAppointment={() => openFlow('appointment')}/>}
-      {flow === 'procedure' && <AddProcedureFlow onClose={() => { setFlow(null); setFlowPreload(null) }} onComplete={handleComplete} preload={flowPreload?.type === 'procedure' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
-      {flow === 'scan' && <AddScanFlow onClose={() => { setFlow(null); setFlowPreload(null) }} onComplete={handleComplete} preload={flowPreload?.type === 'scan' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
-      {flow === 'medication' && <AddMedicationFlow onClose={() => { setFlow(null); setFlowPreload(null); pendingCaptureRef.current = null }} onComplete={handleComplete} preload={flowPreload?.type === 'medication' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
-      {flow === 'appointment' && <AddAppointmentFlow onClose={() => setFlow(null)} onComplete={handleComplete}/>}
+      {flow === 'procedure' && <AddProcedureFlow onClose={closeAddFlow} onComplete={handleComplete} preload={flowPreload?.type === 'procedure' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
+      {flow === 'scan' && <AddScanFlow onClose={closeAddFlow} onComplete={handleComplete} preload={flowPreload?.type === 'scan' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
+      {flow === 'medication' && <AddMedicationFlow onClose={closeAddFlow} onComplete={handleComplete} preload={flowPreload?.type === 'medication' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
+      {flow === 'appointment' && <AddAppointmentFlow onClose={closeAddFlow} onComplete={handleComplete}/>}
+
+      {/* Engagement nudge (feature-flagged, engagementModal) — connect-records pitch; empty placeholder for now */}
+      {engagementModalOpen && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 400, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div onClick={dismissEngagementNudge} style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.4)' }}/>
+          <div style={{ position: 'relative', width: '86%', maxWidth: 360, backgroundColor: C.bgCard, borderRadius: 20, padding: '30px 22px 26px', boxShadow: '0 12px 48px rgba(0,0,0,0.22)', textAlign: 'center' }}>
+            <button onClick={dismissEngagementNudge} aria-label="Close" style={{ position: 'absolute', top: 12, right: 12, width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(0,0,0,0.06)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>close</span>
+            </button>
+            <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, marginBottom: 8 }}>Connect records nudge</div>
+            <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>Placeholder — content TBD. Shown after high-intent manual effort; "Not now" dismisses.</div>
+          </div>
+        </div>
+      )}
       {onboarded && !anyDrillInOpen && activeTab === 'careplan' && (
         <div style={{
           position: 'fixed', bottom: 90, left: 0, right: 0, zIndex: 30,
