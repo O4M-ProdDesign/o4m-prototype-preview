@@ -2003,14 +2003,12 @@ const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true
   const seenIds = new Set([...seenSet].map(s => s.slice(0, s.indexOf(':'))))
   const changeOf = (b) => seenSet.has(b.id + ':' + b.text) ? null : (seenIds.has(b.id) ? 'updated' : 'new')
 
-  // Card state — follows the Engineering Spec §3a matrix:
-  //   Rich      = supported + has a time-sensitive bullet (today / upcoming / treatments) → bullets
-  //   Plan-quiet = supported + nothing time-sensitive → point to treatment options
-  //   No-plan   = unsupported cancer → add events
+  // Card state — two states:
+  //   Rich   = has a time-sensitive bullet (today / upcoming / treatments) → bullets + AI footer
+  //   Empty  = nothing to show yet (quiet OR unsupported) → single "Add an event" fallback
   const hasActionable = shownBullets.some(b => ['today', 'upcoming', 'treatments'].includes(b.id))
-  const state = !cancerSupported ? 'noplan' : (hasActionable ? 'rich' : 'quiet')
+  const state = hasActionable ? 'rich' : 'empty'
   const openAdd = (e) => { e.stopPropagation(); if (onAddEvent) onAddEvent() }
-  const reviewRecs = (e) => { e.stopPropagation(); if (onReviewRecs) onReviewRecs() }
 
   const isVisible = useCallback(() => {
     const el = cardRef.current
@@ -2108,18 +2106,11 @@ const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true
         <span ref={starRef} style={{ display: 'inline-flex', transformOrigin: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 17, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span></span>
         <span style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary }}>Daily summary</span>
       </div>
-      {state === 'noplan' ? (
+      {state === 'empty' ? (
         <div style={{ ...textFade, margin: '12px 0 4px' }}>
           <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>Your summary will fill in as you add to your plan. New appointments, treatments, and events show up here.</div>
           <button onClick={openAdd} style={ctaBtnStyle}>
             <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textSecondary }}>add</span>Add an event
-          </button>
-        </div>
-      ) : state === 'quiet' ? (
-        <div style={{ ...textFade, margin: '12px 0 4px' }}>
-          <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>You have treatment options ready to explore. Add the ones you're considering to your plan to keep track of them here as you go.</div>
-          <button onClick={reviewRecs} style={ctaBtnStyle}>
-            <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textSecondary }}>arrow_downward</span>Explore treatment options
           </button>
         </div>
       ) : (
