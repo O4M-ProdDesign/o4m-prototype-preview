@@ -134,12 +134,14 @@ const LOCATION_REQUIRED_TYPES = ['In Office', 'Lab Work', 'Imaging']
 // don't accumulate in App.jsx.
 const EXPERIMENT_DEFAULTS = {
   addressLookup: 'on',     // Location step street field — 'on' = autocomplete dropdown, 'off' = plain input
-  engagementModal: 'off',  // 'on' = connect-records nudge after high-intent manual effort (see ENGAGEMENT_* rules)
+  engagementModal: 'on',   // 'on' = connect-records nudge after high-intent manual effort (see ENGAGEMENT_* rules)
+  resourcesTab: 'on',      // 'on' = show the Resources tab in the bottom nav (default on)
 }
 // For reference / the in-app experiments panel: label + allowed values per flag.
 const EXPERIMENT_META = {
   addressLookup: { label: 'Address lookup on Location step', values: ['on', 'off'] },
   engagementModal: { label: 'Engagement modal (2 manual events)', values: ['off', 'on'] },
+  resourcesTab: { label: 'Resources tab (bottom nav)', values: ['on', 'off'] },
 }
 const EXP_LS_KEY = 'o4m_experiments'
 const _readExpLS = () => { try { return JSON.parse(localStorage.getItem(EXP_LS_KEY) || '{}') } catch { return {} } }
@@ -1873,6 +1875,95 @@ const RecordsNotSyncedCard = ({ onOpenSettings, onDismiss }) => (
     </div>
   </div>
 )
+
+// ─── ENGAGEMENT NUDGE (connect-records) — bottom sheet with the D illustration ──
+const ENG_ANIM_CSS = `
+.o4mplay .rec-pop-d{ transform-box:fill-box; transform-origin:center; opacity:0; animation:engRecPop .55s cubic-bezier(.3,.8,.35,1) .2s both; }
+.o4mplay .rec-move-d{ animation:engRecMove .5s cubic-bezier(.4,0,.2,1) .85s both; }
+.o4mplay .tl-scroll-d{ opacity:0; animation:engTlScroll .6s cubic-bezier(.2,.7,.2,1) .85s both; }
+.o4mplay .tl-line-d{ opacity:0; animation:engFadeIn .4s ease .95s forwards; }
+.o4mplay .wire-d{ stroke-dasharray:48; stroke-dashoffset:48; animation:engWireDraw .45s ease-out 1.4s forwards; }
+.o4mplay .wire-head-d{ stroke-dasharray:10; stroke-dashoffset:10; animation:engWireDraw .18s ease-out 1.82s forwards; }
+.o4mplay .gray-top-d{ animation:engGrayTop .45s cubic-bezier(.4,0,.2,1) 1.9s both; }
+.o4mplay .gray-bot-d{ animation:engGrayBot .45s cubic-bezier(.4,0,.2,1) 1.9s both; }
+.o4mplay .new-in-d{ transform-box:fill-box; transform-origin:center; opacity:0; animation:engNewIn .4s cubic-bezier(.34,1.4,.64,1) 2.1s both; }
+.o4mplay .tag-in-d{ transform-box:fill-box; transform-origin:center; opacity:0; animation:engTagIn .3s cubic-bezier(.34,1.56,.64,1) 2.4s both; }
+@keyframes engRecPop{ 0%{opacity:0; transform:scale(.55)} 45%{opacity:1} 62%{transform:scale(1.32)} 100%{opacity:1; transform:scale(1.18)} }
+@keyframes engRecMove{ to{ transform:translateX(-78px); } }
+@keyframes engTlScroll{ 0%{opacity:0; transform:translateY(0)} 100%{opacity:1; transform:translateY(-44px)} }
+@keyframes engGrayTop{ to{ transform:translateY(-4px); } }
+@keyframes engGrayBot{ to{ transform:translateY(24px); } }
+@keyframes engNewIn{ 0%{opacity:0; transform:translateY(6px) scale(.9)} 100%{opacity:1; transform:translateY(0) scale(1)} }
+@keyframes engTagIn{ 0%{opacity:0; transform:scale(.6)} 100%{opacity:1; transform:scale(1)} }
+@keyframes engWireDraw{ to{ stroke-dashoffset:0; } }
+@keyframes engFadeIn{ to{ opacity:1; } }
+`
+const EngagementNudgeSheet = ({ onConnect, onDismiss }) => {
+  const [vis, setVis] = useState(false)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const close = (cb) => { setVis(false); setTimeout(() => cb && cb(), 320) }
+  return ReactDOM.createPortal(
+    <div style={{ position: 'fixed', inset: 0, zIndex: 400 }}>
+      <style>{ENG_ANIM_CSS}</style>
+      <div onClick={() => close(onDismiss)} style={{ position: 'absolute', inset: 0, backgroundColor: vis ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0)', transition: 'background-color 0.32s ease' }}/>
+      <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: C.bgCard, borderRadius: '22px 22px 0 0', boxShadow: '0 -6px 28px rgba(0,0,0,0.16)', padding: '10px 20px 28px', transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.36s cubic-bezier(0.32,0.72,0,1)' }}>
+        <div style={{ width: 38, height: 4, backgroundColor: 'rgba(0,0,0,0.12)', borderRadius: 2, margin: '0 auto 14px' }}/>
+        <div className="o4mplay" style={{ display: 'flex', justifyContent: 'center', margin: '2px 0 6px' }}>
+          <svg viewBox="20 0 260 148" width="240" height="137" xmlns="http://www.w3.org/2000/svg">
+            <defs><clipPath id="o4mEngWin"><rect x="138" y="34" width="122" height="90" rx="8"/></clipPath></defs>
+            <g clipPath="url(#o4mEngWin)">
+              <g className="tl-line-d"><line x1="150" y1="36" x2="150" y2="120" stroke="#e6e6ea" strokeWidth="3" strokeLinecap="round"/></g>
+              <g className="tl-scroll-d">
+                <g>
+                  <circle cx="150" cy="66" r="5" fill="#c9ccd3" stroke="#fff" strokeWidth="2"/>
+                  <rect x="162" y="59" width="60" height="16" rx="6" fill="#fff" stroke="#eceef1" strokeWidth="1.2"/>
+                  <rect x="170" y="65" width="30" height="4" rx="2" fill="#e9eaee"/>
+                </g>
+                <g className="gray-top-d">
+                  <circle cx="150" cy="98" r="5" fill="#c9ccd3" stroke="#fff" strokeWidth="2"/>
+                  <rect x="162" y="91" width="72" height="16" rx="6" fill="#fff" stroke="#eceef1" strokeWidth="1.2"/>
+                  <rect x="170" y="97" width="38" height="4" rx="2" fill="#e9eaee"/>
+                </g>
+                <g className="gray-bot-d">
+                  <circle cx="150" cy="130" r="5" fill="#c9ccd3" stroke="#fff" strokeWidth="2"/>
+                  <rect x="162" y="123" width="64" height="16" rx="6" fill="#fff" stroke="#eceef1" strokeWidth="1.2"/>
+                  <rect x="170" y="129" width="32" height="4" rx="2" fill="#e9eaee"/>
+                </g>
+                <g className="new-in-d">
+                  <circle cx="150" cy="124" r="5.5" fill="#ff7a59" stroke="#fff" strokeWidth="2"/>
+                  <rect x="162" y="115" width="86" height="19" rx="6" fill="#fff1ec" stroke="#ffd0c2" strokeWidth="1.3"/>
+                  <rect x="170" y="123" width="30" height="4" rx="2" fill="#ffb59f"/>
+                  <g className="tag-in-d">
+                    <rect x="212" y="119.5" width="28" height="11" rx="5.5" fill="#ff7a59"/>
+                    <text x="226" y="127.4" fontSize="7" fontWeight="700" fill="#fff" textAnchor="middle" letterSpacing="0.3">NEW</text>
+                  </g>
+                </g>
+              </g>
+            </g>
+            <path className="wire-d" d="M101 79 Q 116 78 131 80" fill="none" stroke="#ff7a59" strokeWidth="2" strokeLinecap="round"/>
+            <path className="wire-head-d" d="M136 80 L130 75" fill="none" stroke="#ff7a59" strokeWidth="2" strokeLinecap="round"/>
+            <path className="wire-head-d" d="M136 80 L130 85" fill="none" stroke="#ff7a59" strokeWidth="2" strokeLinecap="round"/>
+            <g transform="translate(150,74)">
+              <g className="rec-move-d">
+                <g className="rec-pop-d">
+                  <rect x="-17" y="-21" width="34" height="42" rx="8" fill="#fff" stroke="#e6e6ea" strokeWidth="1.5"/>
+                  <rect x="-9" y="-12" width="20" height="3.5" rx="1.75" fill="#e9eaee"/>
+                  <rect x="-9" y="-5" width="14" height="3.5" rx="1.75" fill="#eef0f3"/>
+                  <path d="M-9 8 h6 l2 -6 3 11 2.5 -5 h5" fill="none" stroke="#ff7a59" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                </g>
+              </g>
+            </g>
+          </svg>
+        </div>
+        <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.3px', color: C.textPrimary, textAlign: 'center', lineHeight: 1.25 }}>See your care add up — without the typing</div>
+        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5, textAlign: 'center', margin: '8px 4px 0' }}>Connect your records so it all comes together — the clearer the picture, the better your guidance and treatment options.</div>
+        <button onClick={() => close(onConnect)} style={{ width: '100%', padding: '15px', backgroundColor: C.primary, color: '#fff', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 700, cursor: 'pointer', marginTop: 18, fontFamily: 'Inter,sans-serif' }}>Connect medical records</button>
+        <button onClick={() => close(onDismiss)} style={{ width: '100%', padding: '12px', backgroundColor: 'transparent', color: C.textSecondary, border: 'none', fontSize: 15, fontWeight: 600, cursor: 'pointer', marginTop: 4, fontFamily: 'Inter,sans-serif' }}>Not now</button>
+      </div>
+    </div>,
+    document.body
+  )
+}
 
 const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true, onReviewRecs }) => {
   const bullets = summary.bullets || []
@@ -4408,9 +4499,10 @@ const CommunityDetailView = ({ community, onClose }) => {
 // ─── BOTTOM NAV ──────────────────────────────────────────────────
 const NAV_TABS = [
   { id: 'careplan',  label: 'Home',       icon: 'home' },
-  { id: 'chat',      label: 'Chat',       icon: 'auto_awesome' },
   { id: 'track',     label: 'Tracker',    icon: 'monitor_heart' },
+  { id: 'chat',      label: 'Chat',       icon: 'auto_awesome' },
   { id: 'community', label: 'Community',  icon: 'group' },
+  { id: 'resources', label: 'Resources',  icon: 'menu_book', flag: 'resourcesTab' },
 ]
 
 const BottomNav = ({ activeTab, onTabChange }) => (
@@ -4418,7 +4510,7 @@ const BottomNav = ({ activeTab, onTabChange }) => (
     display: 'flex', height: 72, backgroundColor: C.bgCard,
     borderTop: `1px solid ${C.border}`, flexShrink: 0, paddingBottom: 10,
   }}>
-    {NAV_TABS.map(tab => {
+    {NAV_TABS.filter(tab => !tab.flag || exp(tab.flag) === 'on').map(tab => {
       const active = activeTab === tab.id
       return (
         <button key={tab.id} onClick={() => onTabChange(tab.id)} style={{
@@ -4443,6 +4535,17 @@ const BottomNav = ({ activeTab, onTabChange }) => (
 )
 
 // ─── PLACEHOLDER SCREENS ─────────────────────────────────────────
+// Resources tab (feature-flagged, resourcesTab) — placeholder for now.
+const ResourcesScreen = () => (
+  <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', backgroundColor: C.bgApp, padding: '0 40px', textAlign: 'center' }}>
+    <div style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: C.primaryLight, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
+      <span className="material-symbols-rounded" style={{ fontSize: 34, color: C.primary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>menu_book</span>
+    </div>
+    <div style={{ fontSize: 19, fontWeight: 700, color: C.textPrimary, marginBottom: 6, letterSpacing: '-0.3px' }}>Resources</div>
+    <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>Curated cancer guidance, articles, and support — coming soon.</div>
+  </div>
+)
+
 
 // ─── SEGMENTED CONTROL ───────────────────────────────────────────
 const SegmentedControl = ({ tabs, active, onChange }) => (
@@ -5923,7 +6026,7 @@ const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap, onBa
       )}
       {!hideTitle && (
         <div style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-          <div key={'t-' + (title || activeTab)} style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 8px', animation: 'hdrFade 0.24s ease' }}>{title || ({ careplan: 'Home', track: 'Tracker', chat: 'Chats', community: 'Community', you: 'You' }[activeTab] || 'Home')}</div>
+          <div key={'t-' + (title || activeTab)} style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 8px', animation: 'hdrFade 0.24s ease' }}>{title || ({ careplan: 'Home', track: 'Tracker', chat: 'Chats', resources: 'Resources', community: 'Community', you: 'You' }[activeTab] || 'Home')}</div>
         </div>
       )}
     </div>
@@ -6170,6 +6273,13 @@ export default function App() {
   const dismissEngagementNudge = () => {
     setEngagementModalOpen(false)
     if (!areRecordsConnected()) { activateRecordsCard(); setRecordsCardVisible(true) }
+  }
+  // Connect from the nudge (simulated): mark connected — terminal for the nudge + the records card.
+  const connectRecordsFromNudge = () => {
+    markRecordsConnected()
+    setEngagementModalOpen(false)
+    setRecordsCardVisible(false)
+    setToast({ message: 'Health records connected' })
   }
   const handleDismissRecordsCard = () => { dismissRecordsCard(); setRecordsCardVisible(false) }
   const [appReveal, setAppReveal] = useState(false)
@@ -6578,13 +6688,17 @@ export default function App() {
     }
   }
 
-  const openFlow = (type) => { setSheetOpen(false); setTimeout(() => setFlow(type), 310) }
+  // Reset the "just completed" guard on every fresh open, so a previous save's flag can't
+  // bleed into the next flow and swallow its abandon signal.
+  const openFlow = (type) => { flowJustCompletedRef.current = false; setSheetOpen(false); setTimeout(() => setFlow(type), 310) }
 
-  // Close a FAB add-flow. Only a "Leave without saving" confirm (viaConfirm) counts as an
-  // abandoned manual event — a plain close with nothing entered doesn't. Chat-capture excluded.
-  const closeAddFlow = (viaConfirm) => {
+  // Close a FAB add-flow. Reaching here means a type was selected (the flow was opened); closing
+  // it without saving is the abandon signal — no confirm dialog required. Chat-capture excluded.
+  // (The "Leave without saving" confirm still only appears once there's actual input; it's a
+  // separate concern from the signal.)
+  const closeAddFlow = () => {
     const wasCapture = !!pendingCaptureRef.current
-    if (viaConfirm && !wasCapture && !flowJustCompletedRef.current) {
+    if (!wasCapture && !flowJustCompletedRef.current) {
       signalEngagement()
     }
     flowJustCompletedRef.current = false
@@ -6594,6 +6708,7 @@ export default function App() {
 
   // Chat-initiated capture: open the existing add-flow prefilled; handleComplete routes the result back to chat.
   const openCaptureFlow = ({ type, prefill, threadId, msgIndex, answer }) => {
+    flowJustCompletedRef.current = false
     pendingCaptureRef.current = { type, threadId, msgIndex, answer }
     let item = prefill || null
     if (type === 'medication' && prefill && prefill.name) {
@@ -6915,6 +7030,9 @@ export default function App() {
         <div style={{ display: activeTab === 'track' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
           <TrackScreen medications={medications} patientState={patientState} onSaveMedication={handleSaveMedication}/>
         </div>
+        <div style={{ display: activeTab === 'resources' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
+          <ResourcesScreen/>
+        </div>
         <div style={{ display: activeTab === 'community' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
           <CommunityScreen onSelectCommunity={setSelectedCommunity} autoJoinedId={autoJoinedCommunity?.id}/>
         </div>
@@ -7070,19 +7188,8 @@ export default function App() {
       {flow === 'medication' && <AddMedicationFlow onClose={closeAddFlow} onComplete={handleComplete} preload={flowPreload?.type === 'medication' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
       {flow === 'appointment' && <AddAppointmentFlow onClose={closeAddFlow} onComplete={handleComplete}/>}
 
-      {/* Engagement nudge (feature-flagged, engagementModal) — connect-records pitch; empty placeholder for now */}
-      {engagementModalOpen && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 400, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div onClick={dismissEngagementNudge} style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.4)' }}/>
-          <div style={{ position: 'relative', width: '86%', maxWidth: 360, backgroundColor: C.bgCard, borderRadius: 20, padding: '30px 22px 26px', boxShadow: '0 12px 48px rgba(0,0,0,0.22)', textAlign: 'center' }}>
-            <button onClick={dismissEngagementNudge} aria-label="Close" style={{ position: 'absolute', top: 12, right: 12, width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(0,0,0,0.06)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>close</span>
-            </button>
-            <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, marginBottom: 8 }}>Connect records nudge</div>
-            <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>Placeholder — content TBD. Shown after high-intent manual effort; "Not now" dismisses.</div>
-          </div>
-        </div>
-      )}
+      {/* Engagement nudge (feature-flagged, engagementModal) — connect-records bottom sheet */}
+      {engagementModalOpen && <EngagementNudgeSheet onConnect={connectRecordsFromNudge} onDismiss={dismissEngagementNudge}/>}
       {onboarded && !anyDrillInOpen && activeTab === 'careplan' && (
         <div style={{
           position: 'fixed', bottom: 90, left: 0, right: 0, zIndex: 30,
