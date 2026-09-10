@@ -1868,7 +1868,7 @@ const RecordsNotSyncedCard = ({ onOpenSettings, onDismiss }) => (
       <div style={{ flex: 1, minWidth: 0, paddingRight: 20 }}>
         <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 3 }}>Health records not synced</div>
         <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.45, marginBottom: 12 }}>You can sync your records in your profile under settings.</div>
-        <button onClick={onOpenSettings} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', backgroundColor: C.primaryLight, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }}>
+        <button onClick={onOpenSettings} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }}>
           Open settings
         </button>
       </div>
@@ -1957,7 +1957,7 @@ const EngagementNudgeSheet = ({ onConnect, onDismiss }) => {
         </div>
         <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.3px', color: C.textPrimary, textAlign: 'center', lineHeight: 1.25 }}>See your care add up — without the typing</div>
         <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5, textAlign: 'center', margin: '8px 4px 0' }}>Connect your records so it all comes together — the clearer the picture, the better your guidance and treatment options.</div>
-        <button onClick={() => close(onConnect)} style={{ width: '100%', padding: '15px', backgroundColor: C.primary, color: '#fff', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 700, cursor: 'pointer', marginTop: 18, fontFamily: 'Inter,sans-serif' }}>Connect medical records</button>
+        <button onClick={() => close(onConnect)} style={{ width: '100%', padding: '15px', backgroundColor: C.primary, color: '#fff', border: 'none', borderRadius: 9999, fontSize: 16, fontWeight: 700, cursor: 'pointer', marginTop: 18, fontFamily: 'Inter,sans-serif' }}>Connect medical records</button>
         <button onClick={() => close(onDismiss)} style={{ width: '100%', padding: '12px', backgroundColor: 'transparent', color: C.textSecondary, border: 'none', fontSize: 15, fontWeight: 600, cursor: 'pointer', marginTop: 4, fontFamily: 'Inter,sans-serif' }}>Not now</button>
       </div>
     </div>,
@@ -2098,7 +2098,7 @@ const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true
   }, [onScreen, shownBullets, seenSet])
 
   const textFade = { opacity: textOpacity, transition: 'opacity 0.28s ease' }
-  const ctaBtnStyle = { marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', backgroundColor: C.bgApp, border: 'none', borderRadius: 20, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: C.textPrimary }
+  const ctaBtnStyle = { marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }
 
   return (
     <div ref={cardRef} style={{ position: 'relative', width: '100%', backgroundColor: C.bgCard, border: '1px solid transparent', borderRadius: 14, padding: '13px 16px', textAlign: 'left' }}>
@@ -2108,9 +2108,9 @@ const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true
       </div>
       {state === 'empty' ? (
         <div style={{ ...textFade, margin: '12px 0 4px' }}>
-          <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>Your summary will fill in as you add to your plan. New appointments, treatments, and events show up here.</div>
+          <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>See where your care stands at a glance — so it's not all in your head.</div>
           <button onClick={openAdd} style={ctaBtnStyle}>
-            <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textSecondary }}>add</span>Add an event
+            <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.primary }}>add</span>Add an event
           </button>
         </div>
       ) : (

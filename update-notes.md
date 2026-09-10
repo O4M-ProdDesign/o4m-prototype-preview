@@ -1,5 +1,8 @@
 # Prototype Update Notes
 
+## v2.16 — Secondary-button treatment + Daily Summary empty-state copy
+UI polish + copy. (1) **Secondary buttons** now use a **gray fill with orange text/icon** and a full pill radius, applied to the Daily Summary empty state's **Add an event** button (`ctaBtnStyle`) and the timeline **Health records not synced** card's **Open settings** button (was light-orange fill). (2) The connect-records nudge's primary **Connect medical records** button is now a **pill** (was a 14px rounded rectangle). (3) **Daily Summary empty state copy** reframed from the mechanical "Your summary will fill in as you add to your plan…" to a value-first line: **"See where your care stands at a glance — so it's not all in your head."** (the "Explore treatment options" state was already removed in v2.14; this is the single Empty state). Handoff board synced; the two tickets carry the interim copy and are being updated separately.
+
 ## v2.15 — No-cache meta tags (stop GitHub Pages serving a stale build to shared links)
 Added `Cache-Control: no-cache, no-store, must-revalidate` (+ Pragma/Expires) meta tags to the page `<head>` (source `index.html`, carried into the built `docs/index.html`), so browsers re-fetch the HTML instead of serving a cached copy. This addresses shared-link recipients seeing an old build (missing modal, old nav, etc.). Note: GitHub Pages' CDN still caches each file ~10 min server-side, which meta tags can't override — for an immediate fresh load right after a push, share the link with a changing query string (e.g. `…/index.html?v=215`).
 
