@@ -1,5 +1,8 @@
 # Prototype Update Notes
 
+## v2.17 — Repo structure: iterations preview folder (no app changes)
+Added `docs/iterations/` (with a README documenting the convention) so redesign iterations can each live in their own subfolder and publish at their own GitHub Pages URL (`…/iterations/<name>/`), while the current app stays at the repo root (`docs/index.html`) and the shared repo (B) is left flat/untouched. No prototype/behavior changes — structure only.
+
 ## v2.16 — Secondary-button treatment + Daily Summary empty-state copy
 UI polish + copy. (1) **Secondary buttons** now use a **gray fill with orange text/icon** and a full pill radius, applied to the Daily Summary empty state's **Add an event** button (`ctaBtnStyle`) and the timeline **Health records not synced** card's **Open settings** button (was light-orange fill). (2) The connect-records nudge's primary **Connect medical records** button is now a **pill** (was a 14px rounded rectangle). (3) **Daily Summary empty state copy** reframed from the mechanical "Your summary will fill in as you add to your plan…" to a value-first line: **"See where your care stands at a glance — so it's not all in your head."** (the "Explore treatment options" state was already removed in v2.14; this is the single Empty state). Handoff board synced; the two tickets carry the interim copy and are being updated separately.
 
