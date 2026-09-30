@@ -1859,22 +1859,280 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
 const RecordsNotSyncedCard = ({ onOpenSettings, onDismiss }) => (
   <div style={{ position: 'relative', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px' }}>
     <button onClick={onDismiss} aria-label="Dismiss" style={{ position: 'absolute', top: 10, right: 10, width: 28, height: 28, borderRadius: 14, background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textTertiary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>close</span>
+      <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textTertiary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>close</span>
     </button>
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-      <div style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+      <div style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
         <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>sync_problem</span>
       </div>
       <div style={{ flex: 1, minWidth: 0, paddingRight: 20 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 3 }}>Health records not synced</div>
-        <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.45, marginBottom: 12 }}>You can sync your records in your profile under settings.</div>
-        <button onClick={onOpenSettings} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }}>
-          Open settings
+        <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.3, marginBottom: 4 }}>Health records not synced</div>
+        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.45, marginBottom: 12 }}>Sync your records to make your plan even more complete. You can do this any time under Treatment.</div>
+        <button onClick={onOpenSettings} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, height: 36, padding: '0 16px', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }}>
+          Go to Treatment
         </button>
       </div>
     </div>
   </div>
 )
+
+// ─── Medical records connect landing (matches production) + retrieval confirmation ───
+const MR_VALUE_PROPS = [
+  { icon: 'description', title: 'A summary of your oncology records', body: 'Easy-to-read oncology report summarized by our clinical team, right here in the app.' },
+  { icon: 'forum', title: 'Better conversations with doctors', body: 'Empowering you to drive discussions and decision making with your care team.' },
+  { icon: 'lock', title: 'Protected health information', body: 'We use encryption technology that meets the requirements under HIPAA to protect your data.' },
+]
+const MR_NAVY = '#26323d'
+const _mrField = { width: '100%', height: 48, border: `1px solid ${C.border}`, borderRadius: 10, padding: '0 14px', fontSize: 15, color: C.textPrimary, fontFamily: 'Inter,sans-serif', outline: 'none', boxSizing: 'border-box', backgroundColor: C.bgCard }
+const _mrLabel = { fontSize: 12.5, color: C.textTertiary, margin: '0 0 5px 2px' }
+const _MRField = ({ label, hint, ...p }) => (
+  <div style={{ marginBottom: 14 }}>
+    {label && <div style={_mrLabel}>{label}</div>}
+    <input {...p} style={_mrField}/>
+    {hint && <div style={{ fontSize: 11.5, color: C.textTertiary, margin: '5px 2px 0', lineHeight: 1.4 }}>{hint}</div>}
+  </div>
+)
+const _MRSignaturePad = ({ onChange }) => {
+  const wrap = useRef(null), cv = useRef(null), drawing = useRef(false), [has, setHas] = useState(false)
+  useEffect(() => { const c = cv.current; if (c && wrap.current) { c.width = wrap.current.clientWidth; c.height = 150 } }, [])
+  const pt = (e) => { const c = cv.current, r = c.getBoundingClientRect(), t = e.touches ? e.touches[0] : e; return { x: (t.clientX - r.left) * (c.width / r.width), y: (t.clientY - r.top) * (c.height / r.height) } }
+  const start = (e) => { drawing.current = true; const c = cv.current.getContext('2d'), p = pt(e); c.beginPath(); c.moveTo(p.x, p.y) }
+  const move = (e) => { if (!drawing.current) return; e.preventDefault(); const c = cv.current.getContext('2d'), p = pt(e); c.strokeStyle = MR_NAVY; c.lineWidth = 2.2; c.lineCap = 'round'; c.lineTo(p.x, p.y); c.stroke(); if (!has) { setHas(true); onChange && onChange(true) } }
+  const end = () => { drawing.current = false }
+  const clear = () => { const c = cv.current; c.getContext('2d').clearRect(0, 0, c.width, c.height); setHas(false); onChange && onChange(false) }
+  return (
+    <div ref={wrap}>
+      <canvas ref={cv} onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end} onTouchStart={start} onTouchMove={move} onTouchEnd={end} style={{ width: '100%', height: 150, border: `1px solid ${C.border}`, borderRadius: 10, touchAction: 'none', backgroundColor: '#fff', cursor: 'crosshair' }}/>
+      <button onClick={clear} style={{ marginTop: 8, background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: C.textSecondary, display: 'inline-flex', alignItems: 'center', gap: 4 }}><span className="material-symbols-rounded" style={{ fontSize: 16 }}>ink_eraser</span>Clear</button>
+    </div>
+  )
+}
+const MR_ADDR_SUGGEST = [
+  { line1: '100 Danton Drive', rest: 'Methuen, MA, USA', city: 'Methuen', state: 'Massachusetts' },
+  { line1: '100 Milk Street', rest: 'Methuen, MA, USA', city: 'Methuen', state: 'Massachusetts' },
+  { line1: '100 Franklin Street', rest: 'Lawrence, MA, USA', city: 'Lawrence', state: 'Massachusetts' },
+]
+const MR_PROVIDER = { name: 'Mary Smith CRNA', line1: '60 East St, Suite 1400 Lowe II', org: 'Anesthesiology Service Inc', loc: 'Methuen, MA 01844', role: 'Medical oncologist' }
+
+// Full medical-records connect flow (landing → patient → address → provider → signature → done)
+// Landing shown on the Treatment › Medical Records tab — "Connect" launches the slide-up flow
+const MedicalRecordsConnectFlow = ({ onLaunch }) => {
+  const bar = { padding: '10px 20px calc(18px + env(safe-area-inset-bottom, 0px))', flexShrink: 0 }
+  const connected = areRecordsConnected()
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: C.bgCard }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 24px', textAlign: 'center' }}>
+        {connected ? (
+          <>
+            <div style={{ width: 64, height: 64, borderRadius: 32, backgroundColor: C.primaryLight, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '4px auto 18px' }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 34, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>check_circle</span>
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.3, marginBottom: 12 }}>Your medical records are being retrieved and processed</div>
+            <div style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.6 }}>The process takes a few days. We'll notify you once the records have been uploaded. In the meantime, you can keep viewing results based on your answers.</div>
+          </>
+        ) : (
+          <>
+            <div style={{ width: 72, height: 72, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 52, color: '#5b7089' }}>medical_information</span>
+            </div>
+            <div style={{ fontSize: 23, fontWeight: 800, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.25, marginBottom: 22 }}>Connect your<br/>medical records</div>
+            {MR_VALUE_PROPS.map((v, i) => (
+              <div key={i} style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: C.textPrimary, marginBottom: 5 }}>{v.title}</div>
+                <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.55 }}>{v.body}</div>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+      <div style={bar}>
+        <button onClick={() => onLaunch && onLaunch()} style={{ width: '100%', height: 52, borderRadius: 14, backgroundColor: MR_NAVY, border: 'none', cursor: 'pointer', fontSize: 16, fontWeight: 700, color: '#fff', fontFamily: 'Inter,sans-serif' }}>Connect</button>
+      </div>
+    </div>
+  )
+}
+
+// Multi-step form — its own stack with its own header (pushes in from Connect)
+const MedicalRecordsFormFlow = ({ onExit, onDone }) => {
+  const [step, setStep] = useState(1) // 1..6
+  const [pt, setPt] = useState({ first: '', last: '', maiden: '', dob: '', ssn: '' })
+  const [addr, setAddr] = useState({ q: '', street1: '', street2: '', city: '', state: '', country: 'United States' })
+  const [addrOpen, setAddrOpen] = useState(false)
+  const [provQ, setProvQ] = useState(''); const [provSel, setProvSel] = useState(null)
+  const [hasSig, setHasSig] = useState(false); const [signPhase, setSignPhase] = useState('form') // form | agree
+  const [showLeave, setShowLeave] = useState(false)
+  const scroll = { flex: 1, overflowY: 'auto', padding: '4px 22px 24px' }
+  const bar = { padding: '10px 20px calc(18px + env(safe-area-inset-bottom, 0px))', flexShrink: 0 }
+  const h1 = { fontSize: 22, fontWeight: 800, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 8 }
+  const sub = { fontSize: 14, color: C.textSecondary, lineHeight: 1.55, marginBottom: 20 }
+  const primaryBtn = (label, onClick, opts = {}) => (
+    <button onClick={onClick} disabled={opts.disabled} style={{ width: '100%', height: 52, borderRadius: 14, backgroundColor: opts.disabled ? '#f0b9ac' : (opts.navy ? MR_NAVY : C.primary), border: 'none', cursor: opts.disabled ? 'default' : 'pointer', fontSize: 16, fontWeight: 700, color: '#fff', fontFamily: 'Inter,sans-serif', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>{label}{opts.arrow && <span className="material-symbols-rounded" style={{ fontSize: 20 }}>arrow_forward</span>}</button>
+  )
+  const dirty = !!(pt.first || pt.last || pt.maiden || pt.dob || pt.ssn || addr.q || addr.street1 || provSel || hasSig)
+  const back = () => setStep(s => s - 1)
+  const tryExit = () => { if (dirty) setShowLeave(true); else onExit && onExit() }
+
+  let body = null
+  if (step === 1) body = (<>
+    <div style={scroll}>
+      <div style={h1}>Patient information</div>
+      <div style={sub}>We need this information to retrieve your medical records from your oncology care facility.</div>
+      <_MRField label="Legal first name" value={pt.first} onChange={e => setPt({ ...pt, first: e.target.value })}/>
+      <_MRField label="Legal last name" value={pt.last} onChange={e => setPt({ ...pt, last: e.target.value })}/>
+      <_MRField label="Maiden/other name" placeholder="Enter additional names that your medical records might be located under" value={pt.maiden} onChange={e => setPt({ ...pt, maiden: e.target.value })}/>
+      <_MRField label="Date of birth (required)" type="date" value={pt.dob} onChange={e => setPt({ ...pt, dob: e.target.value })}/>
+      <_MRField label="Last 4 digits of your SSN" value={pt.ssn} maxLength={4} inputMode="numeric" onChange={e => setPt({ ...pt, ssn: e.target.value.replace(/\D/g, '') })} hint="This is a unique identifier that helps ensure we locate the correct medical records."/>
+    </div>
+    <div style={bar}>{primaryBtn('Next', () => setStep(2), { arrow: true })}</div>
+  </>)
+  else if (step === 2) body = (<>
+    <div style={scroll}>
+      <div style={h1}>Home address</div>
+      <div style={sub}>Please enter your mailing address. Currently available in the US and Canada only.</div>
+      <div style={{ position: 'relative', marginBottom: 14 }}>
+        <div style={_mrLabel}>Street Address</div>
+        <input value={addr.q} placeholder="Start typing address" onChange={e => { setAddr({ ...addr, q: e.target.value }); setAddrOpen(e.target.value.length > 0) }} style={_mrField}/>
+        {addrOpen && (
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, marginTop: 4, overflow: 'hidden' }}>
+            {MR_ADDR_SUGGEST.map((s, i) => (
+              <button key={i} onClick={() => { setAddr({ ...addr, q: s.line1, street1: s.line1, city: s.city, state: s.state }); setAddrOpen(false) }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: i < 2 ? `1px solid ${C.border}` : 'none', padding: '11px 14px', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+                <div style={{ fontSize: 14, color: C.textPrimary }}>{s.line1}</div>
+                <div style={{ fontSize: 12, color: C.textTertiary }}>{s.rest}</div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <_MRField label="Street 2" value={addr.street2} onChange={e => setAddr({ ...addr, street2: e.target.value })}/>
+      <_MRField label="City" value={addr.city} onChange={e => setAddr({ ...addr, city: e.target.value })}/>
+      <_MRField label="State" value={addr.state} onChange={e => setAddr({ ...addr, state: e.target.value })}/>
+      <_MRField label="Country" value={addr.country} onChange={e => setAddr({ ...addr, country: e.target.value })}/>
+    </div>
+    <div style={bar}>{primaryBtn('Next', () => setStep(3), { arrow: true, disabled: !addr.street1 && !addr.q })}</div>
+  </>)
+  else if (step === 3) body = (<>
+    <div style={scroll}>
+      <div style={h1}>Name of provider or facility</div>
+      <div style={sub}>Enter the name of your oncology specialist or the name of the facility where you are receiving your treatment</div>
+      <div style={{ position: 'relative', marginBottom: 14 }}>
+        <span className="material-symbols-rounded" style={{ position: 'absolute', left: 12, top: 13, fontSize: 20, color: C.textTertiary }}>search</span>
+        <input value={provQ} placeholder="Search" onChange={e => setProvQ(e.target.value)} style={{ ..._mrField, paddingLeft: 40 }}/>
+        {provQ && !provSel && (
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, marginTop: 4 }}>
+            <button onClick={() => setProvSel(MR_PROVIDER)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '12px 14px', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+              <div style={{ fontSize: 14.5, fontWeight: 600, color: C.textPrimary }}>{MR_PROVIDER.name}</div>
+              <div style={{ fontSize: 12.5, color: C.textTertiary }}>{MR_PROVIDER.line1}</div>
+              <div style={{ fontSize: 12.5, color: C.textTertiary }}>{MR_PROVIDER.org}</div>
+              <div style={{ fontSize: 12.5, color: C.textTertiary }}>{MR_PROVIDER.loc}</div>
+              <div style={{ fontSize: 12.5, color: C.textTertiary }}>{MR_PROVIDER.role}</div>
+            </button>
+          </div>
+        )}
+      </div>
+      {provSel && (
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: '13px 14px', marginBottom: 14, display: 'flex', gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14.5, fontWeight: 600, color: C.textPrimary }}>{provSel.name}</div>
+            <div style={{ fontSize: 12.5, color: C.textTertiary }}>{provSel.line1}</div>
+            <div style={{ fontSize: 12.5, color: C.textTertiary }}>{provSel.org}</div>
+            <div style={{ fontSize: 12.5, color: C.textTertiary }}>{provSel.loc}</div>
+            <div style={{ fontSize: 12.5, color: C.textTertiary }}>{provSel.role}</div>
+          </div>
+          <button onClick={() => { setProvSel(null); setProvQ('') }} aria-label="Remove" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, alignSelf: 'flex-start' }}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary }}>close</span></button>
+        </div>
+      )}
+      <div style={{ backgroundColor: '#fdf6e9', border: '1px solid #f0e2c4', borderRadius: 12, padding: '13px 15px' }}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, color: '#8a6d3b', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 5 }}><span className="material-symbols-rounded" style={{ fontSize: 17 }}>lightbulb</span>Tip</div>
+        <div style={{ fontSize: 12.5, color: '#8a6d3b', lineHeight: 1.5 }}>{provSel ? 'You may add up to a total of three oncology specialists or facilities to ensure the retrieval of your complete oncology medical record.' : 'An oncology specialist includes any of the following: medical oncologist, radiation oncologist, or surgical oncologist. If you are unsure of the exact names, this information can be found on an appointment or business card.'}</div>
+      </div>
+    </div>
+    <div style={bar}>{primaryBtn('Next', () => setStep(4), { arrow: true, disabled: !provSel })}</div>
+  </>)
+  else if (step === 4) body = (<>
+    <div style={scroll}>
+      <div style={h1}>Signature</div>
+      <div style={sub}>To complete the medical record request from {provSel ? provSel.name : 'your provider'}, sign the HIPAA Patient Access Request form via Dropbox Sign on the next page.</div>
+    </div>
+    <div style={bar}>{primaryBtn('Next', () => { setSignPhase('form'); setStep(5) }, { arrow: true })}</div>
+  </>)
+  else if (step === 5) body = (<>
+    <div style={scroll}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, backgroundColor: MR_NAVY, borderRadius: 10, padding: '10px 14px', marginBottom: 16 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 18, color: '#fff' }}>draw</span>
+        <span style={{ flex: 1, fontSize: 14, fontWeight: 700, color: '#fff' }}>Dropbox Sign</span>
+        <span style={{ fontSize: 12, color: '#cbd5e0' }}>Mock</span>
+      </div>
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary, marginBottom: 8 }}>HIPAA Patient Access Request</div>
+        <div style={{ fontSize: 12.5, color: C.textSecondary, lineHeight: 1.5 }}>{pt.first || 'Patient'} {pt.last} · DOB {pt.dob || '—'} · SSN ••••{pt.ssn || '••••'}<br/>Provider: {provSel ? provSel.name : '—'}</div>
+        <div style={{ fontSize: 11.5, color: C.textTertiary, marginTop: 10, lineHeight: 1.5 }}>This is a mock signature request and has no legal value.</div>
+      </div>
+      {signPhase === 'form' && (<>
+        <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 4 }}>Add your signature</div>
+        <div style={{ fontSize: 12.5, color: C.textTertiary, marginBottom: 10 }}>I understand this is a legal representation of my signature.</div>
+        <_MRSignaturePad onChange={setHasSig}/>
+      </>)}
+      {signPhase === 'agree' && (
+        <div style={{ backgroundColor: C.bgApp, borderRadius: 12, padding: 16 }}>
+          <div style={{ fontSize: 17, fontWeight: 800, color: C.textPrimary, marginBottom: 8 }}>Almost done.</div>
+          <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.55 }}>I agree to be legally bound by this document and the Dropbox Sign Terms of Service. Tap "I Agree" to sign this document.</div>
+        </div>
+      )}
+    </div>
+    <div style={bar}>
+      {signPhase === 'form'
+        ? primaryBtn('Insert', () => setSignPhase('agree'), { navy: true, disabled: !hasSig })
+        : primaryBtn('I Agree', () => setStep(6), { navy: true })}
+    </div>
+  </>)
+  else body = (<>
+    <div style={scroll}>
+      <div style={{ width: 60, height: 60, borderRadius: 30, backgroundColor: C.primaryLight, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '8px 0 18px' }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 32, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>check_circle</span>
+      </div>
+      <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.3, marginBottom: 12 }}>Your medical records are being retrieved and processed</div>
+      <div style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>The process takes a few days. We'll notify you once the records have been uploaded. Once your records have been processed, the app will be updated based upon your answers. In the meantime, you can continue viewing results based on your answers.</div>
+    </div>
+    <div style={bar}>{primaryBtn('Done', () => onDone && onDone())}</div>
+  </>)
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: C.bgCard, position: 'relative' }}>
+      <div style={{ display: 'flex', alignItems: 'center', height: 52, padding: '0 8px', flexShrink: 0 }}>
+        {step > 1 && step < 6 ? (
+          <button onClick={back} aria-label="Back" style={{ width: 40, height: 40, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textIcon }}>arrow_back</span></button>
+        ) : <div style={{ width: 40 }}/>}
+        <div style={{ flex: 1 }}/>
+        <button onClick={step === 6 ? () => onDone && onDone() : tryExit} aria-label="Close" style={{ width: 40, height: 40, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textIcon }}>close</span></button>
+      </div>
+      {body}
+      {showLeave && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.4)', padding: 24 }}>
+          <div style={{ backgroundColor: C.bgCard, borderRadius: 16, padding: '22px 20px', width: '100%', maxWidth: 320 }}>
+            <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, marginBottom: 8 }}>Leave without finishing?</div>
+            <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5, marginBottom: 18 }}>The information you've entered won't be saved.</div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button onClick={() => setShowLeave(false)} style={{ flex: 1, height: 46, borderRadius: 11, border: `1px solid ${C.border}`, background: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 700, color: C.textPrimary, fontFamily: 'Inter,sans-serif' }}>Stay</button>
+              <button onClick={() => { setShowLeave(false); onExit && onExit() }} style={{ flex: 1, height: 46, borderRadius: 11, border: 'none', backgroundColor: C.primary, cursor: 'pointer', fontSize: 15, fontWeight: 700, color: '#fff', fontFamily: 'Inter,sans-serif' }}>Leave</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const MedicalRecordsConnectScreen = ({ onClose, onConnected }) => {
+  const [vis, setVis] = useState(false)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const dismiss = () => { setVis(false); setTimeout(onClose, 300) }
+  return ReactDOM.createPortal(
+    <div style={{ position: 'fixed', inset: 0, zIndex: 135, backgroundColor: C.bgCard, transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.34s cubic-bezier(0.32,0.72,0,1)', display: 'flex', flexDirection: 'column', fontFamily: "'Inter',sans-serif" }}>
+      <MedicalRecordsFormFlow onExit={dismiss} onDone={() => { onConnected && onConnected(); dismiss() }}/>
+    </div>,
+    document.body
+  )
+}
 
 // ─── ENGAGEMENT NUDGE (connect-records) — bottom sheet with the D illustration ──
 const ENG_ANIM_CSS = `
@@ -1900,12 +2158,13 @@ const ENG_ANIM_CSS = `
 `
 const EngagementNudgeSheet = ({ onConnect, onDismiss }) => {
   const [vis, setVis] = useState(false)
-  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const [ready, setReady] = useState(false) // scrim can't close until the sheet has fully appeared
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))); const t = setTimeout(() => setReady(true), 420); return () => clearTimeout(t) }, [])
   const close = (cb) => { setVis(false); setTimeout(() => cb && cb(), 320) }
   return ReactDOM.createPortal(
     <div style={{ position: 'fixed', inset: 0, zIndex: 400 }}>
       <style>{ENG_ANIM_CSS}</style>
-      <div onClick={() => close(onDismiss)} style={{ position: 'absolute', inset: 0, backgroundColor: vis ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0)', transition: 'background-color 0.32s ease' }}/>
+      <div onClick={ready ? () => close(onDismiss) : undefined} style={{ position: 'absolute', inset: 0, backgroundColor: vis ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0)', transition: 'background-color 0.32s ease', pointerEvents: ready ? 'auto' : 'none' }}/>
       <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: C.bgCard, borderRadius: '22px 22px 0 0', boxShadow: '0 -6px 28px rgba(0,0,0,0.16)', padding: '10px 20px 28px', transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.36s cubic-bezier(0.32,0.72,0,1)' }}>
         <div style={{ width: 38, height: 4, backgroundColor: 'rgba(0,0,0,0.12)', borderRadius: 2, margin: '0 auto 14px' }}/>
         <div className="o4mplay" style={{ display: 'flex', justifyContent: 'center', margin: '2px 0 6px' }}>
@@ -1915,48 +2174,48 @@ const EngagementNudgeSheet = ({ onConnect, onDismiss }) => {
               <g className="tl-line-d"><line x1="150" y1="36" x2="150" y2="120" stroke="#e6e6ea" strokeWidth="3" strokeLinecap="round"/></g>
               <g className="tl-scroll-d">
                 <g>
-                  <circle cx="150" cy="66" r="5" fill="#c9ccd3" stroke="#fff" strokeWidth="2"/>
+                  <circle cx="150" cy="66" r="5" fill="#a6b7ce" stroke="#fff" strokeWidth="2"/>
                   <rect x="162" y="59" width="60" height="16" rx="6" fill="#fff" stroke="#eceef1" strokeWidth="1.2"/>
                   <rect x="170" y="65" width="30" height="4" rx="2" fill="#e9eaee"/>
                 </g>
                 <g className="gray-top-d">
-                  <circle cx="150" cy="98" r="5" fill="#c9ccd3" stroke="#fff" strokeWidth="2"/>
+                  <circle cx="150" cy="98" r="5" fill="#a6b7ce" stroke="#fff" strokeWidth="2"/>
                   <rect x="162" y="91" width="72" height="16" rx="6" fill="#fff" stroke="#eceef1" strokeWidth="1.2"/>
                   <rect x="170" y="97" width="38" height="4" rx="2" fill="#e9eaee"/>
                 </g>
                 <g className="gray-bot-d">
-                  <circle cx="150" cy="130" r="5" fill="#c9ccd3" stroke="#fff" strokeWidth="2"/>
+                  <circle cx="150" cy="130" r="5" fill="#a6b7ce" stroke="#fff" strokeWidth="2"/>
                   <rect x="162" y="123" width="64" height="16" rx="6" fill="#fff" stroke="#eceef1" strokeWidth="1.2"/>
                   <rect x="170" y="129" width="32" height="4" rx="2" fill="#e9eaee"/>
                 </g>
                 <g className="new-in-d">
-                  <circle cx="150" cy="124" r="5.5" fill="#ff7a59" stroke="#fff" strokeWidth="2"/>
-                  <rect x="162" y="115" width="86" height="19" rx="6" fill="#fff1ec" stroke="#ffd0c2" strokeWidth="1.3"/>
-                  <rect x="170" y="123" width="30" height="4" rx="2" fill="#ffb59f"/>
+                  <circle cx="150" cy="124" r="5.5" fill="#f47a56" stroke="#fff" strokeWidth="2"/>
+                  <rect x="162" y="115" width="86" height="19" rx="6" fill="#fdf1ec" stroke="#f3c9bd" strokeWidth="1.3"/>
+                  <rect x="170" y="123" width="30" height="4" rx="2" fill="#eda58e"/>
                   <g className="tag-in-d">
-                    <rect x="212" y="119.5" width="28" height="11" rx="5.5" fill="#ff7a59"/>
+                    <rect x="212" y="119.5" width="28" height="11" rx="5.5" fill="#f47a56"/>
                     <text x="226" y="127.4" fontSize="7" fontWeight="700" fill="#fff" textAnchor="middle" letterSpacing="0.3">NEW</text>
                   </g>
                 </g>
               </g>
             </g>
-            <path className="wire-d" d="M101 79 Q 116 78 131 80" fill="none" stroke="#ff7a59" strokeWidth="2" strokeLinecap="round"/>
-            <path className="wire-head-d" d="M136 80 L130 75" fill="none" stroke="#ff7a59" strokeWidth="2" strokeLinecap="round"/>
-            <path className="wire-head-d" d="M136 80 L130 85" fill="none" stroke="#ff7a59" strokeWidth="2" strokeLinecap="round"/>
+            <path className="wire-d" d="M101 79 Q 116 78 131 80" fill="none" stroke="#f47a56" strokeWidth="2" strokeLinecap="round"/>
+            <path className="wire-head-d" d="M136 80 L130 75" fill="none" stroke="#f47a56" strokeWidth="2" strokeLinecap="round"/>
+            <path className="wire-head-d" d="M136 80 L130 85" fill="none" stroke="#f47a56" strokeWidth="2" strokeLinecap="round"/>
             <g transform="translate(150,74)">
               <g className="rec-move-d">
                 <g className="rec-pop-d">
                   <rect x="-17" y="-21" width="34" height="42" rx="8" fill="#fff" stroke="#e6e6ea" strokeWidth="1.5"/>
                   <rect x="-9" y="-12" width="20" height="3.5" rx="1.75" fill="#e9eaee"/>
                   <rect x="-9" y="-5" width="14" height="3.5" rx="1.75" fill="#eef0f3"/>
-                  <path d="M-9 8 h6 l2 -6 3 11 2.5 -5 h5" fill="none" stroke="#ff7a59" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M-9 8 h6 l2 -6 3 11 2.5 -5 h5" fill="none" stroke="#f47a56" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
                 </g>
               </g>
             </g>
           </svg>
         </div>
-        <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.3px', color: C.textPrimary, textAlign: 'center', lineHeight: 1.25 }}>See your care add up — without the typing</div>
-        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5, textAlign: 'center', margin: '8px 4px 0' }}>Connect your records so it all comes together — the clearer the picture, the better your guidance and treatment options.</div>
+        <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.3px', color: C.textPrimary, textAlign: 'center', lineHeight: 1.25 }}>Everything about your care, in one place</div>
+        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5, textAlign: 'center', margin: '8px 4px 0' }}>Connect your records and we'll bring your history together for you.</div>
         <button onClick={() => close(onConnect)} style={{ width: '100%', padding: '15px', backgroundColor: C.primary, color: '#fff', border: 'none', borderRadius: 9999, fontSize: 16, fontWeight: 700, cursor: 'pointer', marginTop: 18, fontFamily: 'Inter,sans-serif' }}>Connect medical records</button>
         <button onClick={() => close(onDismiss)} style={{ width: '100%', padding: '12px', backgroundColor: 'transparent', color: C.textSecondary, border: 'none', fontSize: 15, fontWeight: 600, cursor: 'pointer', marginTop: 4, fontFamily: 'Inter,sans-serif' }}>Not now</button>
       </div>
@@ -2356,13 +2615,13 @@ const EventCard = ({ event, highlightId, onRemove, onEdit, visibleRecs = [] }) =
 }
 
 const GENERATION_MESSAGES = {
-  rcc_s13_step1: 'Generating recommended next steps…',
-  rcc_s13_step2: 'Generating recommended next steps…',
-  rcc_s4_step1: 'Generating recommended next steps…',
-  rcc_s4_step2: 'Generating recommended next steps…',
-  treatment: 'Generating recommended next steps…',
-  supportive: 'Generating recommended next steps…',
-  default: 'Generating recommended next steps…',
+  rcc_s13_step1: 'Generating suggested treatments…',
+  rcc_s13_step2: 'Generating suggested treatments…',
+  rcc_s4_step1: 'Generating suggested treatments…',
+  rcc_s4_step2: 'Generating suggested treatments…',
+  treatment: 'Generating suggested treatments…',
+  supportive: 'Generating suggested treatments…',
+  default: 'Generating suggested treatments…',
 }
 
 const CANCER_NAMES = {
@@ -2612,7 +2871,7 @@ const SuggestedBlock = ({ block, defaultOpen = false, onApproachSelect, addedIds
     return (
       <div style={{ width: '100%', backgroundColor: C.bgCard, borderRadius: 14, padding: '14px 16px', overflow: 'hidden', position: 'relative' }}>
         <div style={{ position: 'absolute', inset: 0, borderRadius: 14, background: 'linear-gradient(90deg, transparent 0%, rgba(255,121,88,0.07) 50%, transparent 100%)', backgroundSize: '200% 100%', animation: 'shimmer 1.4s ease-in-out infinite' }}/>
-        <div style={{ fontSize: 11, fontWeight: 600, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6, opacity: 0.7 }}>Recommended Next Steps</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6, opacity: 0.7 }}>Suggested treatments</div>
         <div style={{ fontSize: 14, color: C.textSecondary, animation: 'genpulse 1.4s ease-in-out infinite' }}>{genMessage}</div>
         <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {[1,2,3].map(i => (
@@ -2629,7 +2888,7 @@ const SuggestedBlock = ({ block, defaultOpen = false, onApproachSelect, addedIds
       style={{ width: '100%', backgroundColor: expanded ? 'transparent' : C.bgCard, border: 'none', borderRadius: expanded ? 0 : 13, padding: expanded ? '12px 16px' : '12px 16px', cursor: 'pointer', textAlign: 'left', transition: 'background 0.22s, border 0.22s, border-radius 0.22s, padding 0.22s', WebkitTapHighlightColor: 'transparent', userSelect: 'none', outline: 'none' }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: open ? 10 : 0 }}>
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>Recommended Next Steps</div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>Suggested treatments</div>
           <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.2px', color: C.textPrimary }}>{block.stepLabel}</div>
           <div style={{ fontSize: 13, color: C.textSecondary, marginTop: 4, lineHeight: 1.5, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: open ? 999 : 2, overflow: 'hidden' }}>{block.stepBody}</div>
 
@@ -2696,9 +2955,10 @@ const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFla
   // The daily summary is absent while the timeline builds; it's inserted at the top of
   // Today right after the scroll-to-Today settles.
   const showSummary = day.summary && (!day.isToday || summaryShown)
-  if (showSummary) allItems.push({ key: 'summary', icon: null, card: <DailySummaryCard summary={day.summary} isToday={day.isToday} onAddEvent={onAddEvent} cancerSupported={cancerSupported} onReviewRecs={onReviewRecs}/> })
-  // Persistent "records not synced" card sits directly below the summary on Today.
+  // "Records not synced" takes the top position under Today when present; the daily summary
+  // follows. When the card is dismissed/connected, the summary naturally returns to the top.
   if (day.isToday && showSummary && showRecordsCard) allItems.push({ key: 'records-card', icon: null, card: <RecordsNotSyncedCard onOpenSettings={onOpenSettings} onDismiss={onDismissRecordsCard}/> })
+  if (showSummary) allItems.push({ key: 'summary', icon: null, card: <DailySummaryCard summary={day.summary} isToday={day.isToday} onAddEvent={onAddEvent} cancerSupported={cancerSupported} onReviewRecs={onReviewRecs}/> })
   day.events.forEach(ev => allItems.push({
     key: ev.id, icon: null,
     card: ev.type === 'appointment'
@@ -2890,7 +3150,7 @@ const Toast = ({ message, subtext, action, onDone }) => {
 
 const SEVERITY_COLOR = { 'Common': '#f59e0b', 'Monitor': '#6366f1', 'Less common': C.textSecondary }
 
-const RegimenDetailView = ({ reg, parentTitle, onClose, onAddToPlan, addedIds = {}, patientState, planItems = [] }) => {
+const RegimenDetailView = ({ reg, parentTitle, onClose, onAddToPlan, addedIds = {}, patientState, planItems = [], onAbandonSignal = null }) => {
   const data = getRegimenData(reg)
   const regRule = findRuleMatchingItem(reg?.name)
   const isAdded = !!(regRule && addedIds[regRule.id])
@@ -3089,7 +3349,7 @@ const RegimenDetailView = ({ reg, parentTitle, onClose, onAddToPlan, addedIds = 
       {/* Flow slides up over regimen detail */}
       {regimenFlow === 'procedure' && (
         <AddProcedureFlow
-          onClose={() => setRegimenFlow(null)}
+          onClose={() => { setRegimenFlow(null); onAbandonSignal && onAbandonSignal() }}
           onComplete={(event) => { setRegimenFlow(null); onAddToPlan(event, true) }}
           preload={{ name: data.name, subtitle: data.category, searchTerms: [data.name.toLowerCase()] }}
           fromDetail={true}
@@ -3099,7 +3359,7 @@ const RegimenDetailView = ({ reg, parentTitle, onClose, onAddToPlan, addedIds = 
       )}
       {regimenFlow === 'scan' && (
         <AddScanFlow
-          onClose={() => setRegimenFlow(null)}
+          onClose={() => { setRegimenFlow(null); onAbandonSignal && onAbandonSignal() }}
           onComplete={(event) => { setRegimenFlow(null); onAddToPlan(event, true) }}
           preload={{ name: data.name, subtitle: data.category, searchTerms: [data.name.toLowerCase()] }}
           fromDetail={true}
@@ -3109,7 +3369,7 @@ const RegimenDetailView = ({ reg, parentTitle, onClose, onAddToPlan, addedIds = 
       )}
       {regimenFlow === 'medication' && (
         <AddMedicationFlow
-          onClose={() => setRegimenFlow(null)}
+          onClose={() => { setRegimenFlow(null); onAbandonSignal && onAbandonSignal() }}
           onComplete={(event) => { setRegimenFlow(null); onAddToPlan(event, true) }}
           preload={{ name: data.name, subtitle: data.category, searchTerms: [data.name.toLowerCase()] }}
           fromDetail={true}
@@ -3168,7 +3428,116 @@ const PickerSheet = ({ regimens = [], addedIds = {}, onClose, onPick }) => {
   )
 }
 
-const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patientState, planItems = [] }) => {
+// ── Clinical trial as a suggested treatment — detail + drill-ins (matches production) ──
+const TreatmentPlanAgentSheet = ({ cancer, stage, onClose }) => {
+  const [vis, setVis] = useState(false)
+  const [phase, setPhase] = useState(0) // 0..2 status, 3 = revealed
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  useEffect(() => {
+    const t1 = setTimeout(() => setPhase(1), 700), t2 = setTimeout(() => setPhase(2), 1500), t3 = setTimeout(() => setPhase(3), 2400)
+    return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3) }
+  }, [])
+  const close = (cb) => { setVis(false); setTimeout(() => cb && cb(), 280) }
+  const status = ['Personalizing…', 'Processing…', 'Clarifying…'][phase] || ''
+  const st = stage ? `${stage} ` : ''
+  return ReactDOM.createPortal(
+    <div style={{ position: 'fixed', inset: 0, zIndex: 130, backgroundColor: C.bgCard, transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.32s cubic-bezier(0.32,0.72,0,1)', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', alignItems: 'center', padding: '14px 14px 10px', flexShrink: 0 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>auto_awesome</span>
+        <span style={{ flex: 1, fontSize: 15, fontWeight: 700, color: C.textPrimary, marginLeft: 6 }}>Treatment Plan Agent</span>
+        <button onClick={() => close(onClose)} aria-label="Close" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6 }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textIcon }}>close</span></button>
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '8px 20px 32px' }}>
+        <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, marginBottom: 14 }}>Explain how this treatment fits my plan</div>
+        {phase < 3
+          ? <div style={{ fontSize: 14, color: C.textTertiary }}>{status}</div>
+          : (
+            <div style={{ animation: 'hdrFade 0.4s ease' }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 10, lineHeight: 1.4 }}>Understanding Your Treatment Options for {st}{cancer}</div>
+              <div style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.65 }}>Based on your {st ? st.toLowerCase() : ''}{cancer.toLowerCase()} diagnosis, you have several treatment paths available to you. The treatments shown here represent evidence-based options that oncologists commonly recommend for patients in your situation.</div>
+            </div>
+          )}
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+const ClinicalTrialTreatmentDetail = ({ opt, patientState, onClose, onSeeAll }) => {
+  const [vis, setVis] = useState(false)
+  const [agent, setAgent] = useState(false)
+  const [selectedTrial, setSelectedTrial] = useState(null)
+  const [bookmarks, setBookmarks] = useState(() => _ctLoad('o4m_ct_bookmarks', []))
+  const [notes, setNotes] = useState(() => _ctLoad('o4m_ct_notes', {}))
+  const [toast, setToast] = useState(null)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  useEffect(() => { _ctSave('o4m_ct_bookmarks', bookmarks) }, [bookmarks])
+  useEffect(() => { _ctSave('o4m_ct_notes', notes) }, [notes])
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2000); return () => clearTimeout(t) }, [toast])
+  const dismiss = () => { setVis(false); setTimeout(onClose, 320) }
+  const cancer = (patientState && CT_CANCER_LABEL[patientState.diagnosisCode]) || 'kidney cancer'
+  const stage = (patientState && (patientState.stage || patientState.stageLabel)) || ''
+  const title = opt.title && /for /i.test(opt.title) ? opt.title : `Clinical trial for ${cancer} that has spread`
+  const matched = patientTrials(patientState).sort((a, b) => b.score - a.score).slice(0, 3)
+  const toggleBookmark = (t) => { const on = bookmarks.includes(t.id); setBookmarks(p => on ? p.filter(x => x !== t.id) : [...p, t.id]); setToast(on ? 'Removed from your Bookmarks.' : 'Clinical Trial added to your Bookmarks.') }
+  const share = (t) => { const text = `Here's a clinical trial I found on Outcomes4Me: ${t.title} (${t.id})`; if (navigator.share) navigator.share({ title: t.title, text }).catch(() => {}); else { try { navigator.clipboard.writeText(text); setToast('Copied to clipboard.') } catch (e) {} } }
+  const Cap = s => s ? s[0].toUpperCase() + s.slice(1) : s
+  const scroll = { flex: 1, overflowY: 'auto', padding: '20px 0 40px' }
+  const pad = { padding: '0 20px' }
+  const section = { fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 10 }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 65, transform: vis ? 'translateX(0)' : 'translateX(100%)', transition: 'transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)', display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard, fontFamily: "'Inter',sans-serif" }}>
+      <div style={{ display: 'flex', alignItems: 'center', height: 56, paddingLeft: 8, flexShrink: 0 }}>
+        <button onClick={dismiss} aria-label="Back" style={{ width: 40, height: 40, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textIcon }}>arrow_back</span></button>
+      </div>
+      <div style={scroll}>
+        <div style={pad}>
+          <div style={{ fontSize: 24, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.4px', lineHeight: 1.25, marginBottom: 14 }}>{title}</div>
+          <button onClick={() => setAgent(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, backgroundColor: C.primaryLight, border: 'none', borderRadius: 9999, padding: '9px 16px', cursor: 'pointer', marginBottom: 18, fontFamily: 'Inter,sans-serif' }}>
+            <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>auto_awesome</span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: C.primary }}>Explain this treatment</span>
+          </button>
+          <p style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.65, marginBottom: 14 }}>Clinical trials are a type of research study with a goal of safely improving treatments for cancer patients.</p>
+          <p style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.65, marginBottom: 22 }}>For patients with potentially operable {stage ? stage.toLowerCase() + ' ' : ''}{cancer} who go on a clinical trial, NCCN does not provide explicit guidance for subsequent treatment options.</p>
+        </div>
+
+        {/* Matched trials — surface the real, relevant trials for this stage/spot */}
+        <div style={{ ...pad, display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
+          <div style={section}>Clinical Trials Matched to You</div>
+          <button onClick={onSeeAll} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary, fontFamily: 'Inter,sans-serif' }}>See all</button>
+        </div>
+        {matched.map(t => (
+          <TrialCard key={t.id} trial={t} folder="relevant" bookmarked={bookmarks.includes(t.id)} onOpen={() => setSelectedTrial(t)} onBookmark={() => toggleBookmark(t)} onShare={() => share(t)}/>
+        ))}
+
+        <div style={{ ...pad, borderTop: `1px solid ${C.border}`, marginTop: 12, paddingTop: 18 }}>
+          <div style={section}>Source</div>
+          <div style={{ fontSize: 12.5, color: C.textTertiary, lineHeight: 1.6 }}>
+            According to NCCN Clinical Practice Guidelines In Oncology (NCCN Guidelines®) for {Cap(cancer)} V.1.2027, this treatment has the following recommendation for your diagnosis:
+            <div style={{ height: 10 }}/>
+            <span style={{ fontWeight: 700, color: C.textSecondary }}>NCCN Category of Evidence and Consensus</span><br/>
+            <span style={{ fontWeight: 700, color: C.textSecondary }}>Category 2B:</span> Based upon lower-level evidence, there is NCCN consensus (≥50%, but &lt;85% support of the Panel) that the intervention is appropriate.
+            <div style={{ height: 10 }}/>
+            <span style={{ fontWeight: 700, color: C.textSecondary }}>NCCN:</span> Referenced with permission from the NCCN Clinical Practice Guidelines in Oncology (NCCN Guidelines®) for {Cap(cancer)} V.1.2027. © National Comprehensive Cancer Network, Inc. 2026. All rights reserved. Accessed July 1, 2026. To view the most recent and complete version of the guideline, go online to NCCN.org.
+            <div style={{ height: 10 }}/>
+            <span style={{ color: C.primary }}>https://NCCN.org</span>
+          </div>
+        </div>
+      </div>
+
+      {selectedTrial && (
+        <PushLayer fixed zIndex={130} onBack={() => setSelectedTrial(null)}>
+          {(back) => <TrialDetail trial={selectedTrial} bookmarked={bookmarks.includes(selectedTrial.id)} notes={notes} onBookmark={() => toggleBookmark(selectedTrial)} onShare={() => share(selectedTrial)} onBack={back} onAddNote={(id, n) => setNotes(p => ({ ...p, [id]: [n, ...(p[id] || [])] }))}/>}
+        </PushLayer>
+      )}
+      {agent && <TreatmentPlanAgentSheet cancer={cancer} stage={stage} onClose={() => setAgent(false)}/>}
+      {toast && <div style={{ position: 'absolute', bottom: 16, left: 16, right: 16, backgroundColor: '#273E4E', color: '#fff', borderRadius: 12, padding: '13px 16px', fontSize: 13.5, fontWeight: 500, boxShadow: '0 6px 20px rgba(0,0,0,0.2)', zIndex: 5 }}>{toast}</div>}
+    </div>
+  )
+}
+
+const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patientState, planItems = [], onAbandonSignal = null }) => {
   const data = getDetailData(opt)
   const [vis, setVis] = useState(false)
   const [titleVisible, setTitleVisible] = useState(false)
@@ -3242,7 +3611,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
 
         {/* 2. TREATMENT OPTIONS — highest priority, shown first */}
         <div style={{ padding: '24px 20px 0' }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>Treatment Options</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 12 }}>Treatment Options</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 1, borderRadius: 13, overflow: 'hidden', border: `1px solid ${C.border}` }}>
             {(data.regimens || []).map((reg, i) => {
               const rule = findRuleMatchingItem(reg.name)
@@ -3271,7 +3640,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
 
         {/* 3. WHAT THIS APPROACH MEANS */}
         <div style={{ padding: '28px 20px 0' }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>What This Approach Means</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 12 }}>What This Approach Means</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {(data.goals || []).map((goal, i) => (
               <div key={i} style={{ display: 'flex', gap: 10 }}>
@@ -3284,7 +3653,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
 
         {/* 4. WHAT TO CONSIDER */}
         <div style={{ padding: '28px 20px 0' }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>What to Consider</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 12 }}>What to Consider</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {(data.overview || []).map((item, i) => (
               <div key={i} style={{ backgroundColor: C.bgApp, borderRadius: 12, padding: '13px 15px' }}>
@@ -3297,7 +3666,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
 
         {/* 5. QUESTIONS TO ASK YOUR DOCTOR */}
         <div style={{ padding: '28px 20px 0' }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>Questions to Ask Your Doctor</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 12 }}>Questions to Ask Your Doctor</div>
           <button onClick={() => { if (navigator.share) navigator.share({ title: `Questions about ${data.title}`, text: `I have questions about ${data.title} as a treatment option.` }) }} style={{ width: '100%', padding: '14px 16px', backgroundColor: C.bgApp, border: `1px solid ${C.border}`, borderRadius: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12, textAlign: 'left' }}>
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="8.5" stroke={C.primary} strokeWidth="1.4"/><path d="M10 14v-1M10 11c0-1.5 2-1.5 2-3a2 2 0 1 0-4 0" stroke={C.primary} strokeWidth="1.4" strokeLinecap="round"/></svg>
             <div style={{ flex: 1 }}>
@@ -3360,6 +3729,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
         <RegimenDetailView
           reg={selectedRegimen}
           parentTitle={data.title}
+          onAbandonSignal={onAbandonSignal}
           onClose={() => setSelectedRegimen(null)}
           addedIds={addedIds}
           patientState={patientState}
@@ -3376,7 +3746,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
       {/* Flow slides up over detail — stays mounted on top */}
       {detailFlow === 'procedure' && (
         <AddProcedureFlow
-          onClose={() => { setDetailFlow(null); setDetailFlowPreload(null) }}
+          onClose={() => { setDetailFlow(null); setDetailFlowPreload(null); onAbandonSignal && onAbandonSignal() }}
           onComplete={(event) => { setDetailFlow(null); setDetailFlowPreload(null); onAddToPlan({ ...event, createdFromRecommendationId: opt?.id }, true) }}
           preload={detailFlowPreload || { name: data.title, subtitle: data.clinicalClass, searchTerms: [data.title.toLowerCase()] }}
           fromDetail={true}
@@ -3386,7 +3756,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
       )}
       {detailFlow === 'scan' && (
         <AddScanFlow
-          onClose={() => { setDetailFlow(null); setDetailFlowPreload(null) }}
+          onClose={() => { setDetailFlow(null); setDetailFlowPreload(null); onAbandonSignal && onAbandonSignal() }}
           onComplete={(event) => { setDetailFlow(null); setDetailFlowPreload(null); onAddToPlan({ ...event, createdFromRecommendationId: opt?.id }, true) }}
           preload={detailFlowPreload || { name: data.title, subtitle: data.clinicalClass, searchTerms: [data.title.toLowerCase()] }}
           fromDetail={true}
@@ -3396,7 +3766,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
       )}
       {detailFlow === 'medication' && (
         <AddMedicationFlow
-          onClose={() => { setDetailFlow(null); setDetailFlowPreload(null) }}
+          onClose={() => { setDetailFlow(null); setDetailFlowPreload(null); onAbandonSignal && onAbandonSignal() }}
           onComplete={(event) => { setDetailFlow(null); setDetailFlowPreload(null); onAddToPlan({ ...event, createdFromRecommendationId: opt?.id }, true) }}
           preload={detailFlowPreload || { name: data.title, subtitle: data.clinicalClass, searchTerms: [data.title.toLowerCase()] }}
           fromDetail={true}
@@ -4490,6 +4860,7 @@ const CommunityDetailView = ({ community, onClose }) => {
 // ─── BOTTOM NAV ──────────────────────────────────────────────────
 const NAV_TABS = [
   { id: 'careplan',  label: 'Home',       icon: 'home' },
+  { id: 'treatment', label: 'Treatment',  icon: 'medical_services' },
   { id: 'track',     label: 'Tracker',    icon: 'monitor_heart' },
   { id: 'chat',      label: 'Chat',       icon: 'auto_awesome' },
   { id: 'community', label: 'Community',  icon: 'group' },
@@ -4988,6 +5359,358 @@ const TrackScreen = ({ medications, patientState, onSaveMedication }) => {
         />
       )}
       {trackTab === 'symptoms' && <SymptomsTab/>}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLINICAL TRIALS — rebuilt to match the existing production UX (from reference video).
+// List (Recent/Relevant/Nearest) + Filters + score-badged cards (bookmark/share/hide,
+// PHASE, mileage on Nearest) → trial detail: title/desc + 5 chained views
+// (About · Locations · Questions to Ask · Eligibility · My notes), ClinicalTrials.gov data.
+// Matching/data are seeded (all cancer types in the prototype); real matching is server-side.
+// ═══════════════════════════════════════════════════════════════════════════
+const TRIAL_QUESTIONS = [
+  'What phase is this trial — is it phase 1 (is the drug safe?) or phase 2, 3 or 4 (is the drug effective)?',
+  'How does the drug of this trial work, and why is it a good choice for my cancer?',
+  'Are there any known results of this trial in regards to my cancer?',
+  'Does this trial treat my type of cancer only, or all cancers?',
+  'What did patients who received this drug on the trial experience as side effects, and how did they feel in general?',
+  'How much of the costs are covered by my insurance or the sponsor of the study?',
+]
+const _INCL = ['Adults ≥ 18 years of age', 'Patients undergoing axillary lymph node dissection', 'Written informed consent obtained from the subject', 'Subjects agree to comply with all study-related procedures', 'Subjects of childbearing potential must use an adequate method of contraception prior to and during study participation']
+const _EXCL = ['Patients with a history of ipsilateral breast cancer (invasive or ductal carcinoma in situ)', 'Patients with a history of prior ipsilateral axillary surgery', 'Patients with planned contralateral axillary surgery', 'Patients who are pregnant or breastfeeding', 'Prisoners or subjects who are involuntarily incarcerated']
+const CT_CANCER_LABEL = { RCC: 'kidney cancer', BREAST: 'breast cancer', CRC: 'colorectal cancer', LUNG: 'lung cancer', PROS: 'prostate cancer', BLAD: 'bladder cancer', OV: 'ovarian cancer' }
+const TRIAL_SEED = [
+  // Kidney (RCC)
+  { id: 'NCT03937219', cancer: 'RCC', stages: ['III', 'IV'], phase: 'PHASE3', dist: 42, title: 'Pembrolizumab Plus Axitinib for Advanced Renal Cell Carcinoma', desc: 'A study of immunotherapy combined with a targeted therapy as first-line treatment for advanced clear cell kidney cancer.', chips: ['Stages III, IV', 'Clear cell'], sponsor: 'Memorial Sloan Kettering', contacts: [{ name: 'Trial Coordinator', email: 'kidneytrials@mskcc.org' }], investigators: ['Robert Motzer, MD'], location: { name: 'Memorial Sloan Kettering Cancer Center', city: 'New York, New York, 10065', country: 'United States' } },
+  { id: 'NCT04195750', cancer: 'RCC', stages: ['IV'], phase: 'PHASE3', dist: 210, title: 'Cabozantinib Versus Sunitinib in Metastatic Kidney Cancer', desc: 'Comparing two targeted therapies for previously untreated metastatic renal cell carcinoma to see which better controls the disease.', chips: ['Stage IV', 'Metastatic'], sponsor: 'Dana-Farber Cancer Institute', contacts: [{ name: 'Study Team', email: 'rcc@dfci.harvard.edu' }], investigators: ['Toni Choueiri, MD'], location: { name: 'Dana-Farber Cancer Institute', city: 'Boston, Massachusetts, 02215', country: 'United States' } },
+  { id: 'NCT03141177', cancer: 'RCC', stages: ['IV'], phase: 'PHASE3', dist: 880, title: 'Nivolumab Plus Ipilimumab for Intermediate/Poor-Risk Advanced Kidney Cancer', desc: 'Dual immunotherapy for patients with intermediate- or poor-risk advanced renal cell carcinoma who have not had prior systemic therapy.', chips: ['Stage IV', 'Intermediate/poor risk'], sponsor: 'MD Anderson Cancer Center', contacts: [{ name: 'Clinical Trials Office', email: 'rcc@mdanderson.org' }], investigators: ['Nizar Tannir, MD'], location: { name: 'MD Anderson Cancer Center', city: 'Houston, Texas, 77030', country: 'United States' } },
+  { id: 'NCT04586231', cancer: 'RCC', stages: ['IV'], phase: 'PHASE2', dist: 16, title: 'Belzutifan (HIF-2α Inhibitor) in Advanced Clear Cell Kidney Cancer', desc: 'A study of an oral HIF-2α inhibitor for advanced clear cell renal cell carcinoma that has progressed after prior therapy.', chips: ['Stage IV', 'Clear cell', 'Previously treated'], sponsor: 'University of Pennsylvania', contacts: [{ name: 'Research Nurse', email: 'kidney@pennmedicine.upenn.edu' }], investigators: ['A. Investigator, MD'], location: { name: 'Penn Medicine', city: 'Philadelphia, Pennsylvania, 19104', country: 'United States' } },
+  { id: 'NCT03024996', cancer: 'RCC', stages: ['I', 'II', 'III'], phase: 'PHASE3', dist: 340, title: 'Adjuvant Pembrolizumab After Nephrectomy for High-Risk Kidney Cancer', desc: 'Testing whether immunotherapy after surgery lowers the chance of kidney cancer returning in patients at higher risk of recurrence.', chips: ['Stages I, II, III', 'Post-surgery', 'Adjuvant'], sponsor: 'Cleveland Clinic', contacts: [{ name: 'Study Team', email: 'rcc@ccf.org' }], investigators: ['B. Investigator, MD'], location: { name: 'Cleveland Clinic', city: 'Cleveland, Ohio, 44195', country: 'United States' } },
+  { id: 'NCT05327686', cancer: 'RCC', stages: ['IV'], phase: 'PHASE2', dist: 1096, title: 'Stereotactic Radiation Plus Immunotherapy for Oligometastatic Kidney Cancer', desc: 'Combining focused radiation with immunotherapy for kidney cancer that has spread to a limited number of sites.', chips: ['Stage IV', 'Oligometastatic'], sponsor: 'University of Florida', contacts: [{ name: 'Madeline Campellone', email: 'mcampellone@ufl.edu' }], investigators: ['Lisa Spiguel, MD'], location: { name: 'University of Florida', city: 'Gainesville, Florida, 32610', country: 'United States' } },
+  // Breast
+  { id: 'NCT06327490', cancer: 'BREAST', stages: ['0', 'I', 'II', 'III'], phase: 'PHASE2', dist: 1096, title: 'A Study Evaluating the Feasibility and Compliance of Manual Lymphatic Drainage Comparing Indocyanine-Green (ICG) Guided Traditional in Patients Undergoing Axillary Node Dissection', desc: 'Breast cancer is estimated to affect approximately 300,000 women in the US in 2023. Studies demonstrate that 1 in 5 will develop breast-cancer-related lymphedema.', chips: ['Stages 0, I, II, III', 'Postmenopause'], menopause: 'post', sponsor: 'University of Florida', contacts: [{ name: 'Madeline Campellone', email: 'mcampellone@ufl.edu' }, { name: 'Laura J Mallinson', email: 'coppola@ufl.edu' }], investigators: ['Lisa Spiguel, MD'], location: { name: 'University of Florida', city: 'Gainesville, Florida, 32610', country: 'United States' } },
+  { id: 'NCT05432900', cancer: 'BREAST', stages: ['I', 'II', 'III'], markers: ['HER2-'], phase: 'PHASE2', dist: 340, title: 'Study to Evaluate Biomarkers and Safety of Dapagliflozin Concomitant With Neoadjuvant Therapy', desc: 'The primary objective of the study is to assess metabolic plasma markers of insulin resistance in patients receiving neoadjuvant therapy.', chips: ['Stages I, II, III', 'Postmenopause', 'HER2-'], menopause: 'post', sponsor: 'Memorial Sloan Kettering', contacts: [{ name: 'Trial Coordinator', email: 'trials@mskcc.org' }], investigators: ['Neil Iyengar, MD'], location: { name: 'Memorial Sloan Kettering Cancer Center', city: 'New York, New York, 10065', country: 'United States' } },
+  { id: 'NCT05990920', cancer: 'BREAST', stages: ['III', 'IV'], markers: ['HER2-', 'HR+'], phase: 'PHASE3', dist: 16, title: 'Palbociclib in Combination With Ribociclib for the First-line Treatment of ER+/HER2- Advanced Breast Cancer', desc: 'This phase 3 clinical trial compares the efficacy and safety of palbociclib with ribociclib in the first-line treatment of advanced breast cancer.', chips: ['Stages III, IV', 'Postmenopause', 'Recurrent', 'HER2-', 'HR+'], menopause: 'post', sponsor: 'Dana-Farber Cancer Institute', contacts: [{ name: 'Study Team', email: 'dfci_trials@dfci.harvard.edu' }], investigators: ['Sara Tolaney, MD'], location: { name: 'Dana-Farber Cancer Institute', city: 'Boston, Massachusetts, 02215', country: 'United States' } },
+  { id: 'NCT04883700', cancer: 'BREAST', stages: ['I'], markers: ['HER2+'], phase: 'PHASE2', dist: 5, title: 'ATEMPT 2.0: Adjuvant T-DM1 vs TH', desc: 'This research study is studying how well newly diagnosed breast cancer that has tested positive for HER2 responds to treatment.', chips: ['Stage I', 'HER2+'], sponsor: 'Dana-Farber Cancer Institute', contacts: [{ name: 'Study Team', email: 'atempt@dfci.harvard.edu' }], investigators: ['Sara Tolaney, MD'], location: { name: 'Dana-Farber Cancer Institute', city: 'Boston, Massachusetts, 02215', country: 'United States' } },
+  { id: 'NCT05500900', cancer: 'BREAST', stages: ['I', 'II', 'III'], phase: 'PHASE1', dist: 210, title: 'CBD for Breast Cancer Primary Tumors', desc: 'This is a randomized placebo-controlled partially blinded window-of-opportunity trial evaluating CBD in primary breast tumors.', chips: ['Stages I, II, III', 'Postmenopause'], menopause: 'post', sponsor: 'Thomas Jefferson University', contacts: [{ name: 'Research Nurse', email: 'trials@jefferson.edu' }], investigators: ['A. Investigator, MD'], location: { name: 'Thomas Jefferson University', city: 'Philadelphia, Pennsylvania, 19107', country: 'United States' } },
+]
+// Deterministic prototype scorer: filter to the patient's cancer type, score by stage/marker overlap.
+const scoreTrial = (trial, ps) => {
+  let s = 0
+  const stage = ps && ps.stage
+  if (stage && trial.stages && trial.stages.includes(stage)) s += 2
+  const markers = (ps && Array.isArray(ps.biomarkers) ? ps.biomarkers : []).map(x => String(x).toLowerCase())
+  if (trial.markers) trial.markers.forEach(m => { if (markers.includes(String(m).toLowerCase())) s += 1 })
+  if (trial.menopause && ps && ps.menopause && trial.menopause === ps.menopause) s += 1
+  return s
+}
+const patientTrials = (ps) => {
+  const code = (ps && ps.diagnosisCode) || 'RCC'
+  return TRIAL_SEED.filter(t => t.cancer === code).map(t => ({ ...t, score: scoreTrial(t, ps) }))
+}
+
+const _ctLoad = (k, fb) => { try { const r = localStorage.getItem(k); return r ? JSON.parse(r) : fb } catch (e) { return fb } }
+const _ctSave = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)) } catch (e) {} }
+
+// Drill push: slides in from the right on mount; back() slides out then unmounts (via onBack).
+// fixed=true portals it to the root and covers the whole screen (its own header, no shared app bar).
+const PushLayer = ({ onBack, zIndex = 65, fixed = false, children }) => {
+  const [vis, setVis] = useState(false)
+  useEffect(() => { const r = requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))); return () => cancelAnimationFrame(r) }, [])
+  const back = () => { setVis(false); setTimeout(() => onBack && onBack(), 320) }
+  const node = (
+    <div style={{ position: fixed ? 'fixed' : 'absolute', inset: 0, zIndex, transform: vis ? 'translateX(0)' : 'translateX(100%)', transition: 'transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)', display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard, boxShadow: '-8px 0 24px rgba(0,0,0,0.08)' }}>
+      {children(back)}
+    </div>
+  )
+  return fixed ? ReactDOM.createPortal(node, document.body) : node
+}
+
+const TrialChip = ({ children }) => (
+  <span style={{ fontSize: 11.5, fontWeight: 600, color: C.textSecondary, backgroundColor: C.bgApp, borderRadius: 6, padding: '3px 8px', whiteSpace: 'nowrap' }}>{children}</span>
+)
+const _ctIconBtn = (icon, onClick, active, label) => (
+  <button onClick={onClick} aria-label={label} style={{ width: 34, height: 34, borderRadius: 17, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+    <span className="material-symbols-rounded" style={{ fontSize: 20, color: active ? C.primary : C.textSecondary, fontVariationSettings: active ? "'FILL' 1, 'wght' 500" : "'FILL' 0, 'wght' 400" }}>{icon}</span>
+  </button>
+)
+
+const TrialCard = ({ trial, folder, bookmarked, onOpen, onBookmark, onShare, onHide }) => (
+  <div style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '14px 16px', margin: '0 16px 12px' }}>
+    <button onClick={onOpen} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.primary, marginBottom: 5 }}>Score: {trial.score}</div>
+      <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, lineHeight: 1.35, marginBottom: 5, letterSpacing: '-0.2px' }}>{trial.title}</div>
+      <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.5, marginBottom: 10, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, overflow: 'hidden' }}>{trial.desc}</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>{trial.chips.map((c, i) => <TrialChip key={i}>{c}</TrialChip>)}</div>
+    </button>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+      {_ctIconBtn(bookmarked ? 'bookmark' : 'bookmark_border', onBookmark, bookmarked, 'Bookmark')}
+      {_ctIconBtn('ios_share', onShare, false, 'Share')}
+      {onHide && _ctIconBtn('cancel', onHide, false, 'Hide')}
+      <div style={{ flex: 1 }}/>
+      {folder === 'nearest' && <span style={{ fontSize: 12, color: C.textTertiary, marginRight: 10 }}>{trial.dist} mi</span>}
+      <span style={{ fontSize: 11, fontWeight: 700, color: C.textSecondary, letterSpacing: '0.03em' }}>{trial.phase}</span>
+    </div>
+  </div>
+)
+
+const TrialFilterSheet = ({ filters, onClose, onSave }) => {
+  const [f, setF] = useState(filters)
+  const [vis, setVis] = useState(false)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const close = (cb) => { setVis(false); setTimeout(() => cb && cb(), 260) }
+  const rows = [['interventional', 'Interventional'], ['nonInterventional', 'Non-interventional'], ['exclSurgery', 'Exclude Surgery'], ['exclRadiation', 'Exclude Radiation'], ['p1', 'Phase 1'], ['p2', 'Phase 2'], ['p3', 'Phase 3'], ['p4', 'Phase 4'], ['showHidden', 'Show Hidden']]
+  return ReactDOM.createPortal(
+    <div style={{ position: 'fixed', inset: 0, zIndex: 430 }}>
+      <div onClick={() => close(onClose)} style={{ position: 'absolute', inset: 0, backgroundColor: vis ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0)', transition: 'background-color 0.26s ease' }}/>
+      <div style={{ position: 'absolute', top: 0, right: 0, width: 'min(340px, 86%)', height: '100%', backgroundColor: C.bgCard, boxShadow: '-6px 0 28px rgba(0,0,0,0.16)', transform: vis ? 'translateX(0)' : 'translateX(100%)', transition: 'transform 0.3s cubic-bezier(0.32,0.72,0,1)', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '14px 16px', display: 'flex', alignItems: 'center', borderBottom: `1px solid ${C.border}` }}>
+          <button onClick={() => close(onClose)} aria-label="Close" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.primary }}>close</span></button>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.textPrimary, marginLeft: 6 }}>Filters</div>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 16px' }}>
+          {rows.map(([k, label]) => (
+            <button key={k} onClick={() => setF(p => ({ ...p, [k]: !p[k] }))} style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '12px 0', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+              <span style={{ width: 22, height: 22, borderRadius: 5, border: `2px solid ${f[k] ? C.primary : C.border}`, backgroundColor: f[k] ? C.primary : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                {f[k] && <span className="material-symbols-rounded" style={{ fontSize: 16, color: '#fff', fontVariationSettings: "'FILL' 1, 'wght' 700" }}>check</span>}
+              </span>
+              <span style={{ fontSize: 15, color: C.textPrimary }}>{label}</span>
+            </button>
+          ))}
+        </div>
+        <div style={{ padding: '12px 16px 28px', borderTop: `1px solid ${C.border}` }}>
+          <button onClick={() => close(() => onSave(f))} style={{ width: '100%', height: 48, borderRadius: 9999, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 700, color: '#fff', fontFamily: 'Inter,sans-serif' }}>Save</button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+// ── Trial detail sub-views ──
+const _DetailHeader = ({ title, onBack, right }) => (
+  <div style={{ display: 'flex', alignItems: 'center', padding: '12px 8px', borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+    <button onClick={onBack} aria-label="Back" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 8 }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textIcon }}>arrow_back</span></button>
+    <div style={{ flex: 1, fontSize: 16, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.2px' }}>{title}</div>
+    {right}
+  </div>
+)
+const _NextLink = ({ label, onClick }) => (
+  <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '4px 0 20px' }}>
+    <button onClick={onClick} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'none', border: `1px solid ${C.border}`, borderRadius: 9999, padding: '8px 14px', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary, fontFamily: 'Inter,sans-serif' }}>{label}<span className="material-symbols-rounded" style={{ fontSize: 17 }}>chevron_right</span></button>
+  </div>
+)
+const _MapBlock = ({ loc }) => (
+  <div style={{ position: 'relative', borderRadius: 14, overflow: 'hidden', border: `1px solid ${C.border}`, marginBottom: 12 }}>
+    <div style={{ height: 150, background: 'linear-gradient(135deg,#e8efe6 0%,#dfeaf0 100%)', position: 'relative' }}>
+      <div style={{ position: 'absolute', top: '42%', left: '50%', transform: 'translate(-50%,-50%)' }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 34, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>location_on</span>
+      </div>
+    </div>
+    <div style={{ padding: '14px 16px', backgroundColor: C.bgCard }}>
+      <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary }}>{loc.name}</div>
+      <div style={{ fontSize: 13, color: C.textTertiary, marginTop: 2 }}>{loc.city}<br/>{loc.country}</div>
+      <button style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary, fontFamily: 'Inter,sans-serif' }}>Open in maps</button>
+    </div>
+  </div>
+)
+const TrialNoteEditor = ({ onClose, onSubmit }) => {
+  const [vis, setVis] = useState(false)
+  const [title, setTitle] = useState(''); const [text, setText] = useState('')
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const close = (cb) => { setVis(false); setTimeout(() => cb && cb(), 260) }
+  const now = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' at ' + new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  const valid = title.trim() && text.trim()
+  return ReactDOM.createPortal(
+    <div style={{ position: 'fixed', inset: 0, zIndex: 440, backgroundColor: C.bgCard, transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.3s cubic-bezier(0.32,0.72,0,1)', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '12px 12px 8px' }}><button onClick={() => close(onClose)} aria-label="Close" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6 }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textIcon }}>close</span></button></div>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '0 18px 24px' }}>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: C.textTertiary, backgroundColor: C.bgApp, borderRadius: 8, padding: '6px 10px', marginBottom: 16 }}><span className="material-symbols-rounded" style={{ fontSize: 15 }}>calendar_today</span>{now}</div>
+        <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Enter a title" style={{ width: '100%', border: `1px solid ${title.trim() ? C.primary : 'rgba(0,0,0,0.18)'}`, borderRadius: 10, padding: '13px 14px', fontSize: 16, color: C.textPrimary, backgroundColor: C.bgCard, outline: 'none', marginBottom: 12, fontFamily: 'Inter,sans-serif' }}/>
+        <textarea value={text} onChange={e => setText(e.target.value)} placeholder="Enter some notes" rows={5} style={{ width: '100%', border: `1px solid ${text.trim() ? C.primary : 'rgba(0,0,0,0.18)'}`, borderRadius: 10, padding: '13px 14px', fontSize: 15, color: C.textPrimary, backgroundColor: C.bgCard, outline: 'none', resize: 'none', fontFamily: 'Inter,sans-serif', lineHeight: 1.5 }}/>
+        <button onClick={() => valid && close(() => onSubmit({ title: title.trim(), text: text.trim(), date: now }))} disabled={!valid} style={{ marginTop: 16, float: 'right', padding: '10px 22px', borderRadius: 9999, backgroundColor: valid ? C.primary : C.bgApp, border: 'none', cursor: valid ? 'pointer' : 'default', fontSize: 15, fontWeight: 700, color: valid ? '#fff' : C.textTertiary, fontFamily: 'Inter,sans-serif' }}>Submit</button>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+const TrialDetail = ({ trial, bookmarked, notes, onBookmark, onShare, onBack, onAddNote }) => {
+  const [view, setView] = useState('list')
+  const [inclOpen, setInclOpen] = useState(true); const [exclOpen, setExclOpen] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const scroll = { flex: 1, overflowY: 'auto', padding: '16px 18px 32px' }
+  const section = { fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 10 }
+
+  const renderSub = (v, back) => {
+    if (v === 'about') return (<>
+      <_DetailHeader title="About" onBack={back}/>
+      <div style={scroll}>
+        <div style={section}>Lead Sponsor</div>
+        <div style={{ fontSize: 15, color: C.textPrimary, marginBottom: 20 }}>{trial.sponsor}</div>
+        <div style={section}>Contacts</div>
+        {trial.contacts.map((c, i) => (<div key={i} style={{ marginBottom: 12 }}><div style={{ fontSize: 14.5, fontWeight: 600, color: C.textPrimary }}>{c.name}</div><div style={{ fontSize: 13, color: C.primary }}>{c.email}</div></div>))}
+        <div style={{ ...section, marginTop: 8 }}>Clinical Investigators</div>
+        {trial.investigators.map((n, i) => <div key={i} style={{ fontSize: 14, color: C.textPrimary, marginBottom: 6 }}>• {n}</div>)}
+        <div style={{ marginTop: 12 }}><_NextLink label="Locations" onClick={() => setView('locations')}/></div>
+      </div>
+    </>)
+    if (v === 'locations') return (<>
+      <_DetailHeader title="Locations" onBack={back}/>
+      <div style={scroll}><_MapBlock loc={trial.location}/><_NextLink label="Questions to Ask" onClick={() => setView('questions')}/></div>
+    </>)
+    if (v === 'questions') return (<>
+      <_DetailHeader title="Questions to ask" onBack={back}/>
+      <div style={scroll}>
+        {TRIAL_QUESTIONS.map((q, i) => (<div key={i} style={{ display: 'flex', gap: 8, marginBottom: 14 }}><span style={{ color: C.textTertiary }}>•</span><span style={{ fontSize: 14, color: C.textPrimary, lineHeight: 1.5 }}>{q}</span></div>))}
+        <_NextLink label="Eligibility" onClick={() => setView('eligibility')}/>
+      </div>
+    </>)
+    if (v === 'eligibility') return (<>
+      <_DetailHeader title="Eligibility" onBack={back}/>
+      <div style={scroll}>
+        <div style={{ fontSize: 12.5, color: C.textTertiary, marginBottom: 16 }}>ID: {trial.id}</div>
+        <button onClick={() => setInclOpen(o => !o)} style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '4px 0', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textSecondary }}>{inclOpen ? 'expand_more' : 'chevron_right'}</span><span style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary }}>Inclusion Criteria</span></button>
+        {inclOpen && <div style={{ padding: '6px 0 14px' }}>{_INCL.map((x, i) => <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}><span style={{ color: C.textTertiary }}>•</span><span style={{ fontSize: 13.5, color: C.textPrimary, lineHeight: 1.5 }}>{x}</span></div>)}</div>}
+        <button onClick={() => setExclOpen(o => !o)} style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '4px 0', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textSecondary }}>{exclOpen ? 'expand_more' : 'chevron_right'}</span><span style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary }}>Exclusion Criteria</span></button>
+        {exclOpen && <div style={{ padding: '6px 0 14px' }}>{_EXCL.map((x, i) => <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}><span style={{ color: C.textTertiary }}>•</span><span style={{ fontSize: 13.5, color: C.textPrimary, lineHeight: 1.5 }}>{x}</span></div>)}</div>}
+        <_NextLink label="My Notes" onClick={() => setView('notes')}/>
+      </div>
+    </>)
+    if (v === 'notes') { const list = notes[trial.id] || []; return (<>
+      <_DetailHeader title="My Notes" onBack={back}/>
+      <div style={{ ...scroll, position: 'relative' }}>
+        {list.length === 0 && <div style={{ fontSize: 14, color: C.textTertiary, textAlign: 'center', marginTop: 40 }}>No notes yet.</div>}
+        {list.map((n, i) => (<div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: '13px 14px', marginBottom: 10 }}><div style={{ flex: 1 }}><div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary }}>{n.title}</div><div style={{ fontSize: 12, color: C.textTertiary, marginTop: 2 }}>{n.date}</div></div><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary }}>chevron_right</span></div>))}
+      </div>
+      <button onClick={() => setEditing(true)} aria-label="Add note" style={{ position: 'absolute', bottom: 20, right: 20, width: 52, height: 52, borderRadius: 26, backgroundColor: C.primary, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(0,0,0,0.22)' }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: '#fff', fontVariationSettings: "'FILL' 1, 'wght' 500" }}>edit</span></button>
+      {editing && <TrialNoteEditor onClose={() => setEditing(false)} onSubmit={(n) => { onAddNote(trial.id, n); setEditing(false) }}/>}
+    </>) }
+    return null
+  }
+
+  const rows = [['About', 'about'], ['Locations', 'locations'], ['Questions to Ask', 'questions'], ['Eligibility', 'eligibility'], ['My notes', 'notes']]
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: C.bgCard, position: 'relative' }}>
+      <_DetailHeader title={trial.id} onBack={onBack} right={<button onClick={onBookmark} aria-label="Bookmark" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 8 }}><span className="material-symbols-rounded" style={{ fontSize: 22, color: bookmarked ? C.primary : C.textIcon, fontVariationSettings: bookmarked ? "'FILL' 1, 'wght' 500" : "'FILL' 0, 'wght' 400" }}>{bookmarked ? 'bookmark' : 'bookmark_border'}</span></button>}/>
+      <div style={scroll}>
+        <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.35, letterSpacing: '-0.3px', marginBottom: 8 }}>{trial.title}</div>
+        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.55, marginBottom: 18 }}>{trial.desc}</div>
+        {rows.map(([label, v]) => (
+          <button key={v} onClick={() => setView(v)} style={{ display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderTop: `1px solid ${C.border}`, padding: '16px 2px', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+            <span style={{ flex: 1, fontSize: 15, fontWeight: 600, color: C.textPrimary }}>{label}</span>
+            <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary }}>chevron_right</span>
+          </button>
+        ))}
+        <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 8, paddingTop: 16 }}>
+          <div style={section}>Source</div>
+          <div style={{ fontSize: 12.5, color: C.textTertiary, lineHeight: 1.5 }}>Data provided by the National Library of Medicine and ClinicalTrials.gov.</div>
+        </div>
+      </div>
+      {view !== 'list' && <PushLayer key={view} zIndex={70} onBack={() => setView('list')}>{(back) => renderSub(view, back)}</PushLayer>}
+    </div>
+  )
+}
+
+const ClinicalTrialsPanel = ({ patientState }) => {
+  const [folder, setFolder] = useState('relevant')
+  const [filters, setFilters] = useState({ interventional: false, nonInterventional: false, exclSurgery: false, exclRadiation: false, p1: false, p2: false, p3: false, p4: false, showHidden: false })
+  const [bookmarks, setBookmarks] = useState(() => _ctLoad('o4m_ct_bookmarks', []))
+  const [hidden, setHidden] = useState(() => _ctLoad('o4m_ct_hidden', []))
+  const [notes, setNotes] = useState(() => _ctLoad('o4m_ct_notes', {}))
+  const [showFilters, setShowFilters] = useState(false)
+  const [selected, setSelected] = useState(null)
+  const [hideConfirm, setHideConfirm] = useState(null)
+  const [toast, setToast] = useState(null)
+  useEffect(() => { _ctSave('o4m_ct_bookmarks', bookmarks) }, [bookmarks])
+  useEffect(() => { _ctSave('o4m_ct_hidden', hidden) }, [hidden])
+  useEffect(() => { _ctSave('o4m_ct_notes', notes) }, [notes])
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t) }, [toast])
+
+  const anyPhase = filters.p1 || filters.p2 || filters.p3 || filters.p4
+  const list = patientTrials(patientState)
+    .filter(t => filters.showHidden ? true : !hidden.includes(t.id))
+    .filter(t => !anyPhase || ((filters.p1 && t.phase === 'PHASE1') || (filters.p2 && t.phase === 'PHASE2') || (filters.p3 && t.phase === 'PHASE3') || (filters.p4 && t.phase === 'PHASE4')))
+    .slice()
+    .sort((a, b) => folder === 'nearest' ? a.dist - b.dist : folder === 'relevant' ? b.score - a.score : 0)
+
+  const toggleBookmark = (t) => { const on = bookmarks.includes(t.id); setBookmarks(p => on ? p.filter(x => x !== t.id) : [...p, t.id]); setToast(on ? 'Removed from your Bookmarks.' : 'Clinical Trial added to your Bookmarks.') }
+  const share = (t) => { const text = `Here's a clinical trial I found on Outcomes4Me: ${t.title} (${t.id})`; if (navigator.share) navigator.share({ title: t.title, text }).catch(() => {}); else { try { navigator.clipboard.writeText(text); setToast('Copied to clipboard.') } catch (e) {} } }
+  const doHide = (id) => { setHidden(p => p.includes(id) ? p : [...p, id]); setHideConfirm(null); setToast('Trial hidden.') }
+  const addNote = (id, note) => setNotes(p => ({ ...p, [id]: [note, ...(p[id] || [])] }))
+
+  const tabs = [['recent', 'Recent'], ['relevant', 'Relevant'], ['nearest', 'Nearest']]
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: C.bgApp, position: 'relative' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 16, padding: '10px 16px 6px', flexShrink: 0 }}>
+        <button onClick={() => setShowFilters(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: C.textSecondary, fontFamily: 'Inter,sans-serif' }}><span className="material-symbols-rounded" style={{ fontSize: 18 }}>tune</span>Filters</button>
+      </div>
+      <div style={{ display: 'flex', gap: 8, padding: '2px 16px 10px', flexShrink: 0 }}>
+        {tabs.map(([id, label]) => (
+          <button key={id} onClick={() => setFolder(id)} style={{ padding: '7px 16px', borderRadius: 9999, border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, backgroundColor: folder === id ? C.primary : C.bgCard, color: folder === id ? '#fff' : C.textSecondary, fontFamily: 'Inter,sans-serif' }}>{label}</button>
+        ))}
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto', paddingTop: 4, paddingBottom: 24 }}>
+        <div style={{ fontSize: 12.5, color: C.textTertiary, padding: '0 16px 10px' }}>{list.length} results</div>
+        <div style={{ margin: '0 16px 12px', backgroundColor: C.bgApp, border: `1px solid ${C.border}`, borderRadius: 12, padding: '13px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textSecondary }}>folder_shared</span>
+          <span style={{ flex: 1, fontSize: 13, color: C.textPrimary, lineHeight: 1.4 }}>Connect your medical records to get more accurate trial matches</span>
+          <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary }}>chevron_right</span>
+        </div>
+        {list.map(t => (
+          <TrialCard key={t.id} trial={t} folder={folder} bookmarked={bookmarks.includes(t.id)} onOpen={() => setSelected(t)} onBookmark={() => toggleBookmark(t)} onShare={() => share(t)} onHide={() => setHideConfirm(t)}/>
+        ))}
+        {list.length === 0 && (
+          <div style={{ padding: '32px 24px', textAlign: 'center' }}>
+            <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6 }}>No clinical trials matched to your profile yet.</div>
+            <div style={{ fontSize: 12.5, color: C.textTertiary, lineHeight: 1.5, marginTop: 6 }}>In this prototype, kidney and breast cancer have seeded trials — matching for more cancer types is coming.</div>
+          </div>
+        )}
+      </div>
+
+      {selected && (
+        <PushLayer fixed zIndex={120} onBack={() => setSelected(null)}>
+          {(back) => <TrialDetail trial={selected} bookmarked={bookmarks.includes(selected.id)} notes={notes} onBookmark={() => toggleBookmark(selected)} onShare={() => share(selected)} onBack={back} onAddNote={addNote}/>}
+        </PushLayer>
+      )}
+
+      {showFilters && <TrialFilterSheet filters={filters} onClose={() => setShowFilters(false)} onSave={(f) => { setFilters(f); setShowFilters(false) }}/>}
+      {hideConfirm && ReactDOM.createPortal(
+        <div style={{ position: 'fixed', inset: 0, zIndex: 450, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 28, backgroundColor: 'rgba(0,0,0,0.4)' }} onClick={() => setHideConfirm(null)}>
+          <div onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 320, backgroundColor: C.bgCard, borderRadius: 16, padding: '20px', boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.textPrimary, marginBottom: 6 }}>Hide this trial?</div>
+            <div style={{ fontSize: 13.5, color: C.textSecondary, lineHeight: 1.5, marginBottom: 18 }}>Trials that have been hidden can still be seen by using the "Show Hidden" option in Filters.</div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button onClick={() => setHideConfirm(null)} style={{ padding: '9px 18px', borderRadius: 9999, background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 700, color: C.textSecondary, fontFamily: 'Inter,sans-serif' }}>Cancel</button>
+              <button onClick={() => doHide(hideConfirm.id)} style={{ padding: '9px 20px', borderRadius: 9999, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 700, color: '#fff', fontFamily: 'Inter,sans-serif' }}>Yes</button>
+            </div>
+          </div>
+        </div>, document.body)}
+      {toast && (
+        <div style={{ position: 'absolute', bottom: 16, left: 16, right: 16, backgroundColor: '#273E4E', color: '#fff', borderRadius: 12, padding: '13px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 6px 20px rgba(0,0,0,0.2)', zIndex: 5 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 500 }}>{toast}</span>
+          <button onClick={() => setToast(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary, fontFamily: 'Inter,sans-serif' }}>OK</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const TreatmentScreen = ({ patientState, onLaunchRecordsFlow, tab, onTabChange }) => {
+  const [localTab, setLocalTab] = useState('records')
+  const active = tab != null ? tab : localTab
+  const setActive = onTabChange || setLocalTab
+  const TREATMENT_TABS = [
+    { id: 'records', label: 'Medical Records' },
+    { id: 'trials', label: 'Clinical Trials' },
+  ]
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: C.bgCard }}>
+      <SegmentedControl tabs={TREATMENT_TABS} active={active} onChange={setActive}/>
+      {active === 'records' && <MedicalRecordsConnectFlow onLaunch={onLaunchRecordsFlow}/>}
+      {active === 'trials' && <ClinicalTrialsPanel patientState={patientState}/>}
     </div>
   )
 }
@@ -5962,6 +6685,20 @@ const YouScreen = ({ currentUser, onLogout }) => (
       <button onClick={resetExperiments} style={{ marginTop: 10, background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: C.textSecondary, padding: '4px 0' }}>
         Reset to defaults
       </button>
+      <div style={{ marginTop: 14, borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
+        <div style={{ fontSize: 12, color: C.textTertiary, marginBottom: 8 }}>Re-arm the connect-records modal (clears the nudge's shown-count / cooldown) so you can test the trigger again — then do 2 plan actions (manual add, add from recommended treatments, or abandon either).</div>
+        <button onClick={() => { try { localStorage.removeItem('o4m_engagement_v1'); localStorage.removeItem('o4m_records_connected') } catch (e) {} window.location.reload() }} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.primary }}>restart_alt</span>
+          Reset records nudge
+        </button>
+      </div>
+      <div style={{ marginTop: 14, borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
+        <div style={{ fontSize: 12, color: C.textTertiary, marginBottom: 8 }}>Wipe all demo data (records, timeline, session, trials) and start fresh — then sign up as a new user with a supported cancer to see the treatment plan.</div>
+        <button onClick={() => { try { localStorage.clear() } catch (e) {} try { sessionStorage.clear() } catch (e) {} window.location.reload() }} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', backgroundColor: '#fdecea', border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: '#ef4444' }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 18, color: '#ef4444' }}>delete_sweep</span>
+          Clear all demo data
+        </button>
+      </div>
     </div>
 
     {/* Logout */}
@@ -6017,7 +6754,7 @@ const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap, onBa
       )}
       {!hideTitle && (
         <div style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-          <div key={'t-' + (title || activeTab)} style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 8px', animation: 'hdrFade 0.24s ease' }}>{title || ({ careplan: 'Home', track: 'Tracker', chat: 'Chats', resources: 'Resources', community: 'Community', you: 'You' }[activeTab] || 'Home')}</div>
+          <div key={'t-' + (title || activeTab)} style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 8px', animation: 'hdrFade 0.24s ease' }}>{title || ({ careplan: 'Home', treatment: 'Treatment', track: 'Tracker', chat: 'Chats', resources: 'Resources', community: 'Community', you: 'You' }[activeTab] || 'Home')}</div>
         </div>
       )}
     </div>
@@ -6251,13 +6988,13 @@ export default function App() {
   const [engagementModalOpen, setEngagementModalOpen] = useState(false)
   const [recordsCardVisible, setRecordsCardVisible] = useState(shouldShowRecordsCard) // persistent timeline card
   const engagementShownThisSessionRef = useRef(false) // enforce once-per-session
+  const pendingEngageRef = useRef(false)              // a signal fired; wait for the current interaction to finish before showing
   const flowJustCompletedRef = useRef(false)          // set on a save so the trailing onClose isn't miscounted as an abandon
   const signalEngagement = () => {
     if (exp('engagementModal') !== 'on') return
     if (registerEngagementSignal({ sessionShown: engagementShownThisSessionRef.current })) {
       engagementShownThisSessionRef.current = true
-      // Wait a beat so the modal lands after the user feels they finished — never mid-action.
-      setTimeout(() => setEngagementModalOpen(true), ENGAGEMENT_SHOW_DELAY_MS)
+      pendingEngageRef.current = true // show once the current interaction/flow settles — never mid-action, no fixed delay
     }
   }
   // Dismissing the nudge without connecting drops a persistent "records not synced" card into the timeline.
@@ -6267,13 +7004,14 @@ export default function App() {
   }
   // Connect from the nudge (simulated): mark connected — terminal for the nudge + the records card.
   const connectRecordsFromNudge = () => {
-    markRecordsConnected()
     setEngagementModalOpen(false)
-    setRecordsCardVisible(false)
-    setToast({ message: 'Health records connected' })
+    setShowConnectRecords(true)
   }
   const handleDismissRecordsCard = () => { dismissRecordsCard(); setRecordsCardVisible(false) }
+  const recordsFlowCompletedRef = useRef(false)
   const [appReveal, setAppReveal] = useState(false)
+  const [showConnectRecords, setShowConnectRecords] = useState(false)
+  const [treatmentTab, setTreatmentTab] = useState('records')
   const [currentUser, setCurrentUser] = useState(loadSession)
   const [selectedCommunity, setSelectedCommunity] = useState(null)
   const [autoJoinedCommunity, setAutoJoinedCommunity] = useState(null)
@@ -6362,7 +7100,7 @@ export default function App() {
     setMedications([])
   }
 
-  const TAB_ORDER = ['careplan', 'track', 'chat', 'community'] // 'you' is an overlay, not a tab
+  const TAB_ORDER = ['careplan', 'treatment', 'track', 'chat', 'community'] // 'you' is an overlay, not a tab
   const switchTab = (next) => {
     const from = TAB_ORDER.indexOf(prevTabRef.current)
     const to   = TAB_ORDER.indexOf(next)
@@ -6856,6 +7594,16 @@ export default function App() {
   // Derive recommendations, addedIds, and allPlanItems from current state
   const { allPlanItems, visibleRecs, addedIds } = useRecommendations(patientState, timeline)
   const anyDrillInOpen = !!(treatmentOpt || selectedCommunity || showYou || summarizeBlock || flow || sheetOpen)
+  // The engagement nudge may appear on ANY top-level tab — it's gated only on blocking surfaces
+  // (add flows, sheets, pushed details, the records-connect flow, the clinical-edit sheet), never on
+  // which tab is showing, so it lands right after the triggering interaction settles.
+  const engageBlocked = anyDrillInOpen || showConnectRecords || !!clinicalEditEvent || engagementModalOpen
+  useEffect(() => {
+    if (!pendingEngageRef.current || engageBlocked) return
+    pendingEngageRef.current = false
+    const r = requestAnimationFrame(() => requestAnimationFrame(() => setEngagementModalOpen(true)))
+    return () => cancelAnimationFrame(r)
+  }, [engageBlocked])
   // Drilled into a chat (back button showing) → treat like a drill-in: hide the fixed nav, go full-height.
   const hideNav = anyDrillInOpen || (activeTab === 'chat' && chatDrilled)   // hide the footer nav only when drilled into a chat from the side menu
 
@@ -7018,6 +7766,9 @@ export default function App() {
         )}
         {/* Content region — single flex:1 area; the active screen fills it and scrolls internally */}
         <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: activeTab === 'treatment' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
+          <TreatmentScreen patientState={patientState} onLaunchRecordsFlow={() => setShowConnectRecords(true)} tab={treatmentTab} onTabChange={setTreatmentTab}/>
+        </div>
         <div style={{ display: activeTab === 'track' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
           <TrackScreen medications={medications} patientState={patientState} onSaveMedication={handleSaveMedication}/>
         </div>
@@ -7096,7 +7847,7 @@ export default function App() {
                   cancerSupported={isCancerSupported(patientState)}
                   onReviewRecs={scrollToRecs}
                   showRecordsCard={recordsCardVisible && !areRecordsConnected()}
-                  onOpenSettings={() => setShowYou(true)}
+                  onOpenSettings={() => switchTab('treatment')}
                   onDismissRecordsCard={handleDismissRecordsCard}
                   sentinelRef={el => {
                     if (el) sentinelRefs.current[day.date] = el
@@ -7158,13 +7909,16 @@ export default function App() {
         />
       )}
 
-      {treatmentOpt && (
+      {treatmentOpt && (/clinical trial/i.test(treatmentOpt.title || '') || treatmentOpt.phase === 'Clinical trial' || treatmentOpt.subtitle === 'Clinical trial') ? (
+        <ClinicalTrialTreatmentDetail opt={treatmentOpt} patientState={patientState} onClose={() => setTreatmentOpt(null)} onSeeAll={() => { setTreatmentOpt(null); setTreatmentTab('trials'); switchTab('treatment') }}/>
+      ) : treatmentOpt && (
         <TreatmentDetailView
           opt={treatmentOpt}
           onClose={() => setTreatmentOpt(null)}
           addedIds={addedIds}
           patientState={patientState}
           planItems={allPlanItems}
+          onAbandonSignal={signalEngagement}
           onAddToPlan={(event, fromFlow) => {
             if (fromFlow) {
               setTreatmentOpt(null)
@@ -7181,6 +7935,7 @@ export default function App() {
 
       {/* Engagement nudge (feature-flagged, engagementModal) — connect-records bottom sheet */}
       {engagementModalOpen && <EngagementNudgeSheet onConnect={connectRecordsFromNudge} onDismiss={dismissEngagementNudge}/>}
+      {showConnectRecords && <MedicalRecordsConnectScreen onClose={() => { setShowConnectRecords(false); if (!recordsFlowCompletedRef.current && !areRecordsConnected()) { activateRecordsCard(); setRecordsCardVisible(true) } recordsFlowCompletedRef.current = false }} onConnected={() => { recordsFlowCompletedRef.current = true; markRecordsConnected(); setRecordsCardVisible(false) }}/>}
       {onboarded && !anyDrillInOpen && activeTab === 'careplan' && (
         <div style={{
           position: 'fixed', bottom: 90, left: 0, right: 0, zIndex: 30,
