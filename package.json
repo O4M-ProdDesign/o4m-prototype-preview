@@ -1,7 +1,7 @@
 {
   "name": "o4m-prototype",
   "private": true,
-  "version": "2.16",
+  "version": "2.44",
   "type": "module",
   "scripts": {
     "dev": "vite",

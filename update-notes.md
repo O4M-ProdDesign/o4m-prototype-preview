@@ -1,5 +1,85 @@
 # Prototype Update Notes
 
+## v2.44 — In-step trial option no longer lists trials; ctCard flag
+- **"Clinical trial for … that has spread"** (option inside the NCCN Guidelines block) no longer shows matched trials, See all, or trial drill-ins. It's now just an example of clinical trials as an NCCN treatment option: title, Explain this treatment, description, NCCN source. Matched trials live only in the standing Explore clinical trials drill-in. Also fixed its copy rendering the stage as a stray lowercase letter ("operable i kidney cancer" → "operable stage I kidney cancer").
+- **New flag `ctCard`** (Profile → Experiments, "Clinical trials card on timeline", default **on**). Off removes the standing Explore clinical trials card and its node from Today — the state for a cancer type with no trials available. URL: `?exp=ctCard:off`.
+
+## v2.43 — Clinical trials node + card tint on #414652
+The standing clinical trials node square is now `C.eyebrow` (#414652, was #5F7084), matching its eyebrow. The card's faint tint and border are re-derived from #414652 (7% fill, 18% border).
+
+## v2.42 — Node glyphs #414652
+Event and appointment node glyphs now use `C.eyebrow` (#414652, production's node icon colour), was 55% black. Suggested (orange `verified`) and standing trials (white on slate) nodes unchanged.
+
+## v2.41 — Neutral eyebrows #414652
+New token `C.eyebrow = #414652` (production's eyebrow colour). Applied to the neutral eyebrows: event/appointment type labels on timeline cards, the event type on the Details/Add date view, treatment option labels inside the NCCN block (ADJUVANT, SURVEILLANCE…), and the standing card's "Clinical trials" eyebrow. **NCCN Guidelines** stays orange as the recommendation-class signal; the orange parent-treatment eyebrow on regimen/medication detail is unchanged; section headings inside detail views are not eyebrows and are unchanged.
+
+## v2.40 — Rail starts at the first item
+The first item in the timeline (the diagnosis) no longer has a segment above it, and the first date has no segments. The rail begins at the diagnosis node and runs to the last item.
+
+## v2.39 — Rail clearance + dates as stops
+- **Clearance:** every line segment now stops `SPINE.clearance` (6px) short of whatever it connects — above and below each node (node height is measured, so 40/44/48px nodes all get the same gap), so the line meets the node rather than running behind it.
+- **Dates are stops on the rail:** date headers are back to left-justified. The line ends 6px above the date label and resumes 6px below it (sandwiching it); nothing to the left of the date. The first date (diagnosis) has no line above it; the last item has no line below it.
+- **Node-less banners** (records-not-synced) are treated the same way: the line stops 6px above the banner and resumes 6px below it, instead of passing behind it.
+- **Date unknown** still has no rail.
+- `SpineRow`: `through` replaced by `belowInset`; header uses a fixed 20px line height so the date's clearance is exact.
+
+## v2.38 — One continuous rail across dates
+The spine now runs unbroken from the first dated event (diagnosis) to the last, through every date header, instead of breaking at each day. Date headers moved into the card column (left padding = rail column + gap) so the line passes to their left; the sticky header draws its own rail segment so the line stays continuous when a header is pinned. `DaySection` takes `connectAbove` / `connectBelow`; `SpineRow` gained `through` (rail passes behind a node-less card) and its `below` segment ends at the row bottom when there's no gap. Node-less banners (records-not-synced) sit on top of the rail — the line passes behind them rather than stopping. **Date unknown** stays fully disconnected (header aligned with the cards, no rail).
+
+## v2.37 — Date unknown: no connecting line
+Events in the **Date unknown** section no longer connect to each other on the spine. Without dates there is no real order between them (only when they were added), so each keeps its node but the line is omitted. Spacing unchanged.
+
+## v2.36 — Clinical trials drill-in: no share/bookmark in the app bar
+Removed the share and bookmark buttons from the app bar of the Clinical trials drill-in (from the Explore clinical trials card on Home). A right spacer keeps the scroll-in title centered. Per-trial bookmark/share on the trial cards are unchanged, as are all other drill-ins.
+
+## v2.35 — Session state held when leaving Home (drill-ins + scroll)
+Leaving Home no longer throws away where you were. **See all** in the Clinical trials drill-ins (Explore clinical trials and the in-step trial detail) now switches to Treatment › Clinical Trials *without* closing the drill-in. Home drill-ins (treatment/trial details, Details/Add date) are wrapped so they stay mounted but `visibility: hidden` while another tab is active, so their state (scroll position, an open trial detail, bookmarks) is intact; tapping Home shows the drill-in exactly as left, and Back returns to the timeline at the same scroll position. Nested trial details now render inside their drill-in (PushLayer no longer portaled) so they hide/persist with it. Header/nav/FAB "drill-in open" logic only counts Home drill-ins while on Home (`homeDrillIn`). Home timeline scroll is also saved on tab-leave and restored on return as a safeguard. Other tabs were already kept mounted, so their own state persists for the session. Verified: scroll timeline → open Explore clinical trials → scroll → See all → Home (same drill-in, same scroll) → Back (timeline at same scroll).
+
+## v2.34 — Clinical trials drill-in title
+The drill-in opened from the **Explore clinical trials** card is now titled **Clinical trials** (page title and the app-bar title that fades in on scroll). The card on Today keeps "Explore clinical trials".
+
+## v2.33 — Explore clinical trials: no docked footer button
+Removed the docked **See all clinical trials** button from the Explore clinical trials drill-in only (See all next to Most Relevant Clinical Trials remains). Bottom padding and toast position adjusted for the missing dock. All other drill-ins unchanged.
+
+## v2.32 — Drill-in app-bar titles: hidden until the page title scrolls away
+All event/recommendation drill-ins now share one app-bar title behaviour (same as Explore clinical trials): no title in the bar at the top; once the page title scrolls up under the bar, the title fades in and the bar gets its hairline. Applies to **TreatmentDetailView** (suggested treatment), **RegimenDetailView**, **ClinicalTrialTreatmentDetail** (in-step trial option — previously had no bar title at all), **EventDetailsView** (Add date view — previously a static "Details"; the event name is now the bar title), and **CTExploreDetail**. Shared helper `scrolledPastTitle(scrollEl, titleEl)` replaces the IntersectionObserver versions (scroll containers set to `position: relative`). Also fixed TreatmentDetailView's bar: the invisible title was pushing the bookmark icon off the right edge (`minWidth: 0` on the title column). Not changed: TrialDetail (its bar shows the NCT ID) and its sub-pages (static section titles).
+
+## v2.30 — Explore clinical trials: trimmed to trials + source
+Removed **What This Approach Means**, **What to Consider** and **Questions to Ask Your Doctor** from the Explore clinical trials drill-in (and their `goals`/`overview` content). The view is now: title + description → Most Relevant Clinical Trials (or empty state) → source → docked See all clinical trials.
+
+## v2.29 — Explore clinical trials: section title, source, empty-state flag
+In the Explore clinical trials drill-in: section header **Clinical Trials Matched to You → Most Relevant Clinical Trials** (See all only shows when there are trials); source line → **ClinicalTrials.gov · U.S. National Library of Medicine**. New experiment flag **`ctMatches`** (Profile → Experiments, "Clinical trial matches (off = empty state)", default **on**). Off forces the empty state; the empty state (forced or real) keeps the "Most Relevant Clinical Trials" header and reads: "We didn’t find any currently available trials that match your clinical profile. Your care team may be able to help identify other options." Also works via URL: `?exp=ctMatches:off`.
+
+## v2.28 — Records banner no longer connects to the rail
+The spine line now only runs node-to-node: the "Health records not synced" banner (node-less) has no connector down to the first event, and the first event has no line above its node. Row spacing is unchanged (`SpineRow` takes `gapBelow` separately from the line).
+
+## v2.27 — Records-not-synced icon matches node size
+The "Health records not synced" card's icon is now 40px with a 22px glyph (was 48px / 20px), matching the timeline's event nodes.
+
+## v2.26 — "Explore clinical trials" drill-in recycles the treatment detail view
+Tapping the standing **Explore clinical trials** card now opens **CTExploreDetail**, built on TreatmentDetailView's layout, titling and slots (replaces the old CTSuggestedDetail): app bar (back; page title fades into the bar once scrolled past; share + bookmark) → **title + description** → options slot = **Clinical Trials Matched to You** (top 3 from `patientTrials`, the same `TrialCard`s used on the kidney in-step trial detail, each drilling into `TrialDetail`, with bookmark/share/notes shared via the existing `o4m_ct_*` storage; "See all" → Treatment › Trials) → **What This Approach Means** → **What to Consider** → **Questions to Ask Your Doctor** → guideline source line → docked primary button in the "Add to plan" slot: **See all clinical trials**. No-match state kept in the options slot. All copy lives in `CT_EXPLORE_CONTENT` and is placeholder pending final content. The app-bar title uses a scroll-position check rather than an IntersectionObserver (the observer misfired under the slide-in transform).
+
+## v2.25 — Today label copy
+Standing trials card: eyebrow **Treatment option → Clinical trials**, title **Clinical trials → Explore clinical trials** (stub option `phase`/`title` match). Suggested-treatments block eyebrow **Suggested treatments → NCCN Guidelines** (both the normal and the generating/shimmer state). Unchanged: the "Generating suggested treatments…" status line and the Clinical trials detail screen header.
+
+## v2.24 — "Date unknown" section + minimal event details (date / notes)
+New **Date unknown** section at the very end of the timeline for events with no date. They render as normal event/appointment cards on the spine; in the card's date slot they show an orange **Add date** link. Add date (and Edit from the card's ⋮ menu) pushes a minimal **EventDetailsView** ("Details"): type eyebrow + name, a **Date** field (existing DateInputField / iOS picker) and **Notes** (NotesTextarea), with Save enabled only when something changed. Saving a date moves the event onto the timeline at that date (creating the day if needed), scrolls to it, highlights it, and toasts "Date added · Moved to …". Saving notes only keeps it in Date unknown. The view is generic: saving a different date on a dated event moves it, and clearing the date moves it into Date unknown. Undated events persist under a new `careplan_v1_undatedEvents` key (cleared with the rest of persisted state; new users start empty). Demo account seeds two: *Renal ultrasound* (test, with notes) and *Urology consultation* (appointment). Removing one gives the usual Undo toast. Also: timeline bottom spacer 24 → 96px so the last card can scroll clear of the FAB + Today pill. Not yet done: add flows don't offer an "I don't know the date" path, so for now undated events only come from seed data (or by clearing a date in Details).
+
+## v2.23 — Standing clinical-trials eyebrow: "Treatment option"
+The standing Clinical trials card's eyebrow changes from **Encouraged** to **Treatment option** (and the stub option's `phase` to match). Context: the card is NCCN's standing, always-consider recommendation and is where users get a preview of matched trials (CTSuggestedDetail). The in-step trial option inside a cancer's suggested treatments (e.g. kidney) is separate — it's baked into that NCCN step and links to a generic page, and stays that way.
+
+## v2.22 — Demo account gets its onboarding diagnosis event
+The seeded demo timeline (`INITIAL_TIMELINE`, used for sign-in accounts like nick@demo.com) now starts with a dated **diagnosis event**, shaped exactly as onboarding seeds it (`seed_diag`, source `onboarding`, "Kidney Cancer", details Stage I · Clear cell histology), dated 28 days ago — ahead of the CT/surgery 6 days ago. Matches the demo patient state (RCC, Stage I, clear cell). Persistence `SCHEMA_VERSION` bumped 2 → 3 so browsers with a stored older timeline reset and pick it up.
+
+## v2.21 — Daily summary removed from Today
+The Daily summary card no longer appears on the timeline: Today's day object no longer carries `summary`, and `DaySection` no longer renders it. The records-not-synced card (previously gated on the summary being shown) now gates on `summaryShown` directly, so it still appears at the top of Today after the scroll-to-Today settles. `DailySummaryCard` and `buildDailySummary` are left in the source, unused, for easy restore. Note: this also removes the summary's empty-state **Add an event** CTA (the FAB remains).
+
+## v2.20 — Event/appointment spine nodes on white
+Event and appointment nodes are now a **white circle with a grey glyph** (was a hollow grey ring on the app background). Suggested stays distinct by size + orange `verified`; standing by the slate square.
+
+## v2.19 — Spine refactor: every node on one rail
+All timeline nodes now live on ONE rail outside the cards. **EventCard** and **AppointmentCard** no longer render their own `railIcon` node; the timeline row renders every item's node (`item.icon`) in the rail column for all item types. New **`SpineRow`** replaces the two old connector mechanisms (suggested rows' absolute node-column line at `top:-10/bottom:-22`, event rows' 32px gap segment at `paddingLeft:35`): one rail x (48px column, node centre at x=40 on a 390 viewport), one line mechanism (each row draws *above* = row top → node centre and *below* = node centre → next row's top). Nodes are **centred on the card**, or on the element marked `data-spine-anchor` — the SuggestedBlock header, measured at its **collapsed** height (body discounted to its 2-line clamp via `data-spine-clamp`) so the node doesn't jump on expand. Measured with a ResizeObserver, so alignment survives text wrap, expand/collapse and the reveal animation. **Class is signalled by node appearance** (`SPINE_NODE`): events/appointments = hollow ring on the app background with a grey glyph; suggested = solid white badge + orange `verified`; standing (trials) = slate rounded-square + `clinical_notes`. Line colour unchanged in spirit: grey between events, orange within suggested/standing, gradient across the boundary. Summary + records-not-synced cards stay full width with no node; the rail emerges from beneath them. The line runs within a day and stops at each day header (as before). Event card content width is effectively unchanged (the node moved out, the card moved right by the same amount). `RailItem` (unused) and `railIcon` (still used by sheets/pickers) left in place.
+
 ## v2.18 — Redesign handoff doc (for starting a fresh conversation)
 Added `redesign-handoff.md` at the project root — captures the redesign goal, the timeline "past/present/future" thesis, the four business goals, the Option A iteration workflow + repo structure, the current prototype baseline, and the next step (share production feature inventory → build redesign-01). Included in the commit zip so a new conversation can pick up immediately. No app/behavior changes.
 
@@ -231,3 +311,11 @@ The matched trial cards in the clinical-trial treatment detail no longer show th
 
 ### v2.16 — "See all" matched trials → Treatment / Clinical Trials
 The "See all" link in the clinical-trial treatment detail's "Clinical trials matched to you" now lands on Treatment › Clinical Trials (previously it went to Treatment, which defaulted to the Medical Records sub-tab). Lifted the Treatment sub-tab to App state so See all can set it to 'trials'.
+
+## v2.18 (trials line) — Clinical Trials as a standing recommendation on Today
+- Persistent "Clinical trials" entry: always the FIRST suggested item on Today, even with no other recs. Not a step-with-sets — a single flat standing card (CTStandingCard) that opens a detail.
+- Card: "Encouraged" eyebrow, "Clinical trials", NCCN copy. Neutral slate treatment (#5f7084), NOT the orange accent (reserved for act-on-this). Built as a reusable "standing recommendation" style (icon differentiates type when it scales; clinical_notes for trials — note the app's icon font is REDUCED/subset, new glyphs render blank unless added).
+- Detail (CTSuggestedDetail): hierarchy = Why this matters (NCCN) → Trials that may match (up to 3, phase/name/location/reason) with "See all" up by the title (Apple pattern) → no-match state ("No matching trials found" + reassurance + "Search all clinical trials"). Routed via opt.kind === 'ct-suggested'.
+- Suggested treatments node: white badge with an ORANGE verified icon (was orange-outlined star).
+- Spine experiment (IN PROGRESS, needs the refactor below): suggested nodes moved OUT of the cards onto the spine (rail column), with a continuous line down the node column, node centered on the parent/collapsed card. Event + appointment nodes are STILL baked inside their cards, so the event↔suggested boundary jogs.
+- DECIDED NEXT (own task): pull ALL node icons out of the cards (events + appointments too) so the whole spine is one rail; signal class (event vs suggested vs standing) via node appearance, not inside/outside. This is a real refactor of EventCard/AppointmentCard + the connector/line logic.

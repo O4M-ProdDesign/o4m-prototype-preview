@@ -11,6 +11,7 @@ const KEYS = {
   userDecisions:  KEY_PREFIX + 'userDecisions',
   medications:    KEY_PREFIX + 'medications',
   chatDrafts:     KEY_PREFIX + 'chatDrafts',
+  undatedEvents:  KEY_PREFIX + 'undatedEvents',
 }
 
 // ─── SCHEMA VERSION GUARD ─────────────────────────────────────────
@@ -18,7 +19,7 @@ const KEYS = {
 // doesn't match, all persisted state is discarded so the app starts fresh (onboarding) instead of
 // hydrating a stale/incompatible timeline — which otherwise renders as a broken home feed. Runs
 // once on import, before any load below.
-const SCHEMA_VERSION = '2'
+const SCHEMA_VERSION = '3'
 const VERSION_KEY = KEY_PREFIX + 'schemaVersion'
 ;(() => {
   try {
@@ -153,6 +154,21 @@ export const saveChatDraft = (id, text) => {
     else delete d[id]
     localStorage.setItem(KEYS.chatDrafts, JSON.stringify(d))
   } catch (e) { console.warn('[persistence] Failed to save chat draft:', e) }
+}
+
+// ─── UNDATED EVENTS ───────────────────────────────────────────────
+// Timeline events with no date yet (shown in the "Date unknown" section). null = never saved.
+export const saveUndatedEvents = (events) => {
+  try { localStorage.setItem(KEYS.undatedEvents, JSON.stringify(events)) }
+  catch (e) { console.warn('[persistence] Failed to save undated events:', e) }
+}
+export const loadUndatedEvents = () => {
+  try {
+    const raw = localStorage.getItem(KEYS.undatedEvents)
+    if (!raw) return null
+    const v = JSON.parse(raw)
+    return Array.isArray(v) ? v : null
+  } catch { return null }
 }
 
 // ─── CLEAR ────────────────────────────────────────────────────────

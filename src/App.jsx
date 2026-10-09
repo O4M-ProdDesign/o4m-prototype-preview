@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, createContext, useContext } from 'react'
 import ReactDOM from 'react-dom'
 import { findCoveringRule, findRuleMatchingItem, findMatchingRules, wouldImpactRecommendations, getImpactContext, isCancerSupported } from './services/recommendationService.js'
-import { hydrateState, savePatientState, saveTimeline, saveUserDecisions, clearPersistedState, saveMedications, loadMedications, getChatDraft, saveChatDraft } from './services/persistenceService.js'
+import { hydrateState, savePatientState, saveTimeline, saveUserDecisions, clearPersistedState, saveMedications, loadMedications, getChatDraft, saveChatDraft, saveUndatedEvents, loadUndatedEvents } from './services/persistenceService.js'
 import { loadSession, login, createAccount, logout } from './services/authService.js'
 import { useRecommendations } from './hooks/useRecommendations.js'
 import { COMMUNITIES, COMMUNITY_POSTS, POST_COMMENTS } from './data/communityData.js'
@@ -22,6 +22,7 @@ const C = {
   textPrimary: 'rgba(0,0,0,0.87)',
   textSecondary: 'rgba(0,0,0,0.55)',
   textTertiary: 'rgba(0,0,0,0.35)',
+  eyebrow: '#414652',         // neutral eyebrow labels (matches production)
   textIcon: '#414652',
   iconFill: '#414652',
   border: 'rgba(0,0,0,0.10)',
@@ -43,8 +44,18 @@ const INITIAL_TIMELINE = (() => {
     const d = new Date(); d.setDate(d.getDate() - n)
     return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })
   }
-  const today = daysAgo(0), d1 = daysAgo(6), d2 = daysAgo(3)
+  const today = daysAgo(0), d1 = daysAgo(6), d2 = daysAgo(3), dDx = daysAgo(28)
   return [
+    // Diagnosis as onboarding would have seeded it (buildSeedEventsFromAnswers): the date picked at
+    // the "Date of initial diagnosis" step, cancer type, plus stage + histology answers.
+    {
+      date: dDx, label: label(28), isToday: false,
+      summary: null,
+      events: [
+        { id: 'seed_diag', type: 'diagnosis', source: 'onboarding', name: 'Kidney Cancer', date: dDx, details: ['Stage I', 'Clear cell histology'] },
+      ],
+      suggested: null,
+    },
     {
       date: d1, label: label(6), isToday: false,
       summary: null,
@@ -102,6 +113,14 @@ const INITIAL_PATIENT_STATE = {
   performanceStatus: 0,  // ECOG 0
 }
 
+// ─── UNDATED EVENTS (demo seed) ───────────────────────────────────
+// Events the person knows happened but can't date yet. Shown in the "Date unknown" section at the
+// end of the timeline; "Add date" drills into EventDetailsView, and dating one moves it onto the timeline.
+const INITIAL_UNDATED_EVENTS = [
+  { id: 'u1', type: 'scan', name: 'Renal ultrasound', notes: 'Found a mass on the right kidney; referred for CT.' },
+  { id: 'u2', type: 'appointment', name: 'Urology consultation' },
+]
+
 // ─── USER DECISIONS ───────────────────────────────────────────────
 // Records of what the user has done with recommendations
 // shape: { id, recommendationId, decision: 'accepted'|'dismissed', timestamp }
@@ -136,12 +155,16 @@ const EXPERIMENT_DEFAULTS = {
   addressLookup: 'on',     // Location step street field — 'on' = autocomplete dropdown, 'off' = plain input
   engagementModal: 'on',   // 'on' = connect-records nudge after high-intent manual effort (see ENGAGEMENT_* rules)
   resourcesTab: 'on',      // 'on' = show the Resources tab in the bottom nav (default on)
+  ctMatches: 'on',         // 'on' = show matched trials in Explore clinical trials; 'off' = force the no-matches empty state
+  ctCard: 'on',            // 'on' = standing Explore clinical trials card + node on Today; 'off' = removed (e.g. cancer type with no trials)
 }
 // For reference / the in-app experiments panel: label + allowed values per flag.
 const EXPERIMENT_META = {
   addressLookup: { label: 'Address lookup on Location step', values: ['on', 'off'] },
   engagementModal: { label: 'Engagement modal (2 manual events)', values: ['off', 'on'] },
   resourcesTab: { label: 'Resources tab (bottom nav)', values: ['on', 'off'] },
+  ctMatches: { label: 'Clinical trial matches (off = empty state)', values: ['on', 'off'] },
+  ctCard: { label: 'Clinical trials card on timeline', values: ['on', 'off'] },
 }
 const EXP_LS_KEY = 'o4m_experiments'
 const _readExpLS = () => { try { return JSON.parse(localStorage.getItem(EXP_LS_KEY) || '{}') } catch { return {} } }
@@ -335,6 +358,35 @@ const railIcon = (type, size = 40) => {
       <span className="material-symbols-rounded" style={{ fontSize: Math.round(size * 0.55), color: C.textSecondary, fontVariationSettings: fvs }}>{name}</span>
     </div>
   )
+}
+
+// ─── SPINE NODES ──────────────────────────────────────────────────
+// Every Today/timeline item puts its node on ONE rail (see SpineRow). Class is signalled by
+// node appearance, never by inside/outside the card:
+//   event / appointment → white circle, #414652 glyph (C.eyebrow)
+//   suggested treatments → solid white badge, orange `verified`
+//   standing (clinical trials) → #414652 (C.eyebrow) rounded-square, white `clinical_notes`
+// Glyphs must already exist in the reduced icon font subset.
+const SPINE_NODE = {
+  event: (type) => {
+    const name = RAIL_ICONS[type] || 'stethoscope'
+    const fill = (type === 'medication' || type === 'appointment') ? 0 : 1
+    return (
+      <div style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: C.bgCard, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 22, color: C.eyebrow, fontVariationSettings: `'FILL' ${fill}, 'wght' 400` }}>{name}</span>
+      </div>
+    )
+  },
+  suggested: () => (
+    <div style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: C.bgCard, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <span className="material-symbols-rounded" style={{ fontSize: 28, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>verified</span>
+    </div>
+  ),
+  standing: () => (
+    <div style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: C.eyebrow, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <span className="material-symbols-rounded" style={{ fontSize: 22, color: '#fff', fontVariationSettings: "'FILL' 1, 'wght' 400" }}>clinical_notes</span>
+    </div>
+  ),
 }
 
 const typeLabel = { procedure: 'Procedure/Surgery', medication: 'Medication', scan: 'Test', diagnosis: 'Diagnosis' }
@@ -1862,8 +1914,9 @@ const RecordsNotSyncedCard = ({ onOpenSettings, onDismiss }) => (
       <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textTertiary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>close</span>
     </button>
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-      <div style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-        <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>sync_problem</span>
+      {/* Same size as the timeline's event nodes (40px circle, 22px glyph) */}
+      <div style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 22, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>sync_problem</span>
       </div>
       <div style={{ flex: 1, minWidth: 0, paddingRight: 20 }}>
         <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.3, marginBottom: 4 }}>Health records not synced</div>
@@ -2512,8 +2565,59 @@ const CardActionSheet = ({ isOnboarding = false, restoreNote = false, onDelete, 
   )
 }
 
+// Shared drill-in app-bar title behaviour: the bar has no title until the page title has scrolled
+// up under it, then the title fades in (and the bar gets its hairline). Scroll-position based, so the
+// slide-in transform can't fool it. The scroll container must be position: relative (offsetTop).
+const scrolledPastTitle = (scrollEl, titleEl) => !!(scrollEl && titleEl && scrollEl.scrollTop > titleEl.offsetTop + titleEl.offsetHeight - 8)
+
+// "Add date" — sits in a card's date slot when the event has no date; drills into EventDetailsView.
+const AddDateLink = ({ onClick }) => (
+  <button onClick={e => { e.stopPropagation(); onClick() }}
+    style={{ padding: 0, background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: C.primary, fontFamily: 'inherit', lineHeight: 1.2, WebkitTapHighlightColor: 'transparent' }}>
+    Add date
+  </button>
+)
+
+// Minimal event detail: date + notes only. Pushed from "Add date". Saving a date onto an undated
+// event moves it onto the timeline; clearing a dated event's date moves it to "Date unknown".
+const EventDetailsView = ({ event, onClose, onSave }) => {
+  const [vis, setVis] = useState(false)
+  const initialDate = event.date || event.startDate || ''
+  const [date, setDate] = useState(initialDate)
+  const [notes, setNotes] = useState(event.notes || '')
+  const [titleVisible, setTitleVisible] = useState(false)
+  const titleRef = useRef(null)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const dismiss = (after) => { setVis(false); setTimeout(() => { onClose(); after && after() }, 320) }
+  const dirty = date !== initialDate || notes.trim() !== (event.notes || '').trim()
+  const label = event.type === 'appointment' ? 'Appointment' : (typeLabel[event.type] || 'Event')
+  const fieldLabel = { fontSize: 12, color: C.textSecondary, marginBottom: 5 }
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 66, transform: vis ? 'translateX(0)' : 'translateX(100%)', transition: 'transform 0.32s cubic-bezier(0.32,0.72,0,1)', display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard, fontFamily: "'Inter',sans-serif" }}>
+      <div style={{ display: 'flex', alignItems: 'center', height: 56, padding: '0 52px 0 8px', flexShrink: 0, borderBottom: `1px solid ${titleVisible ? C.border : 'transparent'}`, transition: 'border-color 0.2s' }}>
+        <button onClick={() => dismiss()} aria-label="Back" style={{ width: 44, height: 44, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textPrimary }}>arrow_back</span></button>
+        <div style={{ flex: 1, minWidth: 0, textAlign: 'center', fontSize: 16, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: titleVisible ? 1 : 0, transition: 'opacity 0.22s ease' }}>{event.name}</div>
+      </div>
+      <div onScroll={e => setTitleVisible(scrolledPastTitle(e.target, titleRef.current))} style={{ flex: 1, overflowY: 'auto', padding: '22px 20px 24px', position: 'relative' }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color: C.eyebrow, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>{label}</div>
+        <div ref={titleRef} style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.3, marginBottom: 24 }}>{event.name}</div>
+        <DateInputField label="Date" value={date} onChange={setDate}/>
+        <div style={{ height: 8 }}/>
+        <div style={fieldLabel}>Notes</div>
+        <NotesTextarea value={notes} onChange={setNotes} placeholder="Add notes"/>
+      </div>
+      <div style={{ padding: '12px 20px 28px', flexShrink: 0 }}>
+        <button disabled={!dirty} onClick={() => dismiss(() => onSave({ date, notes: notes.trim() }))}
+          style={{ width: '100%', height: 52, borderRadius: 26, border: 'none', backgroundColor: dirty ? C.primary : '#e0e0e0', color: dirty ? 'white' : '#aaa', fontSize: 16, fontWeight: 600, cursor: dirty ? 'pointer' : 'default', fontFamily: 'inherit' }}>
+          Save
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ─── APPOINTMENT CARD ─────────────────────────────────────────────
-const AppointmentCard = ({ event, highlightId, onRemove, onEdit }) => {
+const AppointmentCard = ({ event, highlightId, onRemove, onEdit, onAddDate }) => {
   const [showRemove, setShowRemove] = useState(false)
   const [showInfoSheet, setShowInfoSheet] = useState(false)
   const isHighlighted = highlightId === event.id
@@ -2539,14 +2643,16 @@ const AppointmentCard = ({ event, highlightId, onRemove, onEdit }) => {
       {showRemove && <CardActionSheet isOnboarding={event.source === 'onboarding'} onDelete={onRemove} onEdit={() => onEdit && onEdit(event)} onInfo={() => setShowInfoSheet(true)} onClose={() => { setShowRemove(false); _closeActiveMenu = null }}/>}
       {showInfoSheet && <ClinicalDetailInfoSheet onClose={() => setShowInfoSheet(false)} onEdit={() => onEdit && onEdit(event)}/>}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-        <div style={{ flexShrink: 0, alignSelf: 'center' }}>{railIcon('appointment', 40)}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 2 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Appointment</span>
-            {onRemove && (
-              <button onClick={openMenu}
-                style={{ padding: '0 2px', background: 'none', border: 'none', cursor: 'pointer', color: C.textSecondary, fontSize: 14, fontWeight: 700, lineHeight: 1 }}>⋮</button>
-            )}
+            <span style={{ fontSize: 11, fontWeight: 600, color: C.eyebrow, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Appointment</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+              {!event.date && onAddDate && <AddDateLink onClick={onAddDate}/>}
+              {onRemove && (
+                <button onClick={openMenu}
+                  style={{ padding: '0 2px', background: 'none', border: 'none', cursor: 'pointer', color: C.textSecondary, fontSize: 14, fontWeight: 700, lineHeight: 1 }}>⋮</button>
+              )}
+            </div>
           </div>
           <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.3, marginBottom: dateTimeLine ? 3 : 0 }}>
             {event.name || 'Appointment'}
@@ -2567,7 +2673,7 @@ const AppointmentCard = ({ event, highlightId, onRemove, onEdit }) => {
   )
 }
 
-const EventCard = ({ event, highlightId, onRemove, onEdit, visibleRecs = [] }) => {
+const EventCard = ({ event, highlightId, onRemove, onEdit, onAddDate, visibleRecs = [] }) => {
   const [showRemove, setShowRemove] = useState(false)
   const [showInfoSheet, setShowInfoSheet] = useState(false)
   const label = typeLabel[event.type] || 'Event'
@@ -2590,14 +2696,13 @@ const EventCard = ({ event, highlightId, onRemove, onEdit, visibleRecs = [] }) =
       {showRemove && <CardActionSheet isOnboarding={event.source === 'onboarding'} restoreNote={!!coveringRule} onDelete={onRemove} onEdit={() => onEdit && onEdit(event)} onInfo={() => setShowInfoSheet(true)} onClose={() => { setShowRemove(false); _closeActiveMenu = null }}/>}
       {showInfoSheet && <ClinicalDetailInfoSheet onClose={() => setShowInfoSheet(false)} onEdit={() => onEdit && onEdit(event)}/>}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-        {/* Icon — flush left, semantic anchor */}
-        <div style={{ flexShrink: 0, alignSelf: 'center' }}>{railIcon(event.type, 40)}</div>
         {/* Content */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 2 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: C.eyebrow, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-              {du && <span style={{ fontSize: 12, color: C.textTertiary }}>{du}</span>}
+              {du ? <span style={{ fontSize: 12, color: C.textTertiary }}>{du}</span>
+                  : onAddDate && <AddDateLink onClick={onAddDate}/>}
               {onRemove && <button onClick={openMenu}
                 style={{ padding: '0 2px', background: 'none', border: 'none', cursor: 'pointer', color: C.textSecondary, fontSize: 14, fontWeight: 700, lineHeight: 1 }}>⋮</button>}
             </div>
@@ -2871,7 +2976,7 @@ const SuggestedBlock = ({ block, defaultOpen = false, onApproachSelect, addedIds
     return (
       <div style={{ width: '100%', backgroundColor: C.bgCard, borderRadius: 14, padding: '14px 16px', overflow: 'hidden', position: 'relative' }}>
         <div style={{ position: 'absolute', inset: 0, borderRadius: 14, background: 'linear-gradient(90deg, transparent 0%, rgba(255,121,88,0.07) 50%, transparent 100%)', backgroundSize: '200% 100%', animation: 'shimmer 1.4s ease-in-out infinite' }}/>
-        <div style={{ fontSize: 11, fontWeight: 600, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6, opacity: 0.7 }}>Suggested treatments</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6, opacity: 0.7 }}>NCCN Guidelines</div>
         <div style={{ fontSize: 14, color: C.textSecondary, animation: 'genpulse 1.4s ease-in-out infinite' }}>{genMessage}</div>
         <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {[1,2,3].map(i => (
@@ -2886,11 +2991,12 @@ const SuggestedBlock = ({ block, defaultOpen = false, onApproachSelect, addedIds
     <>
     <div data-sugblock="true" onClick={toggle}
       style={{ width: '100%', backgroundColor: expanded ? 'transparent' : C.bgCard, border: 'none', borderRadius: expanded ? 0 : 13, padding: expanded ? '12px 16px' : '12px 16px', cursor: 'pointer', textAlign: 'left', transition: 'background 0.22s, border 0.22s, border-radius 0.22s, padding 0.22s', WebkitTapHighlightColor: 'transparent', userSelect: 'none', outline: 'none' }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: open ? 10 : 0 }}>
+      {/* data-spine-anchor: the rail node centers on this header at its COLLAPSED height (body clamped to 2 lines), so it doesn't jump on expand */}
+      <div data-spine-anchor="true" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: open ? 10 : 0 }}>
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>Suggested treatments</div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>NCCN Guidelines</div>
           <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.2px', color: C.textPrimary }}>{block.stepLabel}</div>
-          <div style={{ fontSize: 13, color: C.textSecondary, marginTop: 4, lineHeight: 1.5, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: open ? 999 : 2, overflow: 'hidden' }}>{block.stepBody}</div>
+          <div data-spine-clamp="2" style={{ fontSize: 13, color: C.textSecondary, marginTop: 4, lineHeight: 1.5, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: open ? 999 : 2, overflow: 'hidden' }}>{block.stepBody}</div>
 
         </div>
         <button onClick={toggle} style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: expanded ? 'transparent' : 'rgba(255,121,88,0.1)', border: expanded ? 'none' : `1px solid rgba(255,121,88,0.2)`, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0, marginLeft: 10, marginTop: 2, transition: 'background 0.22s, border 0.22s' }}>
@@ -2916,7 +3022,7 @@ const SuggestedBlock = ({ block, defaultOpen = false, onApproachSelect, addedIds
               <button key={opt.id} onClick={e => { e.stopPropagation(); onApproachSelect && onApproachSelect(opt) }}
                 style={{ width: '100%', backgroundColor: C.bgCard, border: 'none', borderRadius: 13, padding: '13px 15px', cursor: 'pointer', textAlign: 'left', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, position: 'relative' }}>
                 <div style={{ flex: 1 }}>
-                  {opt.phase && <div style={{ fontSize: 11, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>{opt.phase}</div>}
+                  {opt.phase && <div style={{ fontSize: 11, fontWeight: 600, color: C.eyebrow, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>{opt.phase}</div>}
                   <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary, marginBottom: 2 }}>{opt.title}</div>
                   <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.45 }}>{opt.subtitle || opt.description}</div>
                 </div>
@@ -2950,37 +3056,140 @@ const RailItem = ({ icon, isToday, isLast, card }) => {
   )
 }
 
-const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFlash = false, summaryShown = true, onApproachSelect, addedIds = {}, onRemoveEvent, onEditClinical, visibleRecs = [], revealedCards = null, blockGenStates = {}, genText = null, genBlockId = null, generationDone = false, onSummarize = null, onAddEvent = null, cancerSupported = true, onReviewRecs = null, showRecordsCard = false, onOpenSettings = null, onDismissRecordsCard = null }) => {
+// ─── SPINE ROW ────────────────────────────────────────────────────
+// One rail for the whole timeline. Every row is [rail column | card]; the node sits in the
+// rail column, vertically centred on the card (or on the element marked data-spine-anchor,
+// e.g. a SuggestedBlock's collapsed header). One line mechanism: each row draws
+//   above — row top → node centre        (continues the previous row's "below")
+//   below — node centre → row bottom + gap (reaches the next row's top)
+// Node-less rows (summary, records) are full width; their "below" starts at the card bottom.
+const SPINE = { col: 48, gap: 12, rowGap: 16, line: 3, clearance: 6 } // clearance = space between the line and anything it connects (node, date, banner)
+const SpineRow = ({ node, card, above, below, belowInset = 0, gapBelow = !!below, wrapProps = {} }) => {
+  const cardRef = useRef(null)
+  const nodeRef = useRef(null)
+  const [anchorY, setAnchorY] = useState(null)
+  const [nodeH, setNodeH] = useState(40)
+  useLayoutEffect(() => {
+    if (!node) return
+    const el = cardRef.current
+    if (!el) return
+    const measure = () => {
+      const top = el.getBoundingClientRect().top
+      const a = el.querySelector('[data-spine-anchor]')
+      let y
+      if (a) {
+        const r = a.getBoundingClientRect()
+        let h = r.height
+        // Centre on the COLLAPSED header: discount any lines beyond the clamp count.
+        const c = a.querySelector('[data-spine-clamp]')
+        if (c) {
+          const lh = parseFloat(getComputedStyle(c).lineHeight) || 0
+          const lines = parseInt(c.getAttribute('data-spine-clamp'), 10) || 2
+          h -= Math.max(0, c.getBoundingClientRect().height - lh * lines)
+        }
+        y = (r.top - top) + h / 2
+      } else {
+        y = el.getBoundingClientRect().height / 2
+      }
+      y = Math.round(y)
+      setAnchorY(prev => (prev === y ? prev : y))
+      const nh = nodeRef.current ? nodeRef.current.offsetHeight : 40
+      setNodeH(prev => (prev === nh ? prev : nh))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [!!node])
+  const lineStyle = (bg) => ({ position: 'absolute', left: '50%', transform: 'translateX(-50%)', width: SPINE.line, background: bg })
+  const { style: wrapStyle, ...restWrap } = wrapProps
+
+  if (!node) {
+    return (
+      <div {...restWrap} style={{ position: 'relative', marginBottom: gapBelow ? SPINE.rowGap : 0, ...wrapStyle }}>
+        {card}
+        {/* Node-less card (e.g. records banner): the rail stops short of it and resumes just below it */}
+        {below && (
+          <div style={{ position: 'absolute', left: 0, width: SPINE.col, top: `calc(100% + ${SPINE.clearance}px)`, bottom: (gapBelow ? -SPINE.rowGap : 0) + belowInset }}>
+            <div style={{ ...lineStyle(below), top: 0, bottom: 0 }}/>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const y = anchorY ?? 0
+  return (
+    <div {...restWrap} style={{ display: 'flex', gap: SPINE.gap, alignItems: 'stretch', marginBottom: gapBelow ? SPINE.rowGap : 0, ...wrapStyle }}>
+      <div style={{ width: SPINE.col, flexShrink: 0, position: 'relative' }}>
+        {/* Segments stop SPINE.clearance px short of the node on both sides — the line meets the node, it doesn't run behind it */}
+        {above && <div style={{ ...lineStyle(above), top: 0, height: Math.max(0, y - nodeH / 2 - SPINE.clearance) }}/>}
+        {below && <div style={{ ...lineStyle(below), top: y + nodeH / 2 + SPINE.clearance, bottom: (gapBelow ? -SPINE.rowGap : 0) + belowInset }}/>}
+        <div ref={nodeRef} style={{ position: 'absolute', left: '50%', top: y, transform: 'translate(-50%, -50%)', zIndex: 1, visibility: anchorY == null ? 'hidden' : 'visible', lineHeight: 0 }}>{node}</div>
+      </div>
+      <div ref={cardRef} style={{ flex: 1, minWidth: 0 }}>{card}</div>
+    </div>
+  )
+}
+
+// Standing "Clinical trials" entry — a single flat card (not a step with sets).
+// Styled as an always-on recommendation, distinct from this-cycle suggested treatments.
+const CTStandingCard = ({ onOpen }) => (
+  <button onClick={onOpen} style={{ width: '100%', textAlign: 'left', backgroundColor: 'rgba(65,70,82,0.07)', border: '1px solid rgba(65,70,82,0.18)', borderRadius: 14, padding: '13px 15px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, fontFamily: "'Inter',sans-serif", WebkitTapHighlightColor: 'transparent' }}>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.eyebrow, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>Clinical trials</div>
+      <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.2px', color: C.textPrimary, marginBottom: 3 }}>Explore clinical trials</div>
+      <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.5 }}>NCCN especially encourages participation in clinical trials. Explore trials that may be relevant to your diagnosis and treatment.</div>
+    </div>
+    <Ico.chevRight/>
+  </button>
+)
+const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFlash = false, summaryShown = true, onApproachSelect, addedIds = {}, onRemoveEvent, onEditClinical, visibleRecs = [], revealedCards = null, blockGenStates = {}, genText = null, genBlockId = null, generationDone = false, onSummarize = null, onAddEvent = null, cancerSupported = true, onReviewRecs = null, showRecordsCard = false, onOpenSettings = null, onDismissRecordsCard = null, onAddDate = null, connectAbove = false, connectBelow = false }) => {
   const allItems = []
   // The daily summary is absent while the timeline builds; it's inserted at the top of
   // Today right after the scroll-to-Today settles.
   const showSummary = day.summary && (!day.isToday || summaryShown)
   // "Records not synced" takes the top position under Today when present; the daily summary
   // follows. When the card is dismissed/connected, the summary naturally returns to the top.
-  if (day.isToday && showSummary && showRecordsCard) allItems.push({ key: 'records-card', icon: null, card: <RecordsNotSyncedCard onOpenSettings={onOpenSettings} onDismiss={onDismissRecordsCard}/> })
-  if (showSummary) allItems.push({ key: 'summary', icon: null, card: <DailySummaryCard summary={day.summary} isToday={day.isToday} onAddEvent={onAddEvent} cancerSupported={cancerSupported} onReviewRecs={onReviewRecs}/> })
+  if (day.isToday && summaryShown && showRecordsCard) allItems.push({ key: 'records-card', icon: null, card: <RecordsNotSyncedCard onOpenSettings={onOpenSettings} onDismiss={onDismissRecordsCard}/> })
   day.events.forEach(ev => allItems.push({
-    key: ev.id, icon: null,
+    key: ev.id, icon: SPINE_NODE.event(ev.type),
     card: ev.type === 'appointment'
-      ? <AppointmentCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent ? () => onRemoveEvent(ev.id, day.date) : null} onEdit={onEditClinical ? () => onEditClinical(ev) : undefined}/>
-      : <EventCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent && ev.type !== 'diagnosis' ? () => onRemoveEvent(ev.id, day.date) : null} onEdit={onEditClinical ? () => onEditClinical(ev) : undefined} visibleRecs={visibleRecs}/>
+      ? <AppointmentCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent ? () => onRemoveEvent(ev.id, day.date) : null} onEdit={onEditClinical ? () => onEditClinical(ev) : undefined} onAddDate={onAddDate ? () => onAddDate(ev, day.date) : undefined}/>
+      : <EventCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent && ev.type !== 'diagnosis' ? () => onRemoveEvent(ev.id, day.date) : null} onEdit={onEditClinical ? () => onEditClinical(ev) : undefined} onAddDate={onAddDate ? () => onAddDate(ev, day.date) : undefined} visibleRecs={visibleRecs}/>
   }))
-  ;(day.suggested || []).forEach((blk, i) => allItems.push({ key: blk.id, isSugBlock: true, icon: <div style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: C.bgCard, border: `1.5px solid ${C.primary}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.primary, fontVariationSettings: "'FILL' 0, 'wght' 300" }}>kid_star</span></div>, card: genBlockId === blk.id
-              ? <div style={{ padding: '12px 16px' }}>
-                  <span style={{ fontSize: 13, color: C.textSecondary }}>{genText}</span>
-                </div>
-              : <SuggestedBlock block={blk} defaultOpen={i===0} onApproachSelect={onApproachSelect} addedIds={addedIds} genState={blockGenStates[blk.id] || 'idle'} onSummarize={onSummarize}/> }))
+  const firstRealIdx = (day.suggested || []).findIndex(b => b.group !== 'clinical-trials')
+  ;(day.suggested || []).forEach((blk, i) => {
+    const isStanding = blk.group === 'clinical-trials'
+    const node = isStanding ? SPINE_NODE.standing() : SPINE_NODE.suggested()
+    const card = isStanding
+      ? <CTStandingCard onOpen={() => onApproachSelect && onApproachSelect(blk.options[0])}/>
+      : (genBlockId === blk.id
+          ? <div style={{ padding: '12px 16px' }}><span style={{ fontSize: 13, color: C.textSecondary }}>{genText}</span></div>
+          : <SuggestedBlock block={blk} defaultOpen={i===firstRealIdx} onApproachSelect={onApproachSelect} addedIds={addedIds} genState={blockGenStates[blk.id] || 'idle'} onSummarize={onSummarize}/>)
+    allItems.push({ key: blk.id, isSugBlock: true, icon: node, card })
+  })
   const lineColor = C.timelineLine  // grey for all regular connections
   const suggestedLineColor = C.timelineLineToday  // orange only adjacent to suggested
-  // Find index of last item with an icon
-  let lastIconIdx = -1
-  allItems.forEach((item, i) => { if (item.icon) lastIconIdx = i })
+  const sugIds = new Set((day.suggested || []).map(s => s.id))
+  // One continuous rail across all dated days (diagnosis → last day). Undated events never connect.
+  const linked = !day.isUndated
+  // Chain: … → date → its items → next date → … The rail starts at the timeline's first ITEM (the
+  // diagnosis): the first date gets no segments at all, and the last item has nothing below.
+  const railIntoDate = linked && connectAbove
+  const railFromDate = linked && connectAbove && allItems.length > 0
+  const firstIsNodeless = allItems.length > 0 && !allItems[0].icon
 
   return (
     <div style={{ backgroundColor: C.bgApp }}>
       <div ref={sentinelRef} style={{ height: 0 }} data-date={day.date} data-label={day.isToday ? `Today · ${day.label}` : day.label}/>
-      <div style={{ position: 'sticky', top: 0, zIndex: 10, backgroundColor: C.bgApp, padding: '16px 16px 12px' }}>
-        {day.isToday
+      {/* The date is a stop on the rail: the line ends SPINE.clearance px above the label and resumes the same distance below it. */}
+      <div style={{ position: 'sticky', top: 0, zIndex: 10, backgroundColor: C.bgApp, padding: '16px 16px 12px', lineHeight: '20px' }}>
+        {railIntoDate && <div style={{ position: 'absolute', left: 16 + SPINE.col / 2, top: 0, height: 16 - SPINE.clearance, width: SPINE.line, transform: 'translateX(-50%)', background: C.timelineLine }}/>}
+        {railFromDate && <div style={{ position: 'absolute', left: 16 + SPINE.col / 2, top: 16 + 20 + SPINE.clearance, bottom: firstIsNodeless ? SPINE.clearance : 0, width: SPINE.line, transform: 'translateX(-50%)', background: C.timelineLine }}/>}
+        {day.isUndated
+          ? <span style={{ fontSize: 16, fontWeight: 700, color: C.textSecondary, letterSpacing: '-0.3px' }}>{day.label}</span>
+          : day.isToday
           ? <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
               <span style={{ fontSize: 16, fontWeight: 700, color: C.primary, letterSpacing: '-0.3px', transition: 'opacity 0.15s', opacity: todayFlash ? 0.5 : 1 }}>Today</span>
               <span style={{ fontSize: 12, color: C.textTertiary, fontWeight: 400 }}>·</span>
@@ -2996,7 +3205,7 @@ const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFla
             })()
         }
       </div>
-      <div style={{ paddingLeft: 20, paddingRight: 16 }}>
+      <div style={{ paddingLeft: 16, paddingRight: 16 }}>
         {allItems.map((item, idx) => {
           const cardKey = `${day.date}-${item.key}`
           const isRevealed = revealedCards.has(cardKey)
@@ -3007,51 +3216,29 @@ const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFla
             : generationDone
               ? { animation: 'cardfadein 0.4s ease forwards' }  // new card added after generation
               : { opacity: 0 }
-          const isLastIcon = isLastDay && idx === lastIconIdx
+          const prevItem = allItems[idx - 1]
           const nextItem = allItems[idx + 1]
-          const isSuggested = item.key && (day.suggested || []).some(s => s.id === item.key)
-          const nextIsSuggested = nextItem && (day.suggested || []).some(s => s.id === nextItem.key)
-          // Line runs below icon unless it's the last icon on last day
-          const lineBelow = item.icon && !isLastIcon
-          // Gradient: grey→orange when transitioning into suggested, solid orange within suggested, grey otherwise
-          // 4 cases for the connector line between this item and the next:
-          // event → event: gray
-          // event → suggested: gray → orange gradient
-          // suggested → event: orange → gray gradient
-          // suggested → suggested: orange
-          const segmentBg = isSuggested && nextIsSuggested
-            ? suggestedLineColor
-            : isSuggested && !nextIsSuggested
-              ? `linear-gradient(to bottom, ${suggestedLineColor}, ${lineColor})`
-              : !isSuggested && nextIsSuggested
-                ? `linear-gradient(to bottom, ${lineColor}, ${suggestedLineColor})`
-                : lineColor
-
-          if (!item.icon) {
-            // No icon (summary card): show line on left, card on right
-            // no-icon row: full width card, line left-aligned with icon position
-            return (
-              <div key={item.key} data-cardkey={cardKey} style={{ ...animStyle }}>
-                {item.card}
-                {idx < allItems.length - 1 && (
-                  <div style={{ height: 32, paddingTop: 8, paddingBottom: 8, paddingLeft: 35, boxSizing: 'border-box' }}>
-                    <div style={{ width: 3, height: '100%', background: segmentBg }}/>
-                  </div>
-                )}
-              </div>
-            )
-          }
-
-          // icon row: full width card, line left-aligned with icon center
+          const isSuggested = sugIds.has(item.key)
+          const colorOf = (it) => sugIds.has(it.key) ? suggestedLineColor : lineColor
+          // One rail per day: line runs between consecutive items; no tail past the day's last item.
+          // above = solid in this item's class colour; below = gradient into the next item's colour.
+          // Only node-to-node connections: node-less banners (e.g. records-not-synced) sit off the rail.
+          // Undated events have no real order (only when they were added), so they don't connect.
+          // Dated days: the rail continues from the previous day (through the date header) and on to the next.
+          // Dated days: the date header above always counts as the previous stop; the next stop is the
+          // next item, or the next day's date.
+          const hasNext = linked && (!!nextItem || connectBelow)
+          const toColor = nextItem ? colorOf(nextItem) : lineColor
+          const above = item.icon && linked && (idx > 0 || connectAbove) ? colorOf(item) : null
+          const fromColor = item.icon ? colorOf(item) : lineColor
+          const below = hasNext
+            ? (fromColor === toColor ? fromColor : `linear-gradient(to bottom, ${fromColor}, ${toColor})`)
+            : null
+          // Stop short of a following node-less card (banner) instead of touching it.
+          const belowInset = nextItem && !nextItem.icon ? SPINE.clearance : 0
           return (
-            <div key={item.key} data-cardkey={cardKey} data-recs={isSuggested ? '1' : undefined} style={{ ...animStyle }}>
-              {item.card}
-              {lineBelow && (
-                <div style={{ height: 32, paddingTop: 8, paddingBottom: 8, paddingLeft: 35, boxSizing: 'border-box' }}>
-                  <div style={{ width: 3, height: '100%', background: segmentBg }}/>
-                </div>
-              )}
-            </div>
+            <SpineRow key={item.key} node={item.icon} card={item.card} above={above} below={below} belowInset={belowInset} gapBelow={!!nextItem}
+              wrapProps={{ 'data-cardkey': cardKey, 'data-recs': isSuggested ? '1' : undefined, style: animStyle }}/>
           )
         })}
       </div>
@@ -3164,17 +3351,8 @@ const RegimenDetailView = ({ reg, parentTitle, onClose, onAddToPlan, addedIds = 
   useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
   const dismiss = () => { setVis(false); setTimeout(onClose, 320) }
 
-  useEffect(() => {
-    if (!titleRef.current || !scrollRef.current) return
-    const obs = new IntersectionObserver(
-      ([e]) => setTitleVisible(!e.isIntersecting),
-      { root: scrollRef.current, threshold: 0, rootMargin: '-60px 0px 0px 0px' }
-    )
-    obs.observe(titleRef.current)
-    return () => obs.disconnect()
-  }, [])
 
-  const handleScroll = (e) => setDockShadow(e.target.scrollHeight - e.target.scrollTop > e.target.clientHeight + 2)
+  const handleScroll = (e) => { setDockShadow(e.target.scrollHeight - e.target.scrollTop > e.target.clientHeight + 2); setTitleVisible(scrolledPastTitle(e.target, titleRef.current)) }
 
   return (
     <div style={{
@@ -3203,7 +3381,7 @@ const RegimenDetailView = ({ reg, parentTitle, onClose, onAddToPlan, addedIds = 
         </div>
       </div>
 
-      <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', paddingBottom: 100 }}>
+      <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', paddingBottom: 100, position: 'relative' }}>
 
         {/* 1. HEADER */}
         <div style={{ padding: '24px 20px 0' }}>
@@ -3463,24 +3641,108 @@ const TreatmentPlanAgentSheet = ({ cancer, stage, onClose }) => {
   )
 }
 
-const ClinicalTrialTreatmentDetail = ({ opt, patientState, onClose, onSeeAll }) => {
+const _phaseLabel = (p) => ({ PHASE1: 'Phase 1', PHASE2: 'Phase 2', PHASE3: 'Phase 3', PHASE4: 'Phase 4' }[p] || p)
+// Drill-in for the standing "Explore clinical trials" card. Recycles TreatmentDetailView's layout,
+// titling and slots: app bar (title fades in on scroll, share/bookmark) → title + description →
+// drillable options (here: Most Relevant Clinical Trials → TrialDetail) → source → docked primary action.
+// Copy is placeholder pending final content.
+const CT_EXPLORE_CONTENT = {
+  title: 'Clinical trials',
+  description: 'Clinical trials are research studies that test new treatments, or new ways of using existing ones. NCCN recommends considering a clinical trial at every stage of care.',
+}
+const CTExploreDetail = ({ patientState, onClose, onSeeAll }) => {
+  const data = CT_EXPLORE_CONTENT
   const [vis, setVis] = useState(false)
-  const [agent, setAgent] = useState(false)
+  const [titleVisible, setTitleVisible] = useState(false)
   const [selectedTrial, setSelectedTrial] = useState(null)
   const [bookmarks, setBookmarks] = useState(() => _ctLoad('o4m_ct_bookmarks', []))
   const [notes, setNotes] = useState(() => _ctLoad('o4m_ct_notes', {}))
   const [toast, setToast] = useState(null)
+  const scrollRef = useRef(null)
+  const titleRef = useRef(null)
   useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
   useEffect(() => { _ctSave('o4m_ct_bookmarks', bookmarks) }, [bookmarks])
   useEffect(() => { _ctSave('o4m_ct_notes', notes) }, [notes])
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2000); return () => clearTimeout(t) }, [toast])
   const dismiss = () => { setVis(false); setTimeout(onClose, 320) }
+  // App-bar title appears once the page title has scrolled under the bar (scroll-position based,
+  // so it isn't fooled by the slide-in transform the way an IntersectionObserver can be).
+  const handleScroll = (e) => {
+    const el = e.target
+    setTitleVisible(scrolledPastTitle(el, titleRef.current))
+  }
+  const cancer = (patientState && CT_CANCER_LABEL[patientState.diagnosisCode]) || 'your cancer'
+  // ctMatches flag (Profile → Experiments): 'off' forces the empty state for review.
+  const matched = exp('ctMatches') === 'off' ? [] : patientTrials(patientState).sort((a, b) => b.score - a.score).slice(0, 3)
+  const toggleBookmark = (t) => { const on = bookmarks.includes(t.id); setBookmarks(p => on ? p.filter(x => x !== t.id) : [...p, t.id]); setToast(on ? 'Removed from your Bookmarks.' : 'Clinical Trial added to your Bookmarks.') }
+  const share = (t) => { const text = `Here's a clinical trial I found on Outcomes4Me: ${t.title} (${t.id})`; if (navigator.share) navigator.share({ title: t.title, text }).catch(() => {}); else { try { navigator.clipboard.writeText(text); setToast('Copied to clipboard.') } catch (e) {} } }
+  const sectionTitle = { fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 12 }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 65, transform: vis ? 'translateX(0)' : 'translateX(100%)', transition: 'transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)', display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard, fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", WebkitFontSmoothing: 'antialiased' }}>
+      {/* App bar — same as TreatmentDetailView */}
+      <div style={{ display: 'flex', alignItems: 'center', height: 60, paddingLeft: 8, paddingRight: 12, flexShrink: 0, position: 'relative', borderBottom: `1px solid ${titleVisible ? C.border : 'transparent'}`, transition: 'border-color 0.2s' }}>
+        <button onClick={dismiss} aria-label="Back" style={{ width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}><Ico.back/></button>
+        <div style={{ flex: 1, minWidth: 0, textAlign: 'center', opacity: titleVisible ? 1 : 0, transition: 'opacity 0.22s ease' }}>
+          <div style={{ fontSize: 16, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 8px' }}>{data.title}</div>
+        </div>
+        {/* Right spacer balances the back button so the title stays centered (no share/bookmark here) */}
+        <div style={{ width: 36, flexShrink: 0 }}/>
+      </div>
+
+      <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', paddingBottom: 40, position: 'relative' }}>
+        {/* 1. HEADER */}
+        <div style={{ padding: '24px 20px 0' }}>
+          <div ref={titleRef} style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 6 }}>{data.title}</div>
+          <p style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.65, marginBottom: 0 }}>{data.description}</p>
+        </div>
+
+        {/* 2. OPTIONS SLOT — matched trials, each drills into TrialDetail */}
+        <div style={{ padding: '24px 20px 0' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+            <div style={{ ...sectionTitle, flex: 1 }}>Most Relevant Clinical Trials</div>
+            {matched.length > 0 && <button onClick={onSeeAll} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary, fontFamily: 'Inter,sans-serif', flexShrink: 0, padding: 0 }}>See all</button>}
+          </div>
+          {matched.length === 0 && (
+            <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 12 }}>We didn’t find any currently available trials that match your clinical profile. Your care team may be able to help identify other options.</div>
+          )}
+        </div>
+        {matched.length > 0 && (
+          <div style={{ margin: '0 4px' }}>
+            {matched.map(t => (
+              <TrialCard key={t.id} trial={t} folder="relevant" bookmarked={bookmarks.includes(t.id)} onOpen={() => setSelectedTrial(t)} onBookmark={() => toggleBookmark(t)} onShare={() => share(t)}/>
+            ))}
+          </div>
+        )}
+
+        {/* 3. SOURCE */}
+        <div style={{ padding: '20px 20px 0' }}>
+          <div style={{ fontSize: 11, color: C.textTertiary, lineHeight: 1.6 }}>ClinicalTrials.gov · U.S. National Library of Medicine</div>
+        </div>
+      </div>
+
+      {selectedTrial && (
+        <PushLayer zIndex={130} onBack={() => setSelectedTrial(null)}>
+          {(back) => <TrialDetail trial={selectedTrial} bookmarked={bookmarks.includes(selectedTrial.id)} notes={notes} onBookmark={() => toggleBookmark(selectedTrial)} onShare={() => share(selectedTrial)} onBack={back} onAddNote={(id, n) => setNotes(p => ({ ...p, [id]: [n, ...(p[id] || [])] }))}/>}
+        </PushLayer>
+      )}
+      {toast && <div style={{ position: 'absolute', bottom: 24, left: 16, right: 16, backgroundColor: '#273E4E', color: '#fff', borderRadius: 12, padding: '13px 16px', fontSize: 13.5, fontWeight: 500, boxShadow: '0 6px 20px rgba(0,0,0,0.2)', zIndex: 5 }}>{toast}</div>}
+    </div>
+  )
+}
+// In-step NCCN option ("Clinical trial for … that has spread"): an example of clinical trials as a
+// treatment option inside the NCCN Guidelines. It does NOT list trials — matched trials live only in
+// the standing "Explore clinical trials" drill-in (CTExploreDetail).
+const ClinicalTrialTreatmentDetail = ({ opt, patientState, onClose }) => {
+  const [vis, setVis] = useState(false)
+  const [agent, setAgent] = useState(false)
+  const [titleVisible, setTitleVisible] = useState(false)
+  const titleRef = useRef(null)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const dismiss = () => { setVis(false); setTimeout(onClose, 320) }
   const cancer = (patientState && CT_CANCER_LABEL[patientState.diagnosisCode]) || 'kidney cancer'
   const stage = (patientState && (patientState.stage || patientState.stageLabel)) || ''
   const title = opt.title && /for /i.test(opt.title) ? opt.title : `Clinical trial for ${cancer} that has spread`
-  const matched = patientTrials(patientState).sort((a, b) => b.score - a.score).slice(0, 3)
-  const toggleBookmark = (t) => { const on = bookmarks.includes(t.id); setBookmarks(p => on ? p.filter(x => x !== t.id) : [...p, t.id]); setToast(on ? 'Removed from your Bookmarks.' : 'Clinical Trial added to your Bookmarks.') }
-  const share = (t) => { const text = `Here's a clinical trial I found on Outcomes4Me: ${t.title} (${t.id})`; if (navigator.share) navigator.share({ title: t.title, text }).catch(() => {}); else { try { navigator.clipboard.writeText(text); setToast('Copied to clipboard.') } catch (e) {} } }
   const Cap = s => s ? s[0].toUpperCase() + s.slice(1) : s
   const scroll = { flex: 1, overflowY: 'auto', padding: '20px 0 40px' }
   const pad = { padding: '0 20px' }
@@ -3488,30 +3750,22 @@ const ClinicalTrialTreatmentDetail = ({ opt, patientState, onClose, onSeeAll }) 
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 65, transform: vis ? 'translateX(0)' : 'translateX(100%)', transition: 'transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)', display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard, fontFamily: "'Inter',sans-serif" }}>
-      <div style={{ display: 'flex', alignItems: 'center', height: 56, paddingLeft: 8, flexShrink: 0 }}>
-        <button onClick={dismiss} aria-label="Back" style={{ width: 40, height: 40, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textIcon }}>arrow_back</span></button>
+      <div style={{ display: 'flex', alignItems: 'center', height: 56, paddingLeft: 8, paddingRight: 48, flexShrink: 0, borderBottom: `1px solid ${titleVisible ? C.border : 'transparent'}`, transition: 'border-color 0.2s' }}>
+        <button onClick={dismiss} aria-label="Back" style={{ width: 40, height: 40, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textIcon }}>arrow_back</span></button>
+        <div style={{ flex: 1, minWidth: 0, textAlign: 'center', fontSize: 16, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: titleVisible ? 1 : 0, transition: 'opacity 0.22s ease' }}>{title}</div>
       </div>
-      <div style={scroll}>
+      <div style={{ ...scroll, position: 'relative' }} onScroll={e => setTitleVisible(scrolledPastTitle(e.target, titleRef.current))}>
         <div style={pad}>
-          <div style={{ fontSize: 24, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.4px', lineHeight: 1.25, marginBottom: 14 }}>{title}</div>
+          <div ref={titleRef} style={{ fontSize: 24, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.4px', lineHeight: 1.25, marginBottom: 14 }}>{title}</div>
           <button onClick={() => setAgent(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, backgroundColor: C.primaryLight, border: 'none', borderRadius: 9999, padding: '9px 16px', cursor: 'pointer', marginBottom: 18, fontFamily: 'Inter,sans-serif' }}>
             <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>auto_awesome</span>
             <span style={{ fontSize: 14, fontWeight: 700, color: C.primary }}>Explain this treatment</span>
           </button>
           <p style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.65, marginBottom: 14 }}>Clinical trials are a type of research study with a goal of safely improving treatments for cancer patients.</p>
-          <p style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.65, marginBottom: 22 }}>For patients with potentially operable {stage ? stage.toLowerCase() + ' ' : ''}{cancer} who go on a clinical trial, NCCN does not provide explicit guidance for subsequent treatment options.</p>
+          <p style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.65, marginBottom: 22 }}>For patients with potentially operable {stage ? `stage ${String(stage).replace(/^stage\s*/i, '')} ` : ''}{cancer} who go on a clinical trial, NCCN does not provide explicit guidance for subsequent treatment options.</p>
         </div>
 
-        {/* Matched trials — surface the real, relevant trials for this stage/spot */}
-        <div style={{ ...pad, display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
-          <div style={section}>Clinical Trials Matched to You</div>
-          <button onClick={onSeeAll} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary, fontFamily: 'Inter,sans-serif' }}>See all</button>
-        </div>
-        {matched.map(t => (
-          <TrialCard key={t.id} trial={t} folder="relevant" bookmarked={bookmarks.includes(t.id)} onOpen={() => setSelectedTrial(t)} onBookmark={() => toggleBookmark(t)} onShare={() => share(t)}/>
-        ))}
-
-        <div style={{ ...pad, borderTop: `1px solid ${C.border}`, marginTop: 12, paddingTop: 18 }}>
+        <div style={{ ...pad, borderTop: `1px solid ${C.border}`, paddingTop: 18 }}>
           <div style={section}>Source</div>
           <div style={{ fontSize: 12.5, color: C.textTertiary, lineHeight: 1.6 }}>
             According to NCCN Clinical Practice Guidelines In Oncology (NCCN Guidelines®) for {Cap(cancer)} V.1.2027, this treatment has the following recommendation for your diagnosis:
@@ -3526,13 +3780,7 @@ const ClinicalTrialTreatmentDetail = ({ opt, patientState, onClose, onSeeAll }) 
         </div>
       </div>
 
-      {selectedTrial && (
-        <PushLayer fixed zIndex={130} onBack={() => setSelectedTrial(null)}>
-          {(back) => <TrialDetail trial={selectedTrial} bookmarked={bookmarks.includes(selectedTrial.id)} notes={notes} onBookmark={() => toggleBookmark(selectedTrial)} onShare={() => share(selectedTrial)} onBack={back} onAddNote={(id, n) => setNotes(p => ({ ...p, [id]: [n, ...(p[id] || [])] }))}/>}
-        </PushLayer>
-      )}
       {agent && <TreatmentPlanAgentSheet cancer={cancer} stage={stage} onClose={() => setAgent(false)}/>}
-      {toast && <div style={{ position: 'absolute', bottom: 16, left: 16, right: 16, backgroundColor: '#273E4E', color: '#fff', borderRadius: 12, padding: '13px 16px', fontSize: 13.5, fontWeight: 500, boxShadow: '0 6px 20px rgba(0,0,0,0.2)', zIndex: 5 }}>{toast}</div>}
     </div>
   )
 }
@@ -3555,19 +3803,9 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
 
   const dismiss = () => { setVis(false); setTimeout(onClose, 320) }
 
-  // IntersectionObserver to detect when page title scrolls out of view
-  useEffect(() => {
-    if (!titleRef.current || !scrollRef.current) return
-    const obs = new IntersectionObserver(
-      ([e]) => setTitleVisible(!e.isIntersecting),
-      { root: scrollRef.current, threshold: 0, rootMargin: '-60px 0px 0px 0px' }
-    )
-    obs.observe(titleRef.current)
-    return () => obs.disconnect()
-  }, [])
 
   // Detect scroll to show dock shadow
-  const handleScroll = (e) => setDockShadow(e.target.scrollHeight - e.target.scrollTop > e.target.clientHeight + 2)
+  const handleScroll = (e) => { setDockShadow(e.target.scrollHeight - e.target.scrollTop > e.target.clientHeight + 2); setTitleVisible(scrolledPastTitle(e.target, titleRef.current)) }
 
   return (
     <div style={{
@@ -3586,8 +3824,8 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
           <Ico.back/>
         </button>
         {/* Title — fades in when page title scrolls out */}
-        <div style={{ flex: 1, textAlign: 'center', opacity: titleVisible ? 1 : 0, transition: 'opacity 0.22s ease' }}>
-          <div style={{ fontSize: 16, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 8px', maxWidth: 'calc(100% - 80px)' }}>{data.title}</div>
+        <div style={{ flex: 1, minWidth: 0, textAlign: 'center', opacity: titleVisible ? 1 : 0, transition: 'opacity 0.22s ease' }}>
+          <div style={{ fontSize: 16, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 8px' }}>{data.title}</div>
         </div>
         {/* Share + Bookmark */}
         <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
@@ -3601,7 +3839,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
       </div>
 
       {/* Scrollable content */}
-      <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', paddingBottom: 100 }}>
+      <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', paddingBottom: 100, position: 'relative' }}>
 
         {/* 1. HEADER — title + short description */}
         <div style={{ padding: '24px 20px 0' }}>
@@ -6654,7 +6892,7 @@ const YouScreen = ({ currentUser, onLogout }) => (
     {/* Experiments panel — prototype variant switches */}
     <div style={{ padding: '20px 20px 8px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-        <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>science</span>
+        <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>clinical_notes</span>
         <div style={{ fontSize: 13, fontWeight: 700, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Experiments</div>
       </div>
       <div style={{ fontSize: 12, color: C.textTertiary, marginBottom: 14 }}>Prototype variant switches. Changing one reloads the app.</div>
@@ -7020,6 +7258,10 @@ export default function App() {
   const onboardingMedCallbackRef = useRef(null)
   const [flowPreload, setFlowPreload] = useState(null)
   const [medications, setMedications] = useState(loadMedications)
+  // Events with no date yet → the "Date unknown" section at the end of the timeline.
+  const [undatedEvents, setUndatedEvents] = useState(() => loadUndatedEvents() ?? INITIAL_UNDATED_EVENTS)
+  useEffect(() => { saveUndatedEvents(undatedEvents) }, [undatedEvents])
+  const [detailEvent, setDetailEvent] = useState(null) // { event, srcDate } for EventDetailsView
   const [patientState, setPatientState] = useState(_hydrated.patientState)
   const sentinelRefs = useRef({})
   const planUpdateMessagesRef = useRef(null) // set by visibleRecs effect for mid-session plan updates
@@ -7056,7 +7298,7 @@ export default function App() {
     )
     Object.values(sentinelRefs.current).forEach(el => { if (el) observer.observe(el) })
     return () => observer.disconnect()
-  }, [timeline])
+  }, [timeline, undatedEvents.length > 0])
 
   // New user — clear all state and run onboarding from blank slate
   const handleNewUser = () => {
@@ -7065,6 +7307,7 @@ export default function App() {
     setPatientState({})
     setUserDecisions(INITIAL_USER_DECISIONS)
     setMedications([])
+    setUndatedEvents([])
     setOnboarded(false)
     setCurrentUser(null)
     setAuthVisible(false)
@@ -7083,6 +7326,7 @@ export default function App() {
     setTimeline(hydrated.timeline)
     setPatientState(hydrated.patientState)
     setUserDecisions(hydrated.userDecisions)
+    setUndatedEvents(loadUndatedEvents() ?? INITIAL_UNDATED_EVENTS)
     setOnboarded(true)
     prevTabRef.current = 'careplan'
     setActiveTab('careplan')
@@ -7101,7 +7345,9 @@ export default function App() {
   }
 
   const TAB_ORDER = ['careplan', 'treatment', 'track', 'chat', 'community'] // 'you' is an overlay, not a tab
+  const homeScrollRef = useRef(null) // Home timeline scroll, held for the session across tab switches
   const switchTab = (next) => {
+    if (prevTabRef.current === 'careplan' && scrollRef.current) homeScrollRef.current = scrollRef.current.scrollTop
     const from = TAB_ORDER.indexOf(prevTabRef.current)
     const to   = TAB_ORDER.indexOf(next)
     setTabDir(to >= from ? 1 : -1)
@@ -7448,6 +7694,62 @@ export default function App() {
     setFlow(type)
   }
 
+  // ─── UNDATED EVENTS + EVENT DETAILS (date / notes) ──────────────
+  const UNDATED = 'undated'
+  const eventTypeWord = (ev) => ev?.type === 'appointment' ? 'Appointment' : ev?.type === 'scan' ? 'Scan' : ev?.type === 'procedure' ? 'Procedure' : ev?.type === 'medication' ? 'Medication' : 'Event'
+  const removeUndatedEvent = (eventId) => {
+    const idx = undatedEvents.findIndex(e => e.id === eventId)
+    const ev = undatedEvents[idx]
+    setUndatedEvents(prev => prev.filter(e => e.id !== eventId))
+    setToast({ message: `${eventTypeWord(ev)} removed`, action: ev ? { label: 'Undo', onAction: () => setUndatedEvents(cur => cur.some(e => e.id === ev.id) ? cur : [...cur.slice(0, idx), ev, ...cur.slice(idx)]) } : null })
+  }
+  const scrollToCardAndHighlight = (cardKey, id) => {
+    let tries = 0
+    const go = () => {
+      const c = scrollRef.current
+      if (c && c.querySelector(`[data-cardkey="${cardKey}"]`)) {
+        setTimeout(() => {
+          const el = c.querySelector(`[data-cardkey="${cardKey}"]`)
+          if (el) c.scrollTo({ top: Math.max(0, el.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop - 80), behavior: 'smooth' })
+          setHighlightId(id)
+          setTimeout(() => setHighlightId(null), 3600)
+        }, 380)
+      } else if (tries++ < 90) requestAnimationFrame(go)
+    }
+    requestAnimationFrame(go)
+  }
+  // Save from EventDetailsView. Dating an undated event moves it onto the timeline; clearing a
+  // dated event's date moves it to "Date unknown"; otherwise it's updated in place.
+  const saveEventDetails = ({ event: ev, srcDate }, { date, notes }) => {
+    const next = { ...ev }
+    if (notes) next.notes = notes; else delete next.notes
+    const isMed = ev.type === 'medication'
+    if (date) { next.date = date; if (isMed) next.startDate = date }
+    else { delete next.date; if (isMed) delete next.startDate }
+    const wasUndated = srcDate === UNDATED
+    if (!date) {
+      if (wasUndated) { setUndatedEvents(prev => prev.map(e => e.id === ev.id ? next : e)); return }
+      setTimeline(prev => prev.map(d => d.date === srcDate ? { ...d, events: d.events.filter(e => e.id !== ev.id) } : d).filter(d => d.events.length > 0 || d.summary || d.isToday))
+      setUndatedEvents(prev => [...prev, next])
+      setToast({ message: 'Moved to Date unknown' })
+      scrollToCardAndHighlight(`${UNDATED}-${ev.id}`, ev.id)
+      return
+    }
+    if (!wasUndated && srcDate === date) {
+      setTimeline(prev => prev.map(d => d.date === date ? { ...d, events: d.events.map(e => e.id === ev.id ? next : e) } : d))
+      return
+    }
+    if (wasUndated) setUndatedEvents(prev => prev.filter(e => e.id !== ev.id))
+    setTimeline(prev => {
+      let t = wasUndated ? prev : prev.map(d => d.date === srcDate ? { ...d, events: d.events.filter(e => e.id !== ev.id) } : d).filter(d => d.events.length > 0 || d.summary || d.isToday)
+      if (t.some(d => d.date === date)) return t.map(d => d.date === date ? { ...d, events: [...d.events, next] } : d)
+      const dd = new Date(date + 'T12:00:00')
+      return [...t, { date, label: dd.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }), isToday: date === localDateStr(), summary: null, events: [next], suggested: null }].sort((a, b) => a.date.localeCompare(b.date))
+    })
+    setToast({ message: wasUndated ? 'Date added' : 'Date updated', subtext: `Moved to ${fmtDate(date, { year: 'numeric' })}` })
+    scrollToCardAndHighlight(`${date}-${ev.id}`, ev.id)
+  }
+
   const removeEvent = (eventId, dayDate) => {
     // Convenience sync: deleting a medication event also removes its linked tracker entry
     // (captured meds share an id across timeline + tracker). No-op for non-med events.
@@ -7593,7 +7895,8 @@ export default function App() {
 
   // Derive recommendations, addedIds, and allPlanItems from current state
   const { allPlanItems, visibleRecs, addedIds } = useRecommendations(patientState, timeline)
-  const anyDrillInOpen = !!(treatmentOpt || selectedCommunity || showYou || summarizeBlock || flow || sheetOpen)
+  const homeDrillIn = activeTab === 'careplan' && !!(treatmentOpt || detailEvent)
+  const anyDrillInOpen = !!(homeDrillIn || selectedCommunity || showYou || summarizeBlock || flow || sheetOpen)
   // The engagement nudge may appear on ANY top-level tab — it's gated only on blocking surfaces
   // (add flows, sheets, pushed details, the records-connect flow, the clinical-edit sheet), never on
   // which tab is showing, so it lands right after the triggering interaction settles.
@@ -7610,8 +7913,22 @@ export default function App() {
   // Inject visible recommendations into today's day — derived, not stored
   const timelineWithRecs = timeline.map(day => {
     if (!day.isToday) return day
-    const recs = visibleRecs.length > 0 ? visibleRecs : null
-    return { ...day, suggested: recs, summary: { bullets: buildDailySummary(patientState, timeline, recs) } }
+    // Persistent Clinical Trials step — always the FIRST suggested treatment on Today (stub for now).
+    // The treatment "step" is the parent; its "sets" are the option cards within.
+    const ctSuggestedStep = {
+      id: 'ct-suggested-step',
+      group: 'clinical-trials',
+      stepLabel: 'Clinical trials',
+      stepBody: 'Clinical trials may be an option worth exploring for your diagnosis.',
+      options: [
+        { id: 'ct-suggested-stub', kind: 'ct-suggested', phase: 'CLINICAL TRIALS', title: 'Explore clinical trials', subtitle: 'NCCN especially encourages participation in clinical trials. Explore trials that may be relevant to your diagnosis and treatment.' },
+      ],
+    }
+    const baseRecs = visibleRecs.length > 0 ? visibleRecs : null
+    // ctCard flag (Profile → Experiments): off removes the card and its node entirely.
+    const recs = [...(exp('ctCard') === 'off' ? [] : [ctSuggestedStep]), ...(visibleRecs || [])]
+    // v2.21: Daily summary removed from Today (DailySummaryCard + buildDailySummary kept for easy restore).
+    return { ...day, suggested: recs }
   })
 
   // When recommendation groups change mid-session, replay the generation animation
@@ -7740,6 +8057,12 @@ export default function App() {
     if (open !== kbOpenRef.current) { kbOpenRef.current = open; setKbOpen(open) }
   }, [])
   useLayoutEffect(() => { applyShellHeight() })
+  // Returning to Home: put the timeline back where it was (browsers usually keep it through
+  // display:none, but don't rely on it).
+  useLayoutEffect(() => {
+    if (activeTab !== 'careplan' || homeScrollRef.current == null || !scrollRef.current) return
+    if (Math.abs(scrollRef.current.scrollTop - homeScrollRef.current) > 1) scrollRef.current.scrollTop = homeScrollRef.current
+  }, [activeTab])
   useEffect(() => {
     const vv = window.visualViewport
     if (vv) { vv.addEventListener('resize', applyShellHeight); vv.addEventListener('scroll', applyShellHeight) }
@@ -7829,6 +8152,8 @@ export default function App() {
                   key={day.date}
                   day={day}
                   isLastDay={idx === timeline.length - 1}
+                  connectAbove={idx > 0}
+                  connectBelow={idx < timelineWithRecs.length - 1}
                   highlightId={highlightId}
                   todayFlash={todayFlash}
                   summaryShown={summaryShown}
@@ -7856,7 +8181,22 @@ export default function App() {
               )
             })
           })()}
-          <div style={{ height: 24 }}/>
+          {undatedEvents.length > 0 && (
+            <DaySection
+              key="undated"
+              day={{ date: 'undated', label: 'Date unknown', isUndated: true, isToday: false, summary: null, events: undatedEvents, suggested: null }}
+              highlightId={highlightId}
+              onRemoveEvent={(id) => removeUndatedEvent(id)}
+              onEditClinical={ev => setDetailEvent({ event: ev, srcDate: 'undated' })}
+              onAddDate={(ev, srcDate) => setDetailEvent({ event: ev, srcDate })}
+              visibleRecs={visibleRecs}
+              revealedCards={revealedCards}
+              generationDone={generationDone}
+              sentinelRef={el => { if (el) sentinelRefs.current['undated'] = el; else delete sentinelRefs.current['undated'] }}
+            />
+          )}
+          {/* Bottom clearance so the last card scrolls clear of the FAB + Today pill */}
+          <div style={{ height: 96 }}/>
         </div>
         </div>
       </div>
@@ -7909,8 +8249,17 @@ export default function App() {
         />
       )}
 
-      {treatmentOpt && (/clinical trial/i.test(treatmentOpt.title || '') || treatmentOpt.phase === 'Clinical trial' || treatmentOpt.subtitle === 'Clinical trial') ? (
-        <ClinicalTrialTreatmentDetail opt={treatmentOpt} patientState={patientState} onClose={() => setTreatmentOpt(null)} onSeeAll={() => { setTreatmentOpt(null); setTreatmentTab('trials'); switchTab('treatment') }}/>
+      {/* Home drill-ins are tied to the Home tab: leaving Home (e.g. "See all" → Treatment › Trials)
+          keeps them mounted with their state and scroll, just hidden; returning to Home shows them
+          exactly as left. visibility (not display) so nothing re-lays out or loses scroll position. */}
+      <div style={{ display: 'contents', visibility: activeTab === 'careplan' ? 'visible' : 'hidden' }}>
+      {detailEvent && (
+        <EventDetailsView key={detailEvent.event.id} event={detailEvent.event} onClose={() => setDetailEvent(null)} onSave={vals => saveEventDetails(detailEvent, vals)}/>
+      )}
+      {treatmentOpt && treatmentOpt.kind === 'ct-suggested' ? (
+        <CTExploreDetail patientState={patientState} onClose={() => setTreatmentOpt(null)} onSeeAll={() => { setTreatmentTab('trials'); switchTab('treatment') }}/>
+      ) : treatmentOpt && (/clinical trial/i.test(treatmentOpt.title || '') || treatmentOpt.phase === 'Clinical trial' || treatmentOpt.subtitle === 'Clinical trial') ? (
+        <ClinicalTrialTreatmentDetail opt={treatmentOpt} patientState={patientState} onClose={() => setTreatmentOpt(null)}/>
       ) : treatmentOpt && (
         <TreatmentDetailView
           opt={treatmentOpt}
@@ -7927,6 +8276,7 @@ export default function App() {
           }}
         />
       )}
+      </div>
       {sheetOpen && <AddEventSheet onClose={() => setSheetOpen(false)} onSelectProcedure={() => openFlow('procedure')} onSelectScan={() => openFlow('scan')} onSelectMedication={() => openFlow('medication')} onSelectAppointment={() => openFlow('appointment')}/>}
       {flow === 'procedure' && <AddProcedureFlow onClose={closeAddFlow} onComplete={handleComplete} preload={flowPreload?.type === 'procedure' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
       {flow === 'scan' && <AddScanFlow onClose={closeAddFlow} onComplete={handleComplete} preload={flowPreload?.type === 'scan' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
