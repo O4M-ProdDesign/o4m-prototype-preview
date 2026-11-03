@@ -1,10 +1,15 @@
-import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, createContext, useContext } from 'react'
+import { Fragment, useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, createContext, useContext } from 'react'
 import ReactDOM from 'react-dom'
 import { findCoveringRule, findRuleMatchingItem, findMatchingRules, wouldImpactRecommendations, getImpactContext, isCancerSupported } from './services/recommendationService.js'
-import { hydrateState, savePatientState, saveTimeline, saveUserDecisions, clearPersistedState, saveMedications, loadMedications, getChatDraft, saveChatDraft, saveUndatedEvents, loadUndatedEvents } from './services/persistenceService.js'
-import { loadSession, login, createAccount, logout } from './services/authService.js'
+import { hydrateState, savePatientState, saveTimeline, saveUserDecisions, clearPersistedState, saveMedications, loadMedications, getChatDraft, saveChatDraft, saveSymptoms, loadSymptoms, saveDoseLogs, loadDoseLogs, saveJournal, loadJournal, savePending, loadPending, saveQuestions, loadQuestions, saveAiDismissed, loadAiDismissed, saveMood, loadMood, saveSymptomNone, loadSymptomNone } from './services/persistenceService.js'
+import { loadSession, login, createAccount, createOnboardingAccount, checkEmailAvailable, logout } from './services/authService.js'
 import { useRecommendations } from './hooks/useRecommendations.js'
 import { COMMUNITIES, COMMUNITY_POSTS, POST_COMMENTS } from './data/communityData.js'
+// Brand logo (mark + wordmark), inlined as a data URI so the single-file build carries it.
+import outcomesLogoSvg from './assets/outcomes-logo.svg?raw'
+const OUTCOMES_LOGO_SRC = `data:image/svg+xml;utf8,${encodeURIComponent(outcomesLogoSvg)}`
+import { careSubject, careName, fillCopy, RELATIONSHIPS, cap as _cap, possessive as _possessive } from './services/patientCopy.js'
+import { IMG_FDA_LAB, IMG_SPONSORED_THERAPY, IMG_WEBINAR_FUH, IMG_WEBINAR_LENZ } from './data/todayImages.js'
 import { getDetailData, getRegimenData } from './services/treatmentService.js'
 import { getProcedureCatalog, getProcedureSuggested, getScanCatalog, getScanSuggested, getMedicationCatalog, getMedicationSuggested, searchCatalog } from './services/catalogService.js'
 
@@ -22,7 +27,6 @@ const C = {
   textPrimary: 'rgba(0,0,0,0.87)',
   textSecondary: 'rgba(0,0,0,0.55)',
   textTertiary: 'rgba(0,0,0,0.35)',
-  eyebrow: '#414652',         // neutral eyebrow labels (matches production)
   textIcon: '#414652',
   iconFill: '#414652',
   border: 'rgba(0,0,0,0.10)',
@@ -31,9 +35,20 @@ const C = {
   timelineLineToday: '#ffb8a6',
 }
 
+// v3.20: no special AI styling. The sparkle takes the color its button's hierarchy calls for:
+// orange in secondaries, tertiaries and the floating Chat button (white on a filled primary), and
+// orange where it stands alone as the AI mark.
+const AI_ICON = { color: '#FF7958' }
+
 // ─── UTILS ────────────────────────────────────────────────────────
 // Always use local calendar date (avoids UTC-offset "yesterday" bug from toISOString)
-const localDateStr = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+let _DEV_DAY_OFFSET = 0
+try { _DEV_DAY_OFFSET = parseInt(localStorage.getItem('o4m_dev_day_offset') || '0', 10) || 0 } catch (e) {}
+const localDateStr = (d) => {
+  let base = d
+  if (!base) { base = new Date(); if (_DEV_DAY_OFFSET) base.setDate(base.getDate() + _DEV_DAY_OFFSET) }
+  return `${base.getFullYear()}-${String(base.getMonth()+1).padStart(2,'0')}-${String(base.getDate()).padStart(2,'0')}`
+}
 
 // ─── DATA ─────────────────────────────────────────────────────────
 const INITIAL_TIMELINE = (() => {
@@ -44,18 +59,8 @@ const INITIAL_TIMELINE = (() => {
     const d = new Date(); d.setDate(d.getDate() - n)
     return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })
   }
-  const today = daysAgo(0), d1 = daysAgo(6), d2 = daysAgo(3), dDx = daysAgo(28)
+  const today = daysAgo(0), d1 = daysAgo(6), d2 = daysAgo(3)
   return [
-    // Diagnosis as onboarding would have seeded it (buildSeedEventsFromAnswers): the date picked at
-    // the "Date of initial diagnosis" step, cancer type, plus stage + histology answers.
-    {
-      date: dDx, label: label(28), isToday: false,
-      summary: null,
-      events: [
-        { id: 'seed_diag', type: 'diagnosis', source: 'onboarding', name: 'Kidney Cancer', date: dDx, details: ['Stage I', 'Clear cell histology'] },
-      ],
-      suggested: null,
-    },
     {
       date: d1, label: label(6), isToday: false,
       summary: null,
@@ -86,6 +91,26 @@ const INITIAL_TIMELINE = (() => {
   ]
 })()
 
+// Reconcile a (possibly persisted-from-an-earlier-day) timeline to the real current
+// date: recompute isToday against today, and guarantee a Today node exists. Without
+// this, state saved on a prior day keeps isToday on a stale date and the real Today
+// disappears on reload (summary/recs/scroll all key off the isToday node).
+const reconcileToday = (timeline) => {
+  const todayStr = localDateStr()
+  let hasToday = false
+  const mapped = (timeline || []).map(d => {
+    const isT = d.date === todayStr
+    if (isT) hasToday = true
+    return d.isToday === isT ? d : { ...d, isToday: isT }
+  })
+  if (!hasToday) {
+    const d = new Date(todayStr + 'T12:00:00')
+    mapped.push({ date: todayStr, label: d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }), isToday: true, summary: null, events: [], suggested: null })
+    mapped.sort((a, b) => a.date.localeCompare(b.date))
+  }
+  return mapped
+}
+
 // ─── PATIENT STATE ────────────────────────────────────────────────
 // PATIENT_STATE is now React state in App() — see useState(INITIAL_PATIENT_STATE)
 
@@ -112,14 +137,6 @@ const INITIAL_PATIENT_STATE = {
   biomarkers: { histology: 'clear-cell' },
   performanceStatus: 0,  // ECOG 0
 }
-
-// ─── UNDATED EVENTS (demo seed) ───────────────────────────────────
-// Events the person knows happened but can't date yet. Shown in the "Date unknown" section at the
-// end of the timeline; "Add date" drills into EventDetailsView, and dating one moves it onto the timeline.
-const INITIAL_UNDATED_EVENTS = [
-  { id: 'u1', type: 'scan', name: 'Renal ultrasound', notes: 'Found a mass on the right kidney; referred for CT.' },
-  { id: 'u2', type: 'appointment', name: 'Urology consultation' },
-]
 
 // ─── USER DECISIONS ───────────────────────────────────────────────
 // Records of what the user has done with recommendations
@@ -155,16 +172,12 @@ const EXPERIMENT_DEFAULTS = {
   addressLookup: 'on',     // Location step street field — 'on' = autocomplete dropdown, 'off' = plain input
   engagementModal: 'on',   // 'on' = connect-records nudge after high-intent manual effort (see ENGAGEMENT_* rules)
   resourcesTab: 'on',      // 'on' = show the Resources tab in the bottom nav (default on)
-  ctMatches: 'on',         // 'on' = show matched trials in Explore clinical trials; 'off' = force the no-matches empty state
-  ctCard: 'on',            // 'on' = standing Explore clinical trials card + node on Today; 'off' = removed (e.g. cancer type with no trials)
 }
 // For reference / the in-app experiments panel: label + allowed values per flag.
 const EXPERIMENT_META = {
   addressLookup: { label: 'Address lookup on Location step', values: ['on', 'off'] },
   engagementModal: { label: 'Engagement modal (2 manual events)', values: ['off', 'on'] },
   resourcesTab: { label: 'Resources tab (bottom nav)', values: ['on', 'off'] },
-  ctMatches: { label: 'Clinical trial matches (off = empty state)', values: ['on', 'off'] },
-  ctCard: { label: 'Clinical trials card on timeline', values: ['on', 'off'] },
 }
 const EXP_LS_KEY = 'o4m_experiments'
 const _readExpLS = () => { try { return JSON.parse(localStorage.getItem(EXP_LS_KEY) || '{}') } catch { return {} } }
@@ -211,6 +224,9 @@ const _writeEngagement = (patch) => {
 }
 const areRecordsConnected = () => { try { return localStorage.getItem(RECORDS_CONNECTED_KEY) === '1' } catch { return false } }
 const markRecordsConnected = () => { try { localStorage.setItem(RECORDS_CONNECTED_KEY, '1') } catch {} }
+// Reset the whole connect-records nudge (engagement counters + card state + connected flag).
+// Called on new-account / logout so a fresh user doesn't inherit a prior session's nudge state.
+const clearEngagementState = () => { try { localStorage.removeItem(ENGAGEMENT_KEY); localStorage.removeItem(RECORDS_CONNECTED_KEY) } catch {} }
 // Persistent "records not synced" timeline card: activated when the nudge is dismissed without
 // connecting; dismissed for good by the user; hidden once records are connected.
 const activateRecordsCard = () => _writeEngagement({ cardActive: true })
@@ -348,6 +364,11 @@ const RAIL_ICONS = {
   scan:        'person_search',
   diagnosis:   'clinical_notes',
   appointment: 'event',
+  symptom:            'vital_signs',
+  journal:            'edit_note',
+  mood:               'mood',
+  dose:               'medication',
+  'pending-resolved': 'task_alt',
 }
 const railIcon = (type, size = 40) => {
   const name = RAIL_ICONS[type] || 'stethoscope'
@@ -360,36 +381,7 @@ const railIcon = (type, size = 40) => {
   )
 }
 
-// ─── SPINE NODES ──────────────────────────────────────────────────
-// Every Today/timeline item puts its node on ONE rail (see SpineRow). Class is signalled by
-// node appearance, never by inside/outside the card:
-//   event / appointment → white circle, #414652 glyph (C.eyebrow)
-//   suggested treatments → solid white badge, orange `verified`
-//   standing (clinical trials) → #414652 (C.eyebrow) rounded-square, white `clinical_notes`
-// Glyphs must already exist in the reduced icon font subset.
-const SPINE_NODE = {
-  event: (type) => {
-    const name = RAIL_ICONS[type] || 'stethoscope'
-    const fill = (type === 'medication' || type === 'appointment') ? 0 : 1
-    return (
-      <div style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: C.bgCard, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <span className="material-symbols-rounded" style={{ fontSize: 22, color: C.eyebrow, fontVariationSettings: `'FILL' ${fill}, 'wght' 400` }}>{name}</span>
-      </div>
-    )
-  },
-  suggested: () => (
-    <div style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: C.bgCard, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <span className="material-symbols-rounded" style={{ fontSize: 28, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>verified</span>
-    </div>
-  ),
-  standing: () => (
-    <div style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: C.eyebrow, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <span className="material-symbols-rounded" style={{ fontSize: 22, color: '#fff', fontVariationSettings: "'FILL' 1, 'wght' 400" }}>clinical_notes</span>
-    </div>
-  ),
-}
-
-const typeLabel = { procedure: 'Procedure/Surgery', medication: 'Medication', scan: 'Test', diagnosis: 'Diagnosis' }
+const typeLabel = { procedure: 'Procedure/Surgery', medication: 'Medication', scan: 'Test', diagnosis: 'Diagnosis', symptom: 'Symptom', journal: 'Journal', mood: 'Mood', dose: 'Medication', 'pending-resolved': 'Resolved' }
 const typeColor = { procedure: C.textSecondary, medication: C.textSecondary, scan: C.textSecondary, diagnosis: C.textSecondary }
 
 // ─── PRIMITIVES ───────────────────────────────────────────────────
@@ -548,13 +540,18 @@ const WheelCol = ({ items, selectedIndex, onChange, width }) => {
   )
 }
 
-const IosPickerSheet = ({ mode, value, min, max, onSave, onClose }) => {
+// yearRange: optional [fromYear, toYear] for dates outside the default 2015–2030 wheel
+// (e.g. a birthdate). defaultValue: where the wheels start when there's no value yet.
+const IosPickerSheet = ({ mode, value, min, max, onSave, onClose, yearRange = null, defaultValue = null }) => {
   // Parse min/max bounds (YYYY-MM-DD)
   const maxP = max ? max.split('-').map(Number) : null  // [y, m, d]
   const minP = min ? min.split('-').map(Number) : null
 
   // Limit year range to [minYear, maxYear]
-  const availYears = PICKER_YEARS.filter(y => {
+  const yearSource = yearRange
+    ? Array.from({ length: yearRange[1] - yearRange[0] + 1 }, (_, i) => String(yearRange[0] + i))
+    : PICKER_YEARS
+  const availYears = yearSource.filter(y => {
     const yi = parseInt(y)
     if (maxP && yi > maxP[0]) return false
     if (minP && yi < minP[0]) return false
@@ -563,6 +560,7 @@ const IosPickerSheet = ({ mode, value, min, max, onSave, onClose }) => {
 
   const parseDate = (v) => {
     const today = new Date()
+    if (!v && defaultValue) v = defaultValue
     if (!v) {
       // Default to today (or max if today exceeds max)
       const ref = maxP
@@ -675,7 +673,7 @@ const IosPickerSheet = ({ mode, value, min, max, onSave, onClose }) => {
   )
 }
 
-const DateInputField = ({ label, value, onChange, required, min, max }) => {
+const DateInputField = ({ label, value, onChange, required, min, max, hint = 'Approximate dates are fine. You can update this later.', yearRange = null, defaultValue = null, placeholder = 'Select date' }) => {
   const [open, setOpen] = useState(false)
   const fmt = (v) => {
     if (!v) return ''
@@ -687,7 +685,7 @@ const DateInputField = ({ label, value, onChange, required, min, max }) => {
       <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 5 }}>{label}{required && <span style={{ color: C.primary }}> *</span>}</div>
       <div style={{ border: `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: '12px', display: 'flex', alignItems: 'center', backgroundColor: C.bgCard, cursor: 'pointer' }} onClick={() => setOpen(true)}>
         <div style={{ flex: 1, fontSize: 16, color: value ? C.textPrimary : C.textTertiary }}>
-          {fmt(value) || 'Select date'}
+          {fmt(value) || placeholder}
         </div>
         {value
           ? <button onMouseDown={e => e.preventDefault()} onClick={e => { e.stopPropagation(); onChange('') }}
@@ -696,8 +694,8 @@ const DateInputField = ({ label, value, onChange, required, min, max }) => {
             </button>
           : <Ico.cal/>}
       </div>
-      <div style={{ fontSize: 12, color: C.textTertiary, marginTop: 5 }}>Approximate dates are fine. You can update this later.</div>
-      {open && <IosPickerSheet mode="date" value={value} min={min} max={max} onSave={v => onChange(v)} onClose={() => setOpen(false)}/>}
+      {hint && <div style={{ fontSize: 12, color: C.textTertiary, marginTop: 5 }}>{hint}</div>}
+      {open && <IosPickerSheet mode="date" value={value} min={min} max={max} yearRange={yearRange} defaultValue={defaultValue} onSave={v => onChange(v)} onClose={() => setOpen(false)}/>}
     </div>
   )
 }
@@ -800,7 +798,7 @@ const CatalogSearchStep = ({ title, catalog, suggested, onSelect, onClose, onBac
             <div style={{ fontSize: 14, color: C.textSecondary, marginBottom: 16 }}>No results for "{q}"</div>
             <button onClick={() => onSelect({ name: q, subtitle: null, custom: true })} style={{
               display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 20px',
-              backgroundColor: C.primaryLight, border: `1px solid rgba(255,121,88,0.3)`, borderRadius: 9999,
+              backgroundColor: C.bgApp, border: 'none', borderRadius: 9999,
               cursor: 'pointer', fontSize: 14, fontWeight: 600, color: C.primary,
             }}>
               <span className="material-symbols-rounded" style={{ fontSize: 18, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>add</span>
@@ -824,17 +822,18 @@ const ChatDeleteDialog = ({ title, onCancel, onDelete }) => {
     <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
       <div onClick={onCancel} style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)', opacity: vis ? 1 : 0, transition: 'opacity 0.2s ease' }}/>
       <div style={{
-        position: 'relative', width: '100%', maxWidth: 320, backgroundColor: C.bgCard, borderRadius: 18,
-        padding: '24px 20px 16px', boxShadow: '0 12px 40px rgba(0,0,0,0.25)',
+        position: 'relative', width: '100%', maxWidth: 320, backgroundColor: C.bgCard, borderRadius: 24,
+        padding: '24px 16px 16px', boxShadow: '0 12px 40px rgba(0,0,0,0.25)',
         opacity: vis ? 1 : 0, transform: vis ? 'scale(1)' : 'scale(0.94)', transition: 'opacity 0.2s ease, transform 0.2s cubic-bezier(0.32, 0.72, 0, 1)',
       }}>
-        <div style={{ fontSize: 16, fontWeight: 700, color: C.textPrimary, lineHeight: 1.4, marginBottom: 20, textAlign: 'left' }}>Are you sure you want to delete &ldquo;{title}&rdquo;?</div>
+        <div style={{ fontSize: 16, fontWeight: 600, color: C.textPrimary, lineHeight: 1.4, marginBottom: 20, textAlign: 'left' }}>Are you sure you want to delete &ldquo;{title}&rdquo;?</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <button onClick={onCancel} style={{ width: '100%', height: 46, borderRadius: 9999, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 600, color: 'white' }}>
-            Cancel
-          </button>
-          <button onClick={onDelete} style={{ width: '100%', height: 46, borderRadius: 9999, backgroundColor: 'transparent', border: `1.5px solid ${C.border}`, cursor: 'pointer', fontSize: 15, fontWeight: 600, color: '#ef4444' }}>
+          {/* Delete first (the action they came for), Cancel last: a quick tap at the bottom lands on the safe choice. */}
+          <button onClick={onDelete} style={{ width: '100%', height: 44, borderRadius: 9999, backgroundColor: 'transparent', border: `1.5px solid ${C.border}`, cursor: 'pointer', fontSize: 16, fontWeight: 600, color: '#B00020' }}>
             Delete
+          </button>
+          <button onClick={onCancel} style={{ width: '100%', height: 44, borderRadius: 9999, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 16, fontWeight: 600, color: 'white' }}>
+            Cancel
           </button>
         </div>
       </div>
@@ -1483,8 +1482,8 @@ const AddMedicationFlow = ({ onClose, onComplete, preload, fromDetail, planItems
 
 // ─── PROVIDER AVATAR ──────────────────────────────────────────────
 const ProviderAvatar = ({ avatar }) => (
-  <div style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: C.primaryLight, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-    <span style={{ fontSize: 12, fontWeight: 700, color: C.primary, fontFamily: 'Inter,sans-serif' }}>{avatar}</span>
+  <div style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+    <span style={{ fontSize: 12, fontWeight: 700, color: C.textIcon, fontFamily: 'Inter,sans-serif' }}>{avatar}</span>
   </div>
 )
 
@@ -1566,7 +1565,7 @@ const ProviderSearchStep = ({ onSelect, onSkip, setNav, dismiss, careTeam }) => 
           <div style={{ textAlign: 'center', paddingTop: 32 }}>
             <div style={{ fontSize: 14, color: C.textSecondary, marginBottom: 16 }}>No results for "{q}"</div>
             <button onClick={() => onSelect({ name: q, custom: true, location: '', avatar: q.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase() })}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 20px', backgroundColor: C.primaryLight, border: `1px solid rgba(255,121,88,0.3)`, borderRadius: 9999, cursor: 'pointer', fontSize: 14, fontWeight: 600, color: C.primary }}>
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 20px', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 14, fontWeight: 600, color: C.primary }}>
               <span className="material-symbols-rounded" style={{ fontSize: 18, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>add</span>
               Add "{q}"
             </button>
@@ -1911,281 +1910,22 @@ const AddAppointmentFlow = ({ onClose, onComplete }) => {
 const RecordsNotSyncedCard = ({ onOpenSettings, onDismiss }) => (
   <div style={{ position: 'relative', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px' }}>
     <button onClick={onDismiss} aria-label="Dismiss" style={{ position: 'absolute', top: 10, right: 10, width: 28, height: 28, borderRadius: 14, background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textTertiary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>close</span>
+      <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textTertiary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>close</span>
     </button>
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-      {/* Same size as the timeline's event nodes (40px circle, 22px glyph) */}
-      <div style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-        <span className="material-symbols-rounded" style={{ fontSize: 22, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>sync_problem</span>
+      <div style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>sync_problem</span>
       </div>
       <div style={{ flex: 1, minWidth: 0, paddingRight: 20 }}>
-        <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.3, marginBottom: 4 }}>Health records not synced</div>
-        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.45, marginBottom: 12 }}>Sync your records to make your plan even more complete. You can do this any time under Treatment.</div>
-        <button onClick={onOpenSettings} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, height: 36, padding: '0 16px', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }}>
-          Go to Treatment
+        <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 3 }}>Health records not synced</div>
+        <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.45, marginBottom: 12 }}>You can sync your records in your profile under settings.</div>
+        <button onClick={onOpenSettings} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }}>
+          Open settings
         </button>
       </div>
     </div>
   </div>
 )
-
-// ─── Medical records connect landing (matches production) + retrieval confirmation ───
-const MR_VALUE_PROPS = [
-  { icon: 'description', title: 'A summary of your oncology records', body: 'Easy-to-read oncology report summarized by our clinical team, right here in the app.' },
-  { icon: 'forum', title: 'Better conversations with doctors', body: 'Empowering you to drive discussions and decision making with your care team.' },
-  { icon: 'lock', title: 'Protected health information', body: 'We use encryption technology that meets the requirements under HIPAA to protect your data.' },
-]
-const MR_NAVY = '#26323d'
-const _mrField = { width: '100%', height: 48, border: `1px solid ${C.border}`, borderRadius: 10, padding: '0 14px', fontSize: 15, color: C.textPrimary, fontFamily: 'Inter,sans-serif', outline: 'none', boxSizing: 'border-box', backgroundColor: C.bgCard }
-const _mrLabel = { fontSize: 12.5, color: C.textTertiary, margin: '0 0 5px 2px' }
-const _MRField = ({ label, hint, ...p }) => (
-  <div style={{ marginBottom: 14 }}>
-    {label && <div style={_mrLabel}>{label}</div>}
-    <input {...p} style={_mrField}/>
-    {hint && <div style={{ fontSize: 11.5, color: C.textTertiary, margin: '5px 2px 0', lineHeight: 1.4 }}>{hint}</div>}
-  </div>
-)
-const _MRSignaturePad = ({ onChange }) => {
-  const wrap = useRef(null), cv = useRef(null), drawing = useRef(false), [has, setHas] = useState(false)
-  useEffect(() => { const c = cv.current; if (c && wrap.current) { c.width = wrap.current.clientWidth; c.height = 150 } }, [])
-  const pt = (e) => { const c = cv.current, r = c.getBoundingClientRect(), t = e.touches ? e.touches[0] : e; return { x: (t.clientX - r.left) * (c.width / r.width), y: (t.clientY - r.top) * (c.height / r.height) } }
-  const start = (e) => { drawing.current = true; const c = cv.current.getContext('2d'), p = pt(e); c.beginPath(); c.moveTo(p.x, p.y) }
-  const move = (e) => { if (!drawing.current) return; e.preventDefault(); const c = cv.current.getContext('2d'), p = pt(e); c.strokeStyle = MR_NAVY; c.lineWidth = 2.2; c.lineCap = 'round'; c.lineTo(p.x, p.y); c.stroke(); if (!has) { setHas(true); onChange && onChange(true) } }
-  const end = () => { drawing.current = false }
-  const clear = () => { const c = cv.current; c.getContext('2d').clearRect(0, 0, c.width, c.height); setHas(false); onChange && onChange(false) }
-  return (
-    <div ref={wrap}>
-      <canvas ref={cv} onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end} onTouchStart={start} onTouchMove={move} onTouchEnd={end} style={{ width: '100%', height: 150, border: `1px solid ${C.border}`, borderRadius: 10, touchAction: 'none', backgroundColor: '#fff', cursor: 'crosshair' }}/>
-      <button onClick={clear} style={{ marginTop: 8, background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: C.textSecondary, display: 'inline-flex', alignItems: 'center', gap: 4 }}><span className="material-symbols-rounded" style={{ fontSize: 16 }}>ink_eraser</span>Clear</button>
-    </div>
-  )
-}
-const MR_ADDR_SUGGEST = [
-  { line1: '100 Danton Drive', rest: 'Methuen, MA, USA', city: 'Methuen', state: 'Massachusetts' },
-  { line1: '100 Milk Street', rest: 'Methuen, MA, USA', city: 'Methuen', state: 'Massachusetts' },
-  { line1: '100 Franklin Street', rest: 'Lawrence, MA, USA', city: 'Lawrence', state: 'Massachusetts' },
-]
-const MR_PROVIDER = { name: 'Mary Smith CRNA', line1: '60 East St, Suite 1400 Lowe II', org: 'Anesthesiology Service Inc', loc: 'Methuen, MA 01844', role: 'Medical oncologist' }
-
-// Full medical-records connect flow (landing → patient → address → provider → signature → done)
-// Landing shown on the Treatment › Medical Records tab — "Connect" launches the slide-up flow
-const MedicalRecordsConnectFlow = ({ onLaunch }) => {
-  const bar = { padding: '10px 20px calc(18px + env(safe-area-inset-bottom, 0px))', flexShrink: 0 }
-  const connected = areRecordsConnected()
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: C.bgCard }}>
-      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 24px', textAlign: 'center' }}>
-        {connected ? (
-          <>
-            <div style={{ width: 64, height: 64, borderRadius: 32, backgroundColor: C.primaryLight, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '4px auto 18px' }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 34, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>check_circle</span>
-            </div>
-            <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.3, marginBottom: 12 }}>Your medical records are being retrieved and processed</div>
-            <div style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.6 }}>The process takes a few days. We'll notify you once the records have been uploaded. In the meantime, you can keep viewing results based on your answers.</div>
-          </>
-        ) : (
-          <>
-            <div style={{ width: 72, height: 72, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 52, color: '#5b7089' }}>medical_information</span>
-            </div>
-            <div style={{ fontSize: 23, fontWeight: 800, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.25, marginBottom: 22 }}>Connect your<br/>medical records</div>
-            {MR_VALUE_PROPS.map((v, i) => (
-              <div key={i} style={{ marginBottom: 20 }}>
-                <div style={{ fontSize: 16, fontWeight: 700, color: C.textPrimary, marginBottom: 5 }}>{v.title}</div>
-                <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.55 }}>{v.body}</div>
-              </div>
-            ))}
-          </>
-        )}
-      </div>
-      <div style={bar}>
-        <button onClick={() => onLaunch && onLaunch()} style={{ width: '100%', height: 52, borderRadius: 14, backgroundColor: MR_NAVY, border: 'none', cursor: 'pointer', fontSize: 16, fontWeight: 700, color: '#fff', fontFamily: 'Inter,sans-serif' }}>Connect</button>
-      </div>
-    </div>
-  )
-}
-
-// Multi-step form — its own stack with its own header (pushes in from Connect)
-const MedicalRecordsFormFlow = ({ onExit, onDone }) => {
-  const [step, setStep] = useState(1) // 1..6
-  const [pt, setPt] = useState({ first: '', last: '', maiden: '', dob: '', ssn: '' })
-  const [addr, setAddr] = useState({ q: '', street1: '', street2: '', city: '', state: '', country: 'United States' })
-  const [addrOpen, setAddrOpen] = useState(false)
-  const [provQ, setProvQ] = useState(''); const [provSel, setProvSel] = useState(null)
-  const [hasSig, setHasSig] = useState(false); const [signPhase, setSignPhase] = useState('form') // form | agree
-  const [showLeave, setShowLeave] = useState(false)
-  const scroll = { flex: 1, overflowY: 'auto', padding: '4px 22px 24px' }
-  const bar = { padding: '10px 20px calc(18px + env(safe-area-inset-bottom, 0px))', flexShrink: 0 }
-  const h1 = { fontSize: 22, fontWeight: 800, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 8 }
-  const sub = { fontSize: 14, color: C.textSecondary, lineHeight: 1.55, marginBottom: 20 }
-  const primaryBtn = (label, onClick, opts = {}) => (
-    <button onClick={onClick} disabled={opts.disabled} style={{ width: '100%', height: 52, borderRadius: 14, backgroundColor: opts.disabled ? '#f0b9ac' : (opts.navy ? MR_NAVY : C.primary), border: 'none', cursor: opts.disabled ? 'default' : 'pointer', fontSize: 16, fontWeight: 700, color: '#fff', fontFamily: 'Inter,sans-serif', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>{label}{opts.arrow && <span className="material-symbols-rounded" style={{ fontSize: 20 }}>arrow_forward</span>}</button>
-  )
-  const dirty = !!(pt.first || pt.last || pt.maiden || pt.dob || pt.ssn || addr.q || addr.street1 || provSel || hasSig)
-  const back = () => setStep(s => s - 1)
-  const tryExit = () => { if (dirty) setShowLeave(true); else onExit && onExit() }
-
-  let body = null
-  if (step === 1) body = (<>
-    <div style={scroll}>
-      <div style={h1}>Patient information</div>
-      <div style={sub}>We need this information to retrieve your medical records from your oncology care facility.</div>
-      <_MRField label="Legal first name" value={pt.first} onChange={e => setPt({ ...pt, first: e.target.value })}/>
-      <_MRField label="Legal last name" value={pt.last} onChange={e => setPt({ ...pt, last: e.target.value })}/>
-      <_MRField label="Maiden/other name" placeholder="Enter additional names that your medical records might be located under" value={pt.maiden} onChange={e => setPt({ ...pt, maiden: e.target.value })}/>
-      <_MRField label="Date of birth (required)" type="date" value={pt.dob} onChange={e => setPt({ ...pt, dob: e.target.value })}/>
-      <_MRField label="Last 4 digits of your SSN" value={pt.ssn} maxLength={4} inputMode="numeric" onChange={e => setPt({ ...pt, ssn: e.target.value.replace(/\D/g, '') })} hint="This is a unique identifier that helps ensure we locate the correct medical records."/>
-    </div>
-    <div style={bar}>{primaryBtn('Next', () => setStep(2), { arrow: true })}</div>
-  </>)
-  else if (step === 2) body = (<>
-    <div style={scroll}>
-      <div style={h1}>Home address</div>
-      <div style={sub}>Please enter your mailing address. Currently available in the US and Canada only.</div>
-      <div style={{ position: 'relative', marginBottom: 14 }}>
-        <div style={_mrLabel}>Street Address</div>
-        <input value={addr.q} placeholder="Start typing address" onChange={e => { setAddr({ ...addr, q: e.target.value }); setAddrOpen(e.target.value.length > 0) }} style={_mrField}/>
-        {addrOpen && (
-          <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, marginTop: 4, overflow: 'hidden' }}>
-            {MR_ADDR_SUGGEST.map((s, i) => (
-              <button key={i} onClick={() => { setAddr({ ...addr, q: s.line1, street1: s.line1, city: s.city, state: s.state }); setAddrOpen(false) }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: i < 2 ? `1px solid ${C.border}` : 'none', padding: '11px 14px', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
-                <div style={{ fontSize: 14, color: C.textPrimary }}>{s.line1}</div>
-                <div style={{ fontSize: 12, color: C.textTertiary }}>{s.rest}</div>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-      <_MRField label="Street 2" value={addr.street2} onChange={e => setAddr({ ...addr, street2: e.target.value })}/>
-      <_MRField label="City" value={addr.city} onChange={e => setAddr({ ...addr, city: e.target.value })}/>
-      <_MRField label="State" value={addr.state} onChange={e => setAddr({ ...addr, state: e.target.value })}/>
-      <_MRField label="Country" value={addr.country} onChange={e => setAddr({ ...addr, country: e.target.value })}/>
-    </div>
-    <div style={bar}>{primaryBtn('Next', () => setStep(3), { arrow: true, disabled: !addr.street1 && !addr.q })}</div>
-  </>)
-  else if (step === 3) body = (<>
-    <div style={scroll}>
-      <div style={h1}>Name of provider or facility</div>
-      <div style={sub}>Enter the name of your oncology specialist or the name of the facility where you are receiving your treatment</div>
-      <div style={{ position: 'relative', marginBottom: 14 }}>
-        <span className="material-symbols-rounded" style={{ position: 'absolute', left: 12, top: 13, fontSize: 20, color: C.textTertiary }}>search</span>
-        <input value={provQ} placeholder="Search" onChange={e => setProvQ(e.target.value)} style={{ ..._mrField, paddingLeft: 40 }}/>
-        {provQ && !provSel && (
-          <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, marginTop: 4 }}>
-            <button onClick={() => setProvSel(MR_PROVIDER)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '12px 14px', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
-              <div style={{ fontSize: 14.5, fontWeight: 600, color: C.textPrimary }}>{MR_PROVIDER.name}</div>
-              <div style={{ fontSize: 12.5, color: C.textTertiary }}>{MR_PROVIDER.line1}</div>
-              <div style={{ fontSize: 12.5, color: C.textTertiary }}>{MR_PROVIDER.org}</div>
-              <div style={{ fontSize: 12.5, color: C.textTertiary }}>{MR_PROVIDER.loc}</div>
-              <div style={{ fontSize: 12.5, color: C.textTertiary }}>{MR_PROVIDER.role}</div>
-            </button>
-          </div>
-        )}
-      </div>
-      {provSel && (
-        <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: '13px 14px', marginBottom: 14, display: 'flex', gap: 10 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 14.5, fontWeight: 600, color: C.textPrimary }}>{provSel.name}</div>
-            <div style={{ fontSize: 12.5, color: C.textTertiary }}>{provSel.line1}</div>
-            <div style={{ fontSize: 12.5, color: C.textTertiary }}>{provSel.org}</div>
-            <div style={{ fontSize: 12.5, color: C.textTertiary }}>{provSel.loc}</div>
-            <div style={{ fontSize: 12.5, color: C.textTertiary }}>{provSel.role}</div>
-          </div>
-          <button onClick={() => { setProvSel(null); setProvQ('') }} aria-label="Remove" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, alignSelf: 'flex-start' }}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary }}>close</span></button>
-        </div>
-      )}
-      <div style={{ backgroundColor: '#fdf6e9', border: '1px solid #f0e2c4', borderRadius: 12, padding: '13px 15px' }}>
-        <div style={{ fontSize: 13.5, fontWeight: 700, color: '#8a6d3b', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 5 }}><span className="material-symbols-rounded" style={{ fontSize: 17 }}>lightbulb</span>Tip</div>
-        <div style={{ fontSize: 12.5, color: '#8a6d3b', lineHeight: 1.5 }}>{provSel ? 'You may add up to a total of three oncology specialists or facilities to ensure the retrieval of your complete oncology medical record.' : 'An oncology specialist includes any of the following: medical oncologist, radiation oncologist, or surgical oncologist. If you are unsure of the exact names, this information can be found on an appointment or business card.'}</div>
-      </div>
-    </div>
-    <div style={bar}>{primaryBtn('Next', () => setStep(4), { arrow: true, disabled: !provSel })}</div>
-  </>)
-  else if (step === 4) body = (<>
-    <div style={scroll}>
-      <div style={h1}>Signature</div>
-      <div style={sub}>To complete the medical record request from {provSel ? provSel.name : 'your provider'}, sign the HIPAA Patient Access Request form via Dropbox Sign on the next page.</div>
-    </div>
-    <div style={bar}>{primaryBtn('Next', () => { setSignPhase('form'); setStep(5) }, { arrow: true })}</div>
-  </>)
-  else if (step === 5) body = (<>
-    <div style={scroll}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, backgroundColor: MR_NAVY, borderRadius: 10, padding: '10px 14px', marginBottom: 16 }}>
-        <span className="material-symbols-rounded" style={{ fontSize: 18, color: '#fff' }}>draw</span>
-        <span style={{ flex: 1, fontSize: 14, fontWeight: 700, color: '#fff' }}>Dropbox Sign</span>
-        <span style={{ fontSize: 12, color: '#cbd5e0' }}>Mock</span>
-      </div>
-      <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary, marginBottom: 8 }}>HIPAA Patient Access Request</div>
-        <div style={{ fontSize: 12.5, color: C.textSecondary, lineHeight: 1.5 }}>{pt.first || 'Patient'} {pt.last} · DOB {pt.dob || '—'} · SSN ••••{pt.ssn || '••••'}<br/>Provider: {provSel ? provSel.name : '—'}</div>
-        <div style={{ fontSize: 11.5, color: C.textTertiary, marginTop: 10, lineHeight: 1.5 }}>This is a mock signature request and has no legal value.</div>
-      </div>
-      {signPhase === 'form' && (<>
-        <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 4 }}>Add your signature</div>
-        <div style={{ fontSize: 12.5, color: C.textTertiary, marginBottom: 10 }}>I understand this is a legal representation of my signature.</div>
-        <_MRSignaturePad onChange={setHasSig}/>
-      </>)}
-      {signPhase === 'agree' && (
-        <div style={{ backgroundColor: C.bgApp, borderRadius: 12, padding: 16 }}>
-          <div style={{ fontSize: 17, fontWeight: 800, color: C.textPrimary, marginBottom: 8 }}>Almost done.</div>
-          <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.55 }}>I agree to be legally bound by this document and the Dropbox Sign Terms of Service. Tap "I Agree" to sign this document.</div>
-        </div>
-      )}
-    </div>
-    <div style={bar}>
-      {signPhase === 'form'
-        ? primaryBtn('Insert', () => setSignPhase('agree'), { navy: true, disabled: !hasSig })
-        : primaryBtn('I Agree', () => setStep(6), { navy: true })}
-    </div>
-  </>)
-  else body = (<>
-    <div style={scroll}>
-      <div style={{ width: 60, height: 60, borderRadius: 30, backgroundColor: C.primaryLight, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '8px 0 18px' }}>
-        <span className="material-symbols-rounded" style={{ fontSize: 32, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>check_circle</span>
-      </div>
-      <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.3, marginBottom: 12 }}>Your medical records are being retrieved and processed</div>
-      <div style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>The process takes a few days. We'll notify you once the records have been uploaded. Once your records have been processed, the app will be updated based upon your answers. In the meantime, you can continue viewing results based on your answers.</div>
-    </div>
-    <div style={bar}>{primaryBtn('Done', () => onDone && onDone())}</div>
-  </>)
-
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: C.bgCard, position: 'relative' }}>
-      <div style={{ display: 'flex', alignItems: 'center', height: 52, padding: '0 8px', flexShrink: 0 }}>
-        {step > 1 && step < 6 ? (
-          <button onClick={back} aria-label="Back" style={{ width: 40, height: 40, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textIcon }}>arrow_back</span></button>
-        ) : <div style={{ width: 40 }}/>}
-        <div style={{ flex: 1 }}/>
-        <button onClick={step === 6 ? () => onDone && onDone() : tryExit} aria-label="Close" style={{ width: 40, height: 40, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textIcon }}>close</span></button>
-      </div>
-      {body}
-      {showLeave && (
-        <div style={{ position: 'absolute', inset: 0, zIndex: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.4)', padding: 24 }}>
-          <div style={{ backgroundColor: C.bgCard, borderRadius: 16, padding: '22px 20px', width: '100%', maxWidth: 320 }}>
-            <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, marginBottom: 8 }}>Leave without finishing?</div>
-            <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5, marginBottom: 18 }}>The information you've entered won't be saved.</div>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={() => setShowLeave(false)} style={{ flex: 1, height: 46, borderRadius: 11, border: `1px solid ${C.border}`, background: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 700, color: C.textPrimary, fontFamily: 'Inter,sans-serif' }}>Stay</button>
-              <button onClick={() => { setShowLeave(false); onExit && onExit() }} style={{ flex: 1, height: 46, borderRadius: 11, border: 'none', backgroundColor: C.primary, cursor: 'pointer', fontSize: 15, fontWeight: 700, color: '#fff', fontFamily: 'Inter,sans-serif' }}>Leave</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-const MedicalRecordsConnectScreen = ({ onClose, onConnected }) => {
-  const [vis, setVis] = useState(false)
-  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
-  const dismiss = () => { setVis(false); setTimeout(onClose, 300) }
-  return ReactDOM.createPortal(
-    <div style={{ position: 'fixed', inset: 0, zIndex: 135, backgroundColor: C.bgCard, transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.34s cubic-bezier(0.32,0.72,0,1)', display: 'flex', flexDirection: 'column', fontFamily: "'Inter',sans-serif" }}>
-      <MedicalRecordsFormFlow onExit={dismiss} onDone={() => { onConnected && onConnected(); dismiss() }}/>
-    </div>,
-    document.body
-  )
-}
 
 // ─── ENGAGEMENT NUDGE (connect-records) — bottom sheet with the D illustration ──
 const ENG_ANIM_CSS = `
@@ -2211,13 +1951,12 @@ const ENG_ANIM_CSS = `
 `
 const EngagementNudgeSheet = ({ onConnect, onDismiss }) => {
   const [vis, setVis] = useState(false)
-  const [ready, setReady] = useState(false) // scrim can't close until the sheet has fully appeared
-  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))); const t = setTimeout(() => setReady(true), 420); return () => clearTimeout(t) }, [])
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
   const close = (cb) => { setVis(false); setTimeout(() => cb && cb(), 320) }
   return ReactDOM.createPortal(
     <div style={{ position: 'fixed', inset: 0, zIndex: 400 }}>
       <style>{ENG_ANIM_CSS}</style>
-      <div onClick={ready ? () => close(onDismiss) : undefined} style={{ position: 'absolute', inset: 0, backgroundColor: vis ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0)', transition: 'background-color 0.32s ease', pointerEvents: ready ? 'auto' : 'none' }}/>
+      <div onClick={() => close(onDismiss)} style={{ position: 'absolute', inset: 0, backgroundColor: vis ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0)', transition: 'background-color 0.32s ease' }}/>
       <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: C.bgCard, borderRadius: '22px 22px 0 0', boxShadow: '0 -6px 28px rgba(0,0,0,0.16)', padding: '10px 20px 28px', transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.36s cubic-bezier(0.32,0.72,0,1)' }}>
         <div style={{ width: 38, height: 4, backgroundColor: 'rgba(0,0,0,0.12)', borderRadius: 2, margin: '0 auto 14px' }}/>
         <div className="o4mplay" style={{ display: 'flex', justifyContent: 'center', margin: '2px 0 6px' }}>
@@ -2227,48 +1966,48 @@ const EngagementNudgeSheet = ({ onConnect, onDismiss }) => {
               <g className="tl-line-d"><line x1="150" y1="36" x2="150" y2="120" stroke="#e6e6ea" strokeWidth="3" strokeLinecap="round"/></g>
               <g className="tl-scroll-d">
                 <g>
-                  <circle cx="150" cy="66" r="5" fill="#a6b7ce" stroke="#fff" strokeWidth="2"/>
+                  <circle cx="150" cy="66" r="5" fill="#c9ccd3" stroke="#fff" strokeWidth="2"/>
                   <rect x="162" y="59" width="60" height="16" rx="6" fill="#fff" stroke="#eceef1" strokeWidth="1.2"/>
                   <rect x="170" y="65" width="30" height="4" rx="2" fill="#e9eaee"/>
                 </g>
                 <g className="gray-top-d">
-                  <circle cx="150" cy="98" r="5" fill="#a6b7ce" stroke="#fff" strokeWidth="2"/>
+                  <circle cx="150" cy="98" r="5" fill="#c9ccd3" stroke="#fff" strokeWidth="2"/>
                   <rect x="162" y="91" width="72" height="16" rx="6" fill="#fff" stroke="#eceef1" strokeWidth="1.2"/>
                   <rect x="170" y="97" width="38" height="4" rx="2" fill="#e9eaee"/>
                 </g>
                 <g className="gray-bot-d">
-                  <circle cx="150" cy="130" r="5" fill="#a6b7ce" stroke="#fff" strokeWidth="2"/>
+                  <circle cx="150" cy="130" r="5" fill="#c9ccd3" stroke="#fff" strokeWidth="2"/>
                   <rect x="162" y="123" width="64" height="16" rx="6" fill="#fff" stroke="#eceef1" strokeWidth="1.2"/>
                   <rect x="170" y="129" width="32" height="4" rx="2" fill="#e9eaee"/>
                 </g>
                 <g className="new-in-d">
-                  <circle cx="150" cy="124" r="5.5" fill="#f47a56" stroke="#fff" strokeWidth="2"/>
-                  <rect x="162" y="115" width="86" height="19" rx="6" fill="#fdf1ec" stroke="#f3c9bd" strokeWidth="1.3"/>
-                  <rect x="170" y="123" width="30" height="4" rx="2" fill="#eda58e"/>
+                  <circle cx="150" cy="124" r="5.5" fill="#ff7a59" stroke="#fff" strokeWidth="2"/>
+                  <rect x="162" y="115" width="86" height="19" rx="6" fill="#fff1ec" stroke="#ffd0c2" strokeWidth="1.3"/>
+                  <rect x="170" y="123" width="30" height="4" rx="2" fill="#ffb59f"/>
                   <g className="tag-in-d">
-                    <rect x="212" y="119.5" width="28" height="11" rx="5.5" fill="#f47a56"/>
+                    <rect x="212" y="119.5" width="28" height="11" rx="5.5" fill="#ff7a59"/>
                     <text x="226" y="127.4" fontSize="7" fontWeight="700" fill="#fff" textAnchor="middle" letterSpacing="0.3">NEW</text>
                   </g>
                 </g>
               </g>
             </g>
-            <path className="wire-d" d="M101 79 Q 116 78 131 80" fill="none" stroke="#f47a56" strokeWidth="2" strokeLinecap="round"/>
-            <path className="wire-head-d" d="M136 80 L130 75" fill="none" stroke="#f47a56" strokeWidth="2" strokeLinecap="round"/>
-            <path className="wire-head-d" d="M136 80 L130 85" fill="none" stroke="#f47a56" strokeWidth="2" strokeLinecap="round"/>
+            <path className="wire-d" d="M101 79 Q 116 78 131 80" fill="none" stroke="#ff7a59" strokeWidth="2" strokeLinecap="round"/>
+            <path className="wire-head-d" d="M136 80 L130 75" fill="none" stroke="#ff7a59" strokeWidth="2" strokeLinecap="round"/>
+            <path className="wire-head-d" d="M136 80 L130 85" fill="none" stroke="#ff7a59" strokeWidth="2" strokeLinecap="round"/>
             <g transform="translate(150,74)">
               <g className="rec-move-d">
                 <g className="rec-pop-d">
                   <rect x="-17" y="-21" width="34" height="42" rx="8" fill="#fff" stroke="#e6e6ea" strokeWidth="1.5"/>
                   <rect x="-9" y="-12" width="20" height="3.5" rx="1.75" fill="#e9eaee"/>
                   <rect x="-9" y="-5" width="14" height="3.5" rx="1.75" fill="#eef0f3"/>
-                  <path d="M-9 8 h6 l2 -6 3 11 2.5 -5 h5" fill="none" stroke="#f47a56" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M-9 8 h6 l2 -6 3 11 2.5 -5 h5" fill="none" stroke="#ff7a59" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
                 </g>
               </g>
             </g>
           </svg>
         </div>
-        <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.3px', color: C.textPrimary, textAlign: 'center', lineHeight: 1.25 }}>Everything about your care, in one place</div>
-        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5, textAlign: 'center', margin: '8px 4px 0' }}>Connect your records and we'll bring your history together for you.</div>
+        <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.3px', color: C.textPrimary, textAlign: 'center', lineHeight: 1.25 }}>See your care add up — without the typing</div>
+        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5, textAlign: 'center', margin: '8px 4px 0' }}>Connect your records so it all comes together — the clearer the picture, the better your guidance and treatment options.</div>
         <button onClick={() => close(onConnect)} style={{ width: '100%', padding: '15px', backgroundColor: C.primary, color: '#fff', border: 'none', borderRadius: 9999, fontSize: 16, fontWeight: 700, cursor: 'pointer', marginTop: 18, fontFamily: 'Inter,sans-serif' }}>Connect medical records</button>
         <button onClick={() => close(onDismiss)} style={{ width: '100%', padding: '12px', backgroundColor: 'transparent', color: C.textSecondary, border: 'none', fontSize: 15, fontWeight: 600, cursor: 'pointer', marginTop: 4, fontFamily: 'Inter,sans-serif' }}>Not now</button>
       </div>
@@ -2277,7 +2016,7 @@ const EngagementNudgeSheet = ({ onConnect, onDismiss }) => {
   )
 }
 
-const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true, onReviewRecs }) => {
+const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true, onReviewRecs, teasers = [], onTeaserAction, narrative = null, onViewTreatments = null, onViewRecord = null, hasTreatments = false }) => {
   const bullets = summary.bullets || []
   // Signature drives the change/generating animation without parsing text (bullet ids + text).
   const signature = bullets.map(b => b.id + ':' + b.text).join('|')
@@ -2318,7 +2057,7 @@ const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true
   // Card state — two states:
   //   Rich   = has a time-sensitive bullet (today / upcoming / treatments) → bullets + AI footer
   //   Empty  = nothing to show yet (quiet OR unsupported) → single "Add an event" fallback
-  const hasActionable = shownBullets.some(b => ['today', 'upcoming', 'treatments'].includes(b.id))
+  const hasActionable = shownBullets.some(b => ['today', 'upcoming', 'treatments'].includes(b.id)) || teasers.length > 0
   const state = hasActionable ? 'rich' : 'empty'
   const openAdd = (e) => { e.stopPropagation(); if (onAddEvent) onAddEvent() }
 
@@ -2413,28 +2152,36 @@ const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true
   const ctaBtnStyle = { marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }
 
   return (
-    <div ref={cardRef} style={{ position: 'relative', width: '100%', backgroundColor: C.bgCard, border: '1px solid transparent', borderRadius: 14, padding: '13px 16px', textAlign: 'left' }}>
+    <div ref={cardRef} style={{ position: 'relative', width: '100%', backgroundColor: C.bgCard, ...SOFT_CARD, padding: '15px 18px', textAlign: 'left' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span ref={starRef} style={{ display: 'inline-flex', transformOrigin: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 17, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span></span>
+        <span ref={starRef} style={{ display: 'inline-flex', transformOrigin: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 17, ...AI_ICON, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span></span>
         <span style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary }}>Daily summary</span>
       </div>
-      {state === 'empty' ? (
+      {(narrative && narrative.enrich) ? (
         <div style={{ ...textFade, margin: '12px 0 4px' }}>
-          <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>See where your care stands at a glance — so it's not all in your head.</div>
+          <div style={{ fontSize: 14.5, color: C.textPrimary, lineHeight: 1.6 }}>{narrative.text}</div>
           <button onClick={openAdd} style={ctaBtnStyle}>
             <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.primary }}>add</span>Add an event
           </button>
         </div>
       ) : (
         <>
-          <div style={{ ...textFade, display: 'flex', flexDirection: 'column', gap: 9, margin: '12px 0' }}>
-            {shownBullets.map(b => { const ch = changeOf(b); return (
-              <div key={b.id} style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}>
-                <span style={{ width: 5, height: 5, borderRadius: '50%', backgroundColor: (ch && !clearing) ? C.primary : C.textTertiary, marginTop: 7, flexShrink: 0, transition: 'background-color 0.5s ease' }}/>
-                <span style={{ fontSize: 14, color: C.textPrimary, lineHeight: 1.5, flex: 1, fontWeight: ch ? 500 : 400 }}>{b.text}{ch && <span style={{ fontSize: 10, fontWeight: 700, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.05em', marginLeft: 7, whiteSpace: 'nowrap', verticalAlign: '1px', opacity: clearing ? 0 : 1, transition: 'opacity 0.5s ease' }}>{ch === 'new' ? 'New' : 'Updated'}</span>}</span>
-              </div>
-            )})}
-          </div>
+          <div style={{ ...textFade, margin: '12px 0', fontSize: 14.5, color: C.textPrimary, lineHeight: 1.6 }}>{narrative ? narrative.text : ''}</div>
+          {teasers.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, margin: '2px 0 12px' }}>
+              {teasers.map(t => (
+                <button key={t.id} onClick={(e) => { e.stopPropagation(); onTeaserAction && onTeaserAction(t) }} style={{ display: 'flex', alignItems: 'center', gap: 11, width: '100%', textAlign: 'left', backgroundColor: C.bgApp, border: 'none', borderRadius: 12, padding: '11px 12px', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+                  <span className="material-symbols-rounded" style={{ fontSize: 19, color: C.textSecondary, flexShrink: 0, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>{t.icon}</span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, color: C.textPrimary, lineHeight: 1.35 }}>{t.takeaway}</span>
+                    {t.basis && <span style={{ display: 'block', fontSize: 11.5, color: C.textTertiary, marginTop: 1 }}>{t.basis}</span>}
+                  </span>
+                  {t.spark && t.spark.length > 1 && <Sparkline data={t.spark}/>}
+                  <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textTertiary, flexShrink: 0 }}>chevron_right</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
             <button onClick={castVote('up')} aria-pressed={vote === 'up'} aria-label="Helpful" style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: vote === 'up' ? C.primaryLight : 'transparent', border: 'none', borderRadius: 8, cursor: 'pointer', transition: 'background-color 0.15s' }}>
               <svg width="15" height="15" viewBox="0 0 15 15" fill={vote === 'up' ? C.primary : 'none'}><path d="M1.5 7.5h2v5.5h-2zM3.5 7.5L5.5 3l1.5.5V6.5H11L10 12H3.5z" stroke={vote === 'up' ? C.primary : C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>
@@ -2565,59 +2312,8 @@ const CardActionSheet = ({ isOnboarding = false, restoreNote = false, onDelete, 
   )
 }
 
-// Shared drill-in app-bar title behaviour: the bar has no title until the page title has scrolled
-// up under it, then the title fades in (and the bar gets its hairline). Scroll-position based, so the
-// slide-in transform can't fool it. The scroll container must be position: relative (offsetTop).
-const scrolledPastTitle = (scrollEl, titleEl) => !!(scrollEl && titleEl && scrollEl.scrollTop > titleEl.offsetTop + titleEl.offsetHeight - 8)
-
-// "Add date" — sits in a card's date slot when the event has no date; drills into EventDetailsView.
-const AddDateLink = ({ onClick }) => (
-  <button onClick={e => { e.stopPropagation(); onClick() }}
-    style={{ padding: 0, background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: C.primary, fontFamily: 'inherit', lineHeight: 1.2, WebkitTapHighlightColor: 'transparent' }}>
-    Add date
-  </button>
-)
-
-// Minimal event detail: date + notes only. Pushed from "Add date". Saving a date onto an undated
-// event moves it onto the timeline; clearing a dated event's date moves it to "Date unknown".
-const EventDetailsView = ({ event, onClose, onSave }) => {
-  const [vis, setVis] = useState(false)
-  const initialDate = event.date || event.startDate || ''
-  const [date, setDate] = useState(initialDate)
-  const [notes, setNotes] = useState(event.notes || '')
-  const [titleVisible, setTitleVisible] = useState(false)
-  const titleRef = useRef(null)
-  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
-  const dismiss = (after) => { setVis(false); setTimeout(() => { onClose(); after && after() }, 320) }
-  const dirty = date !== initialDate || notes.trim() !== (event.notes || '').trim()
-  const label = event.type === 'appointment' ? 'Appointment' : (typeLabel[event.type] || 'Event')
-  const fieldLabel = { fontSize: 12, color: C.textSecondary, marginBottom: 5 }
-  return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 66, transform: vis ? 'translateX(0)' : 'translateX(100%)', transition: 'transform 0.32s cubic-bezier(0.32,0.72,0,1)', display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard, fontFamily: "'Inter',sans-serif" }}>
-      <div style={{ display: 'flex', alignItems: 'center', height: 56, padding: '0 52px 0 8px', flexShrink: 0, borderBottom: `1px solid ${titleVisible ? C.border : 'transparent'}`, transition: 'border-color 0.2s' }}>
-        <button onClick={() => dismiss()} aria-label="Back" style={{ width: 44, height: 44, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textPrimary }}>arrow_back</span></button>
-        <div style={{ flex: 1, minWidth: 0, textAlign: 'center', fontSize: 16, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: titleVisible ? 1 : 0, transition: 'opacity 0.22s ease' }}>{event.name}</div>
-      </div>
-      <div onScroll={e => setTitleVisible(scrolledPastTitle(e.target, titleRef.current))} style={{ flex: 1, overflowY: 'auto', padding: '22px 20px 24px', position: 'relative' }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: C.eyebrow, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>{label}</div>
-        <div ref={titleRef} style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.3, marginBottom: 24 }}>{event.name}</div>
-        <DateInputField label="Date" value={date} onChange={setDate}/>
-        <div style={{ height: 8 }}/>
-        <div style={fieldLabel}>Notes</div>
-        <NotesTextarea value={notes} onChange={setNotes} placeholder="Add notes"/>
-      </div>
-      <div style={{ padding: '12px 20px 28px', flexShrink: 0 }}>
-        <button disabled={!dirty} onClick={() => dismiss(() => onSave({ date, notes: notes.trim() }))}
-          style={{ width: '100%', height: 52, borderRadius: 26, border: 'none', backgroundColor: dirty ? C.primary : '#e0e0e0', color: dirty ? 'white' : '#aaa', fontSize: 16, fontWeight: 600, cursor: dirty ? 'pointer' : 'default', fontFamily: 'inherit' }}>
-          Save
-        </button>
-      </div>
-    </div>
-  )
-}
-
 // ─── APPOINTMENT CARD ─────────────────────────────────────────────
-const AppointmentCard = ({ event, highlightId, onRemove, onEdit, onAddDate }) => {
+const AppointmentCard = ({ event, highlightId, onRemove, onEdit }) => {
   const [showRemove, setShowRemove] = useState(false)
   const [showInfoSheet, setShowInfoSheet] = useState(false)
   const isHighlighted = highlightId === event.id
@@ -2643,16 +2339,14 @@ const AppointmentCard = ({ event, highlightId, onRemove, onEdit, onAddDate }) =>
       {showRemove && <CardActionSheet isOnboarding={event.source === 'onboarding'} onDelete={onRemove} onEdit={() => onEdit && onEdit(event)} onInfo={() => setShowInfoSheet(true)} onClose={() => { setShowRemove(false); _closeActiveMenu = null }}/>}
       {showInfoSheet && <ClinicalDetailInfoSheet onClose={() => setShowInfoSheet(false)} onEdit={() => onEdit && onEdit(event)}/>}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+        <div style={{ flexShrink: 0, alignSelf: 'center' }}>{railIcon('appointment', 40)}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 2 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: C.eyebrow, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Appointment</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-              {!event.date && onAddDate && <AddDateLink onClick={onAddDate}/>}
-              {onRemove && (
-                <button onClick={openMenu}
-                  style={{ padding: '0 2px', background: 'none', border: 'none', cursor: 'pointer', color: C.textSecondary, fontSize: 14, fontWeight: 700, lineHeight: 1 }}>⋮</button>
-              )}
-            </div>
+            <span style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Appointment</span>
+            {onRemove && (
+              <button onClick={openMenu}
+                style={{ padding: '0 2px', background: 'none', border: 'none', cursor: 'pointer', color: C.textSecondary, fontSize: 14, fontWeight: 700, lineHeight: 1 }}>⋮</button>
+            )}
           </div>
           <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.3, marginBottom: dateTimeLine ? 3 : 0 }}>
             {event.name || 'Appointment'}
@@ -2673,7 +2367,7 @@ const AppointmentCard = ({ event, highlightId, onRemove, onEdit, onAddDate }) =>
   )
 }
 
-const EventCard = ({ event, highlightId, onRemove, onEdit, onAddDate, visibleRecs = [] }) => {
+const EventCard = ({ event, highlightId, onRemove, onEdit, visibleRecs = [] }) => {
   const [showRemove, setShowRemove] = useState(false)
   const [showInfoSheet, setShowInfoSheet] = useState(false)
   const label = typeLabel[event.type] || 'Event'
@@ -2696,13 +2390,14 @@ const EventCard = ({ event, highlightId, onRemove, onEdit, onAddDate, visibleRec
       {showRemove && <CardActionSheet isOnboarding={event.source === 'onboarding'} restoreNote={!!coveringRule} onDelete={onRemove} onEdit={() => onEdit && onEdit(event)} onInfo={() => setShowInfoSheet(true)} onClose={() => { setShowRemove(false); _closeActiveMenu = null }}/>}
       {showInfoSheet && <ClinicalDetailInfoSheet onClose={() => setShowInfoSheet(false)} onEdit={() => onEdit && onEdit(event)}/>}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+        {/* Icon — flush left, semantic anchor */}
+        <div style={{ flexShrink: 0, alignSelf: 'center' }}>{railIcon(event.type, 40)}</div>
         {/* Content */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 2 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: C.eyebrow, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-              {du ? <span style={{ fontSize: 12, color: C.textTertiary }}>{du}</span>
-                  : onAddDate && <AddDateLink onClick={onAddDate}/>}
+              {du && <span style={{ fontSize: 12, color: C.textTertiary }}>{du}</span>}
               {onRemove && <button onClick={openMenu}
                 style={{ padding: '0 2px', background: 'none', border: 'none', cursor: 'pointer', color: C.textSecondary, fontSize: 14, fontWeight: 700, lineHeight: 1 }}>⋮</button>}
             </div>
@@ -2816,7 +2511,7 @@ const buildDailySummary = (ps, timeline = [], recs = null) => {
 const QuestionCard = ({ question, group, onAnswer }) => {
   return (
     <div style={{ backgroundColor: C.bgCard, borderRadius: 14, padding: '16px 16px 12px', animation: 'cardfadein 0.4s ease forwards' }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>Quick question</div>
+      <div style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>Quick question</div>
       <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary, lineHeight: 1.4, marginBottom: 6 }}>{question.text}</div>
       {question.subtext && <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.5, marginBottom: 14 }}>{question.subtext}</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -2911,7 +2606,7 @@ In 3–5 sentences, explain what these options mean for this specific patient gi
           <div style={{ width: 38, height: 4, borderRadius: 2, backgroundColor: C.border, margin: '0 auto 14px' }}/>
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 4 }}>
             <div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>For You</div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>For You</div>
               <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.2px' }}>{block.stepLabel}</div>
             </div>
             <button onClick={dismiss} style={{ width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0, marginTop: 2 }}>
@@ -2938,7 +2633,7 @@ In 3–5 sentences, explain what these options mean for this specific patient gi
           {status === 'error' && (
             <div style={{ textAlign: 'center', paddingTop: 16 }}>
               <div style={{ fontSize: 14, color: C.textSecondary, marginBottom: 16 }}>{errorMsg}</div>
-              <button onClick={runSummary} style={{ padding: '10px 20px', backgroundColor: C.primaryLight, border: `1px solid rgba(255,121,88,0.3)`, borderRadius: 20, cursor: 'pointer', fontSize: 14, fontWeight: 600, color: C.primary }}>
+              <button onClick={runSummary} style={{ padding: '10px 20px', backgroundColor: C.bgApp, border: 'none', borderRadius: 20, cursor: 'pointer', fontSize: 14, fontWeight: 600, color: C.primary }}>
                 Try again
               </button>
             </div>
@@ -2960,7 +2655,19 @@ In 3–5 sentences, explain what these options mean for this specific patient gi
 }
 
 
-const SuggestedBlock = ({ block, defaultOpen = false, onApproachSelect, addedIds = {}, genState = 'idle', onSummarize = null }) => {
+// What the guideline recommendation is built from — named record facts, so the
+// suggested treatments show their provenance instead of implying it by adjacency.
+// (Deterministic over the record; the honest version of "these come from your history".)
+const buildTreatmentBasis = (ps, timeline = []) => {
+  const events = (timeline || []).flatMap(d => (d.events || []).map(e => ({ ...e, _date: d.date })))
+  const basis = []
+  if (events.some(e => e.type === 'diagnosis') || (ps && (ps.cancerType || ps.diagnosis))) basis.push('your diagnosis')
+  if (events.some(e => /nephrectomy|prostatectomy|mastectomy|lumpectomy|resection|ablation|surgery/i.test(e.name || ''))) basis.push('your surgery')
+  if (events.some(e => e.type === 'scan' || /patholog|scan|biopsy|mri|\bct\b|\bpet\b|panel|result|test/i.test(e.name || ''))) basis.push('your test results')
+  if (events.some(e => e.type === 'medication')) basis.push('your current medications')
+  return basis
+}
+const SuggestedBlock = ({ block, defaultOpen = false, onApproachSelect, addedIds = {}, genState = 'idle', onSummarize = null, basis = [] }) => {
   const [open, setOpen] = useState(defaultOpen)
   const [closing, setClosing] = useState(false)
   const toggle = (e) => {
@@ -2976,7 +2683,7 @@ const SuggestedBlock = ({ block, defaultOpen = false, onApproachSelect, addedIds
     return (
       <div style={{ width: '100%', backgroundColor: C.bgCard, borderRadius: 14, padding: '14px 16px', overflow: 'hidden', position: 'relative' }}>
         <div style={{ position: 'absolute', inset: 0, borderRadius: 14, background: 'linear-gradient(90deg, transparent 0%, rgba(255,121,88,0.07) 50%, transparent 100%)', backgroundSize: '200% 100%', animation: 'shimmer 1.4s ease-in-out infinite' }}/>
-        <div style={{ fontSize: 11, fontWeight: 600, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6, opacity: 0.7 }}>NCCN Guidelines</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6, opacity: 0.7 }}>Suggested treatments</div>
         <div style={{ fontSize: 14, color: C.textSecondary, animation: 'genpulse 1.4s ease-in-out infinite' }}>{genMessage}</div>
         <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {[1,2,3].map(i => (
@@ -2991,12 +2698,11 @@ const SuggestedBlock = ({ block, defaultOpen = false, onApproachSelect, addedIds
     <>
     <div data-sugblock="true" onClick={toggle}
       style={{ width: '100%', backgroundColor: expanded ? 'transparent' : C.bgCard, border: 'none', borderRadius: expanded ? 0 : 13, padding: expanded ? '12px 16px' : '12px 16px', cursor: 'pointer', textAlign: 'left', transition: 'background 0.22s, border 0.22s, border-radius 0.22s, padding 0.22s', WebkitTapHighlightColor: 'transparent', userSelect: 'none', outline: 'none' }}>
-      {/* data-spine-anchor: the rail node centers on this header at its COLLAPSED height (body clamped to 2 lines), so it doesn't jump on expand */}
-      <div data-spine-anchor="true" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: open ? 10 : 0 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: open ? 10 : 0 }}>
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>NCCN Guidelines</div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>Suggested treatments</div>
           <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.2px', color: C.textPrimary }}>{block.stepLabel}</div>
-          <div data-spine-clamp="2" style={{ fontSize: 13, color: C.textSecondary, marginTop: 4, lineHeight: 1.5, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: open ? 999 : 2, overflow: 'hidden' }}>{block.stepBody}</div>
+          <div style={{ fontSize: 13, color: C.textSecondary, marginTop: 4, lineHeight: 1.5, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: open ? 999 : 2, overflow: 'hidden' }}>{block.stepBody}</div>
 
         </div>
         <button onClick={toggle} style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: expanded ? 'transparent' : 'rgba(255,121,88,0.1)', border: expanded ? 'none' : `1px solid rgba(255,121,88,0.2)`, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0, marginLeft: 10, marginTop: 2, transition: 'background 0.22s, border 0.22s' }}>
@@ -3005,15 +2711,16 @@ const SuggestedBlock = ({ block, defaultOpen = false, onApproachSelect, addedIds
       </div>
       {expanded && <div style={{ maxHeight: closing ? '0' : '2000px', overflow: 'hidden', transition: 'max-height 0.3s cubic-bezier(0.4,0,1,1)', margin: '0 -15px', width: 'calc(100% + 30px)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {/* Explain card — first in options list */}
+          {/* Provenance — names what these options are built from, and the living-plan promise */}
           <div style={{ backgroundColor: C.bgCard, borderRadius: 13, padding: '12px 15px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
-              <span style={{ fontSize: 13, color: C.textPrimary, lineHeight: 1.5 }}>These treatment options are recommended based on your diagnosis</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, color: C.textPrimary, lineHeight: 1.5 }}>Built from {basis && basis.length ? basis.join(' · ') : 'your diagnosis and profile'}.</div>
+              <div style={{ fontSize: 12, color: C.textTertiary, lineHeight: 1.45, marginTop: 3 }}>Add more to your record and these sharpen.</div>
             </div>
             <button
               onClick={e => { e.stopPropagation(); onSummarize && onSummarize(block) }}
-              style={{ height: 32, padding: '0 12px', backgroundColor: '#273E4E', border: 'none', borderRadius: 20, cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'white', WebkitTapHighlightColor: 'transparent', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5 }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 14, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span>
+              style={{ height: 32, padding: '0 12px', backgroundColor: C.bgApp, border: 'none', borderRadius: 20, cursor: 'pointer', fontSize: 12, fontWeight: 600, color: C.primary, WebkitTapHighlightColor: 'transparent', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5 }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 14, ...AI_ICON, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span>
               Explain my options
             </button>
           </div>
@@ -3022,7 +2729,7 @@ const SuggestedBlock = ({ block, defaultOpen = false, onApproachSelect, addedIds
               <button key={opt.id} onClick={e => { e.stopPropagation(); onApproachSelect && onApproachSelect(opt) }}
                 style={{ width: '100%', backgroundColor: C.bgCard, border: 'none', borderRadius: 13, padding: '13px 15px', cursor: 'pointer', textAlign: 'left', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, position: 'relative' }}>
                 <div style={{ flex: 1 }}>
-                  {opt.phase && <div style={{ fontSize: 11, fontWeight: 600, color: C.eyebrow, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>{opt.phase}</div>}
+                  {opt.phase && <div style={{ fontSize: 11, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>{opt.phase}</div>}
                   <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary, marginBottom: 2 }}>{opt.title}</div>
                   <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.45 }}>{opt.subtitle || opt.description}</div>
                 </div>
@@ -3056,140 +2763,1791 @@ const RailItem = ({ icon, isToday, isLast, card }) => {
   )
 }
 
-// ─── SPINE ROW ────────────────────────────────────────────────────
-// One rail for the whole timeline. Every row is [rail column | card]; the node sits in the
-// rail column, vertically centred on the card (or on the element marked data-spine-anchor,
-// e.g. a SuggestedBlock's collapsed header). One line mechanism: each row draws
-//   above — row top → node centre        (continues the previous row's "below")
-//   below — node centre → row bottom + gap (reaches the next row's top)
-// Node-less rows (summary, records) are full width; their "below" starts at the card bottom.
-const SPINE = { col: 48, gap: 12, rowGap: 16, line: 3, clearance: 6 } // clearance = space between the line and anything it connects (node, date, banner)
-const SpineRow = ({ node, card, above, below, belowInset = 0, gapBelow = !!below, wrapProps = {} }) => {
-  const cardRef = useRef(null)
-  const nodeRef = useRef(null)
-  const [anchorY, setAnchorY] = useState(null)
-  const [nodeH, setNodeH] = useState(40)
-  useLayoutEffect(() => {
-    if (!node) return
-    const el = cardRef.current
-    if (!el) return
-    const measure = () => {
-      const top = el.getBoundingClientRect().top
-      const a = el.querySelector('[data-spine-anchor]')
-      let y
-      if (a) {
-        const r = a.getBoundingClientRect()
-        let h = r.height
-        // Centre on the COLLAPSED header: discount any lines beyond the clamp count.
-        const c = a.querySelector('[data-spine-clamp]')
-        if (c) {
-          const lh = parseFloat(getComputedStyle(c).lineHeight) || 0
-          const lines = parseInt(c.getAttribute('data-spine-clamp'), 10) || 2
-          h -= Math.max(0, c.getBoundingClientRect().height - lh * lines)
-        }
-        y = (r.top - top) + h / 2
-      } else {
-        y = el.getBoundingClientRect().height / 2
-      }
-      y = Math.round(y)
-      setAnchorY(prev => (prev === y ? prev : y))
-      const nh = nodeRef.current ? nodeRef.current.offsetHeight : 40
-      setNodeH(prev => (prev === nh ? prev : nh))
+// ═══════════════════════════════════════════════════════════════════════════
+// REDESIGN-01 "payoffs" — the record gives back.
+// Additive block: action items (rule-derived), the Pending entry shape,
+// prepare-for-visit fixture, sponsored slot, the appointment artifact, and the
+// Track writers (symptom / dose / journal / pending). Tokens + card/button/
+// sheet/flow patterns all match the existing prototype. No existing code moved.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Soft, calm card treatment (redesign-04 "zen" feel): shadow instead of a hard border,
+// rounder corners. Spread over a card's own backgroundColor/padding.
+const SOFT_CARD = { border: 'none', borderRadius: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)' }
+
+const _today = () => localDateStr()
+const _daysBetweenStr = (a, b) => Math.round((new Date(b + 'T12:00:00') - new Date(a + 'T12:00:00')) / 86400000)
+const relDays = (dateStr) => {
+  if (!dateStr) return ''
+  const n = _daysBetweenStr(dateStr, _today())
+  if (n <= 0) return 'today'
+  if (n === 1) return 'yesterday'
+  return `${n} days ago`
+}
+const inDays = (dateStr) => {
+  const n = _daysBetweenStr(_today(), dateStr)
+  if (n <= 0) return 'today'
+  if (n === 1) return 'tomorrow'
+  return `in ${n} days`
+}
+const fmtShort = (dateStr) => { if (!dateStr) return ''; const [y, m, d] = dateStr.split('-'); return `${MONTHS_LABELS[parseInt(m, 10) - 1]} ${parseInt(d, 10)}` }
+const fmtRange = (a, b) => `${fmtShort(a)} – ${fmtShort(b)}`
+
+// Symptom + dose vocab for the prototype writers (production would be broader).
+const SYMPTOM_CATALOG = ['Fatigue', 'Nausea', 'Pain', 'Headache', 'Fever', 'Diarrhea', 'Constipation', 'Appetite loss', 'Shortness of breath', 'Rash', 'Numbness / tingling', 'Trouble sleeping', 'Anxiety', 'Dizziness']
+const SYMPTOM_SEVERITY = ['Mild', 'Moderate', 'Severe']
+const SKIP_REASONS = ['Forgot', 'Side effects', 'Ran out', 'Felt better', 'Cost', 'Other']
+
+// Pending kinds → display, the ageing window before they surface as an action item,
+// and the label used to resolve them.
+const PENDING_KINDS = {
+  records: { label: 'Medical records request', icon: 'folder_shared', overdueDays: 10, resolveLabel: 'Mark received' },
+  genomic: { label: 'Genomic testing result', icon: 'biotech', overdueDays: 14, resolveLabel: 'Mark received' },
+  genetic: { label: 'Genetic counseling referral', icon: 'groups', overdueDays: 21, resolveLabel: 'Mark referred' },
+  trial:   { label: 'Clinical trial to discuss', icon: 'science', overdueDays: 0, resolveLabel: 'Mark as raised' },
+  'trial-match': { label: 'Clinical trial match (eligible)', icon: 'verified', overdueDays: 0, resolveLabel: 'Mark as discussed' },
+}
+const PENDING_ORDER = ['records', 'genomic', 'genetic', 'trial', 'trial-match']
+
+// ─── ACTION ITEMS — deterministic rules over state ──────────────────────────
+// No model dependency. Must stay correct if the summary is unavailable. Returns
+// display items; the caller maps `primary.kind` → a real handler.
+const deriveActionItems = ({ timeline = [], pending = [], symptoms = [], doseLogs = [], dismissed = [] }) => {
+  const items = []
+  const push = (o) => { if (!dismissed.includes(o.id)) items.push(o) }
+  const today = _today()
+
+  // 1) Pending items past their window (or any saved trial) → nudge to act.
+  pending.filter(p => p.status === 'open').forEach(p => {
+    const meta = PENDING_KINDS[p.kind] || {}
+    const age = _daysBetweenStr(p.requestedDate, today)
+    if (p.kind === 'trial') {
+      push({ id: `ai_trial_${p.id}`, icon: 'science', title: `Raise ${p.label} with your care team`, reason: `Saved ${relDays(p.requestedDate)} and not yet marked as raised`, primary: { kind: 'resolvePending', label: meta.resolveLabel, pendingId: p.id } })
+    } else if (age >= (meta.overdueDays ?? 14)) {
+      push({ id: `ai_pending_${p.id}`, icon: meta.icon || 'schedule', title: `${meta.label} still pending`, reason: `Requested ${relDays(p.requestedDate)}, past the ${meta.overdueDays}-day window`, primary: { kind: 'resolvePending', label: meta.resolveLabel, pendingId: p.id } })
     }
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [!!node])
-  const lineStyle = (bg) => ({ position: 'absolute', left: '50%', transform: 'translateX(-50%)', width: SPINE.line, background: bg })
-  const { style: wrapStyle, ...restWrap } = wrapProps
+  })
 
-  if (!node) {
-    return (
-      <div {...restWrap} style={{ position: 'relative', marginBottom: gapBelow ? SPINE.rowGap : 0, ...wrapStyle }}>
-        {card}
-        {/* Node-less card (e.g. records banner): the rail stops short of it and resumes just below it */}
-        {below && (
-          <div style={{ position: 'absolute', left: 0, width: SPINE.col, top: `calc(100% + ${SPINE.clearance}px)`, bottom: (gapBelow ? -SPINE.rowGap : 0) + belowInset }}>
-            <div style={{ ...lineStyle(below), top: 0, bottom: 0 }}/>
-          </div>
-        )}
-      </div>
-    )
+  // 2) Medication started but nothing logged since → prompt a check-in.
+  const medEvents = timeline.flatMap(d => (d.events || []).filter(e => e.type === 'medication').map(e => ({ ...e, _date: e.date || d.date })))
+  const lastMed = medEvents.slice().sort((a, b) => (a._date || '').localeCompare(b._date || ''))[medEvents.length - 1]
+  if (lastMed && lastMed._date && _daysBetweenStr(lastMed._date, today) >= 3) {
+    const since = symptoms.filter(s => (s.date || '') >= lastMed._date)
+    if (since.length === 0) {
+      push({ id: `ai_nosympt_${lastMed.id}`, icon: 'vital_signs', title: `Log how you're feeling on ${lastMed.name}`, reason: `Nothing logged since you started it ${relDays(lastMed._date)}`, primary: { kind: 'logSymptom', label: 'Log a symptom' } })
+    }
   }
+  return items
+}
 
-  const y = anchorY ?? 0
-  return (
-    <div {...restWrap} style={{ display: 'flex', gap: SPINE.gap, alignItems: 'stretch', marginBottom: gapBelow ? SPINE.rowGap : 0, ...wrapStyle }}>
-      <div style={{ width: SPINE.col, flexShrink: 0, position: 'relative' }}>
-        {/* Segments stop SPINE.clearance px short of the node on both sides — the line meets the node, it doesn't run behind it */}
-        {above && <div style={{ ...lineStyle(above), top: 0, height: Math.max(0, y - nodeH / 2 - SPINE.clearance) }}/>}
-        {below && <div style={{ ...lineStyle(below), top: y + nodeH / 2 + SPINE.clearance, bottom: (gapBelow ? -SPINE.rowGap : 0) + belowInset }}/>}
-        <div ref={nodeRef} style={{ position: 'absolute', left: '50%', top: y, transform: 'translate(-50%, -50%)', zIndex: 1, visibility: anchorY == null ? 'hidden' : 'visible', lineHeight: 0 }}>{node}</div>
+// Group same-symptom logs on adjacent days into episodes (for the artifact).
+const buildEpisodes = (logs) => {
+  const byName = {}
+  logs.forEach(l => { (byName[l.name] = byName[l.name] || []).push(l) })
+  const out = []
+  Object.entries(byName).forEach(([name, arr]) => {
+    arr.sort((a, b) => a.date.localeCompare(b.date))
+    let cur = null
+    arr.forEach(l => {
+      if (cur && _daysBetweenStr(cur.to, l.date) <= 2) { cur.to = l.date; cur.count++; cur.sevs.push(l.severity) }
+      else { if (cur) out.push(cur); cur = { name, from: l.date, to: l.date, count: 1, sevs: [l.severity] } }
+    })
+    if (cur) out.push(cur)
+  })
+  const peak = (sevs) => SYMPTOM_SEVERITY[Math.max(...sevs.map(s => Math.max(0, SYMPTOM_SEVERITY.indexOf(s))))]
+  return out.map(e => ({ ...e, peak: peak(e.sevs) })).sort((a, b) => b.to.localeCompare(a.to))
+}
+
+// ─── ACTION ITEM CARD ───────────────────────────────────────────────────────
+const ActionItemCard = ({ item, onPrimary, onDismiss }) => (
+  <div style={{ position: 'relative', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px' }}>
+    <button onClick={onDismiss} aria-label="Dismiss" style={{ position: 'absolute', top: 10, right: 10, width: 28, height: 28, borderRadius: 14, background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textTertiary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>close</span>
+    </button>
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+      <div style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textIcon, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>{item.icon}</span>
       </div>
-      <div ref={cardRef} style={{ flex: 1, minWidth: 0 }}>{card}</div>
+      <div style={{ flex: 1, minWidth: 0, paddingRight: 20 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 3 }}>{item.title}</div>
+        <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.45, marginBottom: 12 }}>{item.reason}</div>
+        <button onClick={onPrimary} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }}>
+          {item.primary.label}
+        </button>
+      </div>
+    </div>
+  </div>
+)
+
+const AllCaughtUp = () => (
+  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 2px' }}>
+    <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textTertiary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>task_alt</span>
+    <span style={{ fontSize: 13, color: C.textTertiary }}>You're all caught up — nothing needs your attention.</span>
+  </div>
+)
+
+// ─── PENDING CARD (informational; visible until resolved) ───────────────────
+const PendingCard = ({ item, onResolve }) => {
+  const meta = PENDING_KINDS[item.kind] || {}
+  return (
+    <div style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '14px 16px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 19, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>{meta.icon || 'schedule'}</span>
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.label}</div>
+            <div style={{ fontSize: 9, fontWeight: 700, color: C.textSecondary, backgroundColor: C.bgApp, borderRadius: 9999, padding: '2px 7px', letterSpacing: '0.05em', flexShrink: 0 }}>PENDING</div>
+          </div>
+          <div style={{ fontSize: 12, color: C.textTertiary, marginTop: 2 }}>Requested {relDays(item.requestedDate)} · {fmtShort(item.requestedDate)}</div>
+        </div>
+        <button onClick={onResolve} style={{ flexShrink: 0, fontSize: 12, fontWeight: 700, color: C.primary, background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>{meta.resolveLabel || 'Resolve'}</button>
+      </div>
     </div>
   )
 }
 
-// Standing "Clinical trials" entry — a single flat card (not a step with sets).
-// Styled as an always-on recommendation, distinct from this-cycle suggested treatments.
-const CTStandingCard = ({ onOpen }) => (
-  <button onClick={onOpen} style={{ width: '100%', textAlign: 'left', backgroundColor: 'rgba(65,70,82,0.07)', border: '1px solid rgba(65,70,82,0.18)', borderRadius: 14, padding: '13px 15px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, fontFamily: "'Inter',sans-serif", WebkitTapHighlightColor: 'transparent' }}>
-    <div style={{ flex: 1, minWidth: 0 }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: C.eyebrow, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>Clinical trials</div>
-      <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.2px', color: C.textPrimary, marginBottom: 3 }}>Explore clinical trials</div>
-      <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.5 }}>NCCN especially encourages participation in clinical trials. Explore trials that may be relevant to your diagnosis and treatment.</div>
+// ─── PREPARE-FOR-VISIT (non-dismissible fixture inside Today) ────────────────
+const PrepareVisitCard = ({ appt, onPrepare }) => (
+  <div style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px' }}>
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+      <div style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textIcon, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>event</span>
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.textSecondary, letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: 3 }}>Upcoming visit</div>
+        <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 2 }}>{appt.name || 'Appointment'}</div>
+        <div style={{ fontSize: 13, color: C.textSecondary, marginBottom: 12 }}>{fmtShort(appt.date)} · {inDays(appt.date)}</div>
+        <button onClick={onPrepare} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 18px', backgroundColor: C.primary, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 14, fontWeight: 700, color: '#fff' }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 18, color: '#fff', fontVariationSettings: "'FILL' 1, 'wght' 500" }}>description</span>
+          Prepare for this visit
+        </button>
+      </div>
     </div>
-    <Ico.chevRight/>
+  </div>
+)
+
+// ─── SPONSORED SLOT (adjacent to the record, labeled, never inside a date group) ──
+const SponsoredSlot = ({ ad, onDismiss }) => (
+  <div style={{ padding: '4px 16px 8px' }}>
+    <div style={{ fontSize: 10, fontWeight: 700, color: C.textTertiary, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6, paddingLeft: 2 }}>Sponsored</div>
+    <div style={{ position: 'relative', backgroundColor: '#efeef3', border: `1px dashed ${C.borderMid}`, borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: '#e2e0e9', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 22, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>{ad.icon || 'campaign'}</span>
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary }}>{ad.title}</div>
+        <div style={{ fontSize: 12, color: C.textSecondary, lineHeight: 1.4, marginTop: 1 }}>{ad.body}</div>
+      </div>
+      <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>chevron_right</span>
+    </div>
+  </div>
+)
+
+// ─── APPOINTMENT ARTIFACT (generic, editable, shareable) ────────────────────
+const ArtifactSection = ({ title, children }) => (
+  <div style={{ marginBottom: 22 }}>
+    <div style={{ fontSize: 12, fontWeight: 700, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>{title}</div>
+    {children}
+  </div>
+)
+const ArtifactRow = ({ children, onRemove }) => (
+  <div style={{ position: 'relative', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: '12px 14px', marginBottom: 8, paddingRight: onRemove ? 40 : 14 }}>
+    {children}
+    {onRemove && (
+      <button onClick={onRemove} aria-label="Remove" style={{ position: 'absolute', top: 8, right: 8, width: 26, height: 26, borderRadius: 13, background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textTertiary }}>close</span>
+      </button>
+    )}
+  </div>
+)
+
+const AppointmentArtifactSheet = ({ appt, timeline, symptoms, doseLogs, medications, pending, questions, onSaveQuestions, onClose }) => {
+  // Interval: from the most recent past appointment before this visit → the visit date.
+  const end = appt.date
+  const pastAppts = (timeline || []).flatMap(d => (d.events || []).filter(e => e.type === 'appointment')).map(e => e.date).filter(dt => dt && dt < end).sort()
+  const start = pastAppts.length ? pastAppts[pastAppts.length - 1] : localDateStr(new Date(Date.now() - 30 * 86400000))
+
+  const inRange = (dt) => dt && dt >= start && dt <= end
+  const [excluded, setExcluded] = useState({})   // { 'ep:idx':true, 'skip:id':true }
+  const [qDraft, setQDraft] = useState('')
+  const isEx = (k) => !!excluded[k]
+  const toggleEx = (k) => setExcluded(p => ({ ...p, [k]: !p[k] }))
+
+  const episodes = buildEpisodes((symptoms || []).filter(s => inRange(s.date))).filter((_, i) => !isEx('ep:' + i))
+  const skips = (doseLogs || []).filter(l => l.status === 'skipped' && inRange(l.date)).filter(l => !isEx('skip:' + l.id))
+  const takenCount = (doseLogs || []).filter(l => l.status === 'taken' && inRange(l.date)).length
+  const skipCount = skips.length
+  const totalDoses = takenCount + skipCount
+  const adherencePct = totalDoses ? Math.round((takenCount / totalDoses) * 100) : null
+  const openPending = (pending || []).filter(p => p.status === 'open')
+  const qs = questions || []
+
+  const addQuestion = () => { if (!qDraft.trim()) return; onSaveQuestions([...qs, { id: 'q_' + Date.now(), text: qDraft.trim(), createdDate: _today() }]); setQDraft('') }
+  const removeQuestion = (id) => onSaveQuestions(qs.filter(q => q.id !== id))
+
+  const shareText = () => {
+    const L = []
+    L.push(`Visit summary — ${appt.name || 'Appointment'}`)
+    L.push(`${fmtRange(start, end)}`)
+    L.push('')
+    L.push('SYMPTOMS')
+    if (episodes.length) episodes.forEach(e => L.push(`• ${e.name}: ${e.count === 1 ? fmtShort(e.from) : fmtRange(e.from, e.to)} (${e.count} log${e.count > 1 ? 's' : ''}, peak ${e.peak})`))
+    else L.push('• None logged this interval')
+    L.push('')
+    L.push('MEDICATION ADHERENCE')
+    if (adherencePct != null) L.push(`• ${adherencePct}% of logged doses taken (${takenCount}/${totalDoses})`)
+    if (skips.length) skips.forEach(s => L.push(`• Skipped ${s.medName} on ${fmtShort(s.date)}${s.reason ? ` — ${s.reason}` : ''}`))
+    if (adherencePct == null) L.push('• No doses logged this interval')
+    L.push('')
+    L.push('QUESTIONS TO ASK')
+    if (qs.length) qs.forEach(q => L.push(`• ${q.text}`))
+    else L.push('• (none)')
+    L.push('')
+    L.push('PENDING')
+    if (openPending.length) openPending.forEach(p => L.push(`• ${p.label} — requested ${fmtShort(p.requestedDate)}`))
+    else L.push('• (none)')
+    return L.join('\n')
+  }
+  const doShare = () => {
+    const text = shareText()
+    if (navigator.share) navigator.share({ title: 'Visit summary', text }).catch(() => {})
+    else { try { navigator.clipboard.writeText(text) } catch {} }
+  }
+
+  return (
+    <FlowShell onClose={onClose} zIndex={80}>
+      {(dismiss, setNav) => {
+        return (
+          <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 120px', backgroundColor: C.bgApp }}>
+              <div style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px', marginBottom: 22 }}>
+                <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px' }}>{appt.name || 'Appointment'}</div>
+                <div style={{ fontSize: 13, color: C.textSecondary, marginTop: 2 }}>Visit {fmtShort(appt.date)} · covering {fmtRange(start, end)}</div>
+                <div style={{ fontSize: 12, color: C.textTertiary, marginTop: 8, lineHeight: 1.5 }}>Review and edit before sharing. Nothing here is sent to your care team automatically.</div>
+              </div>
+
+              <ArtifactSection title="Symptoms this interval">
+                {episodes.length ? episodes.map((e, i) => (
+                  <ArtifactRow key={'ep' + i} onRemove={() => toggleEx('ep:' + i)}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary }}>{e.name}</div>
+                    <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 2 }}>{e.count === 1 ? fmtShort(e.from) : fmtRange(e.from, e.to)} · {e.count} log{e.count > 1 ? 's' : ''} · peak {e.peak}</div>
+                  </ArtifactRow>
+                )) : <div style={{ fontSize: 13, color: C.textTertiary, padding: '2px 2px 4px' }}>No symptoms logged this interval.</div>}
+              </ArtifactSection>
+
+              <ArtifactSection title="Medication adherence">
+                {adherencePct != null ? (
+                  <ArtifactRow>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary }}>{adherencePct}% of logged doses taken</div>
+                    <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 2 }}>{takenCount} taken · {skipCount} skipped ({totalDoses} logged)</div>
+                  </ArtifactRow>
+                ) : <div style={{ fontSize: 13, color: C.textTertiary, padding: '2px 2px 8px' }}>No doses logged this interval.</div>}
+                {skips.map(s => (
+                  <ArtifactRow key={s.id} onRemove={() => toggleEx('skip:' + s.id)}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary }}>Skipped {s.medName}</div>
+                    <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 2 }}>{fmtShort(s.date)}{s.reason ? ` · ${s.reason}` : ''}</div>
+                  </ArtifactRow>
+                ))}
+              </ArtifactSection>
+
+              <ArtifactSection title="Questions to ask">
+                {qs.map(q => (
+                  <ArtifactRow key={q.id} onRemove={() => removeQuestion(q.id)}>
+                    <div style={{ fontSize: 14, color: C.textPrimary, lineHeight: 1.4 }}>{q.text}</div>
+                  </ArtifactRow>
+                ))}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 2 }}>
+                  <input value={qDraft} onChange={e => setQDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addQuestion() }} placeholder="Add a question…" style={{ flex: 1, border: `1px solid rgba(0,0,0,0.22)`, borderRadius: 10, padding: '11px 12px', fontSize: 15, color: C.textPrimary, backgroundColor: C.bgCard, outline: 'none', fontFamily: 'Inter,sans-serif' }}/>
+                  <button onClick={addQuestion} style={{ flexShrink: 0, width: 44, height: 44, borderRadius: 22, backgroundColor: qDraft.trim() ? C.primary : C.bgApp, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <span className="material-symbols-rounded" style={{ fontSize: 22, color: qDraft.trim() ? '#fff' : C.textTertiary }}>add</span>
+                  </button>
+                </div>
+              </ArtifactSection>
+
+              <ArtifactSection title="Pending">
+                {openPending.length ? openPending.map(p => (
+                  <ArtifactRow key={p.id}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary }}>{p.label}</div>
+                    <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 2 }}>Requested {fmtShort(p.requestedDate)}</div>
+                  </ArtifactRow>
+                )) : <div style={{ fontSize: 13, color: C.textTertiary, padding: '2px 2px 4px' }}>Nothing outstanding.</div>}
+              </ArtifactSection>
+            </div>
+            <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: C.bgCard, borderTop: `1px solid ${C.border}`, padding: '12px 20px 34px' }}>
+              <button onClick={doShare} style={{ width: '100%', height: 54, borderRadius: 9999, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 16, fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                <span className="material-symbols-rounded" style={{ fontSize: 20, color: '#fff', fontVariationSettings: "'FILL' 1, 'wght' 500" }}>ios_share</span>
+                Share with care team
+              </button>
+            </div>
+          </div>
+        )
+      }}
+    </FlowShell>
+  )
+}
+
+// ─── TRACK WRITER: SYMPTOM LOG ──────────────────────────────────────────────
+const SymptomLogFlow = ({ entry, onClose, onComplete }) => {
+  const [step, setStep] = useState(entry ? 1 : 0)
+  const [name, setName] = useState(entry?.name || '')
+  const [severity, setSeverity] = useState(entry?.severity || 'Mild')
+  const [date, setDate] = useState(entry?.date || _today())
+  const [notes, setNotes] = useState(entry?.notes || '')
+  const [q, setQ] = useState('')
+  const list = SYMPTOM_CATALOG.filter(s => s.toLowerCase().includes(q.toLowerCase()))
+  return (
+    <FlowShell onClose={onClose} zIndex={80} confirmClose={step > 0}>
+      {(dismiss, setNav) => {
+        if (step === 0) {
+          return (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <div style={{ padding: '16px 16px 8px' }}><SearchInput value={q} onChange={setQ}/></div>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 24px' }}>
+                {list.map(s => (
+                  <button key={s} onClick={() => { setName(s); setStep(1) }} style={{ width: '100%', textAlign: 'left', padding: '14px 4px', background: 'none', border: 'none', borderBottom: `1px solid ${C.border}`, cursor: 'pointer', fontSize: 16, color: C.textPrimary, fontFamily: 'Inter,sans-serif' }}>{s}</button>
+                ))}
+                {q.trim() && !list.some(s => s.toLowerCase() === q.trim().toLowerCase()) && (
+                  <button onClick={() => { setName(q.trim()); setStep(1) }} style={{ width: '100%', textAlign: 'left', padding: '14px 4px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: C.primary, fontWeight: 600, fontFamily: 'Inter,sans-serif' }}>Add “{q.trim()}”</button>
+                )}
+              </div>
+            </div>
+          )
+        }
+        return (
+          <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 120px' }}>
+              <div style={{ fontSize: 22, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 18 }}>{name}</div>
+              <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 8 }}>Severity</div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+                {SYMPTOM_SEVERITY.map(s => (
+                  <button key={s} onClick={() => setSeverity(s)} style={{ flex: 1, padding: '11px 0', borderRadius: 10, border: `1px solid ${severity === s ? C.primary : C.border}`, backgroundColor: severity === s ? C.primaryLight : C.bgCard, cursor: 'pointer', fontSize: 14, fontWeight: 600, color: severity === s ? C.primary : C.textSecondary, fontFamily: 'Inter,sans-serif' }}>{s}</button>
+                ))}
+              </div>
+              <DateInputField label="When" value={date} onChange={setDate} max={_today()}/>
+              <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 5 }}>Notes (optional)</div>
+              <NotesTextarea value={notes} onChange={setNotes} placeholder="Anything worth remembering…"/>
+            </div>
+            <DockedButton label="Save to record" onClick={() => onComplete({ id: entry?.id || ('sym_' + Date.now()), name, severity, date, notes })}/>
+          </div>
+        )
+      }}
+    </FlowShell>
+  )
+}
+
+
+// ─── LOG A SYMPTOM (from chat) ──────────────────────────────────────────────────
+// Mirrors the production app's "Log a symptom": a full view with ×, date and time, an alphabetical
+// checklist; checking a symptom expands Severity, a note and photos; Submit, then the "recommended
+// solutions" dialog. Opened from chat it slides up as a full view, pre-filled with the symptom they
+// mentioned (checked) and their words in the note. Severity is left to them. Saves to the symptom
+// tracker only (no timeline event).
+const LOG_SYMPTOM_LIST = ['Abdominal pain','Anxiety','Attention problems','Back pain','Bladder problems','Bone pain','Bruising','Chest pain','Chills','Constipation','Cough','Decreased appetite','Decreased libido','Depression','Diarrhea','Dizziness','Fatigue','Fever','Headache','Hot flashes','Insomnia','Joint pain','Mouth sores','Nausea','Numbness or tingling','Pain','Rash','Shortness of breath','Swelling','Vomiting']
+const LOG_SEVERITY = [{ k: 'Mild', bars: 1, c: '#F4A3AE' }, { k: 'Moderate', bars: 2, c: '#EC5C70' }, { k: 'Severe', bars: 3, c: '#E1263C' }, { k: 'Very Severe', bars: 4, c: '#9E1028' }]
+const ChatLogSymptomFlow = ({ prefill, onClose, onSubmit }) => {
+  const [vis, setVis] = useState(false)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const startName = prefill && prefill.name && LOG_SYMPTOM_LIST.includes(prefill.name) ? prefill.name : null
+  const [checked, setChecked] = useState(() => startName ? { [startName]: { severity: null, note: prefill.note || '' } } : {})
+  const [dialog, setDialog] = useState(false)
+  const listRef = useRef(null)
+  useEffect(() => {
+    if (!startName || !listRef.current) return
+    const el = listRef.current.querySelector(`[data-sym="${startName}"]`)
+    if (el) listRef.current.scrollTop = el.offsetTop - 8
+  }, [])
+  const now = new Date()
+  const when = `Today, ${now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}  ${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`
+  const close = (cb) => { setVis(false); setTimeout(() => cb && cb(), 320) }
+  const toggle = (n) => setChecked(prev => { const next = { ...prev }; if (next[n]) delete next[n]; else next[n] = { severity: null, note: '' }; return next })
+  const setField = (n, k, v) => setChecked(prev => ({ ...prev, [n]: { ...prev[n], [k]: v } }))
+  const names = Object.keys(checked)
+  const entries = () => names.map(n => ({ id: 'sym_' + Date.now() + '_' + n.replace(/\W/g, ''), name: n, severity: checked[n].severity || 'Mild', date: _today(), notes: checked[n].note || '' }))
+  const bars = (n, c) => <span style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center', height: 18, justifyContent: 'center' }}>{Array.from({ length: n }).map((_, i) => <span key={i} style={{ width: 16, height: 3, borderRadius: 1, backgroundColor: c }}/>)}</span>
+  return ReactDOM.createPortal(
+    <div style={{ position: 'fixed', inset: 0, zIndex: 200, backgroundColor: C.bgCard, display: 'flex', flexDirection: 'column', transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.4s cubic-bezier(0.32,0.72,0,1)', fontFamily: 'Inter,sans-serif' }}>
+      <div style={{ padding: 'calc(8px + env(safe-area-inset-top, 0px)) 8px 0' }}>
+        <button onClick={() => close(onClose)} aria-label="Close" style={{ width: 44, height: 44, border: 'none', background: '#fff', borderRadius: 22, boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: '#414652' }}>close</span></button>
+      </div>
+      <div style={{ padding: '4px 16px 0' }}>
+        <div style={{ fontSize: 22, lineHeight: '28px', fontWeight: 600, color: C.textPrimary, marginBottom: 16 }}>Log a symptom</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: '1px solid rgba(0,0,0,0.38)', borderRadius: 4, padding: '0 12px', height: 48, fontSize: 14, color: C.textPrimary, marginBottom: 8 }}>{when}<span className="material-symbols-rounded" style={{ fontSize: 22, color: C.textSecondary }}>calendar_month</span></div>
+      </div>
+      <div ref={listRef} style={{ flex: 1, overflowY: 'auto', padding: '0 16px 96px', position: 'relative' }}>
+        {LOG_SYMPTOM_LIST.map(n => {
+          const on = !!checked[n]
+          return (
+            <div key={n} data-sym={n} style={{ borderBottom: `1px solid ${C.border}` }}>
+              <button onClick={() => toggle(n)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
+                <span style={{ width: 20, height: 20, borderRadius: 3, border: on ? 'none' : '2px solid rgba(0,0,0,0.38)', backgroundColor: on ? C.primary : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box' }}>{on && <span className="material-symbols-rounded" style={{ fontSize: 16, color: '#fff', fontVariationSettings: "'wght' 700" }}>check</span>}</span>
+                <span style={{ fontSize: 14, lineHeight: '20px', fontWeight: on ? 600 : 500, color: C.textPrimary }}>{n}</span>
+              </button>
+              {on && (
+                <div style={{ padding: '0 0 16px' }}>
+                  <div style={{ fontSize: 14, lineHeight: '20px', color: C.textSecondary, marginBottom: 8 }}>Severity</div>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                    {LOG_SEVERITY.map(sv => {
+                      const sel = checked[n].severity === sv.k
+                      return <button key={sv.k} onClick={() => setField(n, 'severity', sv.k)} style={{ flex: 1, height: 64, borderRadius: 8, border: `1px solid ${sel ? C.primary : C.border}`, backgroundColor: '#fff', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, fontFamily: 'inherit', fontSize: 12, color: C.textSecondary }}>{bars(sv.bars, sv.c)}{sv.k}</button>
+                    })}
+                  </div>
+                  <textarea value={checked[n].note} onChange={e => setField(n, 'note', e.target.value)} placeholder="Add a note" rows={2} style={{ width: '100%', boxSizing: 'border-box', border: 'none', borderBottom: '1px solid rgba(0,0,0,0.38)', backgroundColor: C.bgApp, borderRadius: '4px 4px 0 0', padding: 12, fontSize: 14, lineHeight: '20px', fontFamily: 'inherit', resize: 'none', marginBottom: 12, color: C.textPrimary }}/>
+                  <div style={{ fontSize: 14, lineHeight: '20px', color: C.textSecondary, marginBottom: 8 }}>Add photos</div>
+                  <div style={{ width: 48, height: 48, border: `1px solid ${C.border}`, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 22, color: C.textTertiary }}>add_circle</span></div>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: '12px 16px calc(12px + env(safe-area-inset-bottom, 0px))', background: 'linear-gradient(rgba(255,255,255,0), #fff 30%)' }}>
+        <button disabled={!names.length} onClick={() => setDialog(true)} style={{ width: '100%', height: 44, borderRadius: 9999, border: 'none', backgroundColor: names.length ? C.primary : C.bgApp, color: names.length ? '#fff' : C.textTertiary, fontSize: 16, fontWeight: 600, fontFamily: 'inherit', cursor: names.length ? 'pointer' : 'default' }}>Submit</button>
+      </div>
+      {dialog && (
+        <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, zIndex: 5 }}>
+          <div style={{ backgroundColor: '#fff', borderRadius: 24, padding: '24px 16px 16px', width: '100%', maxWidth: 340, textAlign: 'left' }}>
+            <div style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#FBD3D9', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px' }}><span className="material-symbols-rounded" style={{ fontSize: 22, color: '#fff' }}>favorite</span></div>
+            <div style={{ fontSize: 16, lineHeight: '24px', fontWeight: 600, color: C.textPrimary, marginBottom: 8 }}>Would you like to see recommended solutions for easing this symptom?</div>
+            <div style={{ fontSize: 14, lineHeight: '20px', color: C.textSecondary, marginBottom: 16 }}>Recorded symptoms are not monitored by a healthcare professional. If you are having a severe or life-threatening side effect, please call your doctor or 911.</div>
+            <button onClick={() => { const e = entries(); close(() => onSubmit(e, true)) }} style={{ width: '100%', height: 44, borderRadius: 9999, border: 'none', backgroundColor: C.primary, color: '#fff', fontSize: 16, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 8 }}>Yes, manage symptom</button>
+            <button onClick={() => { const e = entries(); close(() => onSubmit(e, false)) }} style={{ width: '100%', height: 44, borderRadius: 9999, border: `1px solid ${C.border}`, backgroundColor: '#fff', color: C.textPrimary, fontSize: 16, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}>No thanks</button>
+          </div>
+        </div>
+      )}
+    </div>,
+    document.body
+  )
+}
+
+// ─── TRACK WRITER: JOURNAL ──────────────────────────────────────────────────
+const JournalFlow = ({ entry, onClose, onComplete }) => {
+  const [date, setDate] = useState(entry?.date || _today())
+  const [text, setText] = useState(entry?.text || '')
+  return (
+    <FlowShell onClose={onClose} zIndex={80} confirmClose={!!text.trim() && text.trim() !== (entry?.text || '')}>
+      {(dismiss, setNav) => (
+        <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 120px' }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 18 }}>{entry ? 'Edit journal entry' : 'Journal entry'}</div>
+            <DateInputField label="Date" value={date} onChange={setDate} max={_today()}/>
+            <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 5 }}>Entry</div>
+            <NotesTextarea value={text} onChange={setText} placeholder="How are you doing today?"/>
+          </div>
+          <DockedButton label="Save to record" onClick={() => text.trim() && onComplete({ id: entry?.id || ('jrn_' + Date.now()), date, text: text.trim() })} disabled={!text.trim()}/>
+        </div>
+      )}
+    </FlowShell>
+  )
+}
+
+// ─── TRACK WRITER: DOSE LOG (bottom sheet) ──────────────────────────────────
+const DoseLogSheet = ({ medications, preMed, onClose, onSave }) => {
+  const [vis, setVis] = useState(false)
+  const [med, setMed] = useState(preMed || (medications[0] || null))
+  const [status, setStatus] = useState('taken')
+  const [reason, setReason] = useState('')
+  const [date, setDate] = useState(_today())
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const close = (cb) => { setVis(false); setTimeout(() => cb && cb(), 300) }
+  return ReactDOM.createPortal(
+    <div style={{ position: 'fixed', inset: 0, zIndex: 420 }}>
+      <div onClick={() => close(onClose)} style={{ position: 'absolute', inset: 0, backgroundColor: vis ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0)', transition: 'background-color 0.3s ease' }}/>
+      <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: C.bgCard, borderRadius: '22px 22px 0 0', boxShadow: '0 -6px 28px rgba(0,0,0,0.16)', padding: '10px 20px 30px', transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.34s cubic-bezier(0.32,0.72,0,1)' }}>
+        <div style={{ width: 38, height: 4, backgroundColor: 'rgba(0,0,0,0.12)', borderRadius: 2, margin: '0 auto 16px' }}/>
+        <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 16 }}>Log a dose</div>
+        {!preMed && medications.length > 1 && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 6 }}>Medication</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {medications.map(m => (
+                <button key={m.id} onClick={() => setMed(m)} style={{ padding: '8px 13px', borderRadius: 9999, border: `1px solid ${med?.id === m.id ? C.primary : C.border}`, backgroundColor: med?.id === m.id ? C.primaryLight : C.bgCard, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: med?.id === m.id ? C.primary : C.textSecondary, fontFamily: 'Inter,sans-serif' }}>{m.name}</button>
+              ))}
+            </div>
+          </div>
+        )}
+        {med && !preMed && medications.length <= 1 && <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, marginBottom: 16 }}>{med.name}</div>}
+        {preMed && <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, marginBottom: 16 }}>{preMed.name}</div>}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+          {[['taken', 'Taken', 'check_circle'], ['skipped', 'Skipped', 'cancel']].map(([v, l, ic]) => (
+            <button key={v} onClick={() => setStatus(v)} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '12px 0', borderRadius: 10, border: `1px solid ${status === v ? C.primary : C.border}`, backgroundColor: status === v ? C.primaryLight : C.bgCard, cursor: 'pointer', fontSize: 14, fontWeight: 600, color: status === v ? C.primary : C.textSecondary, fontFamily: 'Inter,sans-serif' }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 19, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>{ic}</span>{l}
+            </button>
+          ))}
+        </div>
+        {status === 'skipped' && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 6 }}>Reason</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {SKIP_REASONS.map(r => (
+                <button key={r} onClick={() => setReason(r)} style={{ padding: '8px 13px', borderRadius: 9999, border: `1px solid ${reason === r ? C.primary : C.border}`, backgroundColor: reason === r ? C.primaryLight : C.bgCard, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: reason === r ? C.primary : C.textSecondary, fontFamily: 'Inter,sans-serif' }}>{r}</button>
+              ))}
+            </div>
+          </div>
+        )}
+        <DateInputField label="When" value={date} onChange={setDate} max={_today()}/>
+        <button onClick={() => med && close(() => onSave({ id: 'dose_' + Date.now(), medId: med.id, medName: med.name, date, status, reason: status === 'skipped' ? reason : '' }))} style={{ width: '100%', height: 52, borderRadius: 9999, backgroundColor: med ? C.primary : C.bgApp, border: 'none', cursor: med ? 'pointer' : 'default', fontSize: 16, fontWeight: 700, color: med ? '#fff' : C.textTertiary, marginTop: 4, fontFamily: 'Inter,sans-serif' }}>Save to record</button>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+// ─── WRITER: RECORD SOMETHING YOU'RE WAITING ON (pending) ───────────────────
+const PendingFlow = ({ onClose, onComplete }) => {
+  const [kind, setKind] = useState('')
+  const [label, setLabel] = useState('')
+  const [date, setDate] = useState(_today())
+  return (
+    <FlowShell onClose={onClose} zIndex={80} confirmClose={!!kind}>
+      {(dismiss, setNav) => (
+        <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 120px' }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 6 }}>Waiting on something?</div>
+            <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5, marginBottom: 18 }}>Track a request so it stays in front of you until it resolves.</div>
+            <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 8 }}>What are you waiting on?</div>
+            {PENDING_ORDER.map(k => {
+              const meta = PENDING_KINDS[k]
+              const on = kind === k
+              return (
+                <button key={k} onClick={() => { setKind(k); if (!label) setLabel(meta.label) }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '13px 14px', borderRadius: 12, border: `1px solid ${on ? C.primary : C.border}`, backgroundColor: on ? C.primaryLight : C.bgCard, cursor: 'pointer', marginBottom: 8, fontFamily: 'Inter,sans-serif' }}>
+                  <span className="material-symbols-rounded" style={{ fontSize: 22, color: on ? C.primary : C.textSecondary }}>{meta.icon}</span>
+                  <span style={{ fontSize: 15, fontWeight: 600, color: on ? C.primary : C.textPrimary }}>{meta.label}</span>
+                </button>
+              )
+            })}
+            {kind && (
+              <div style={{ marginTop: 12 }}>
+                <TextInputField label="Label" value={label} onChange={setLabel} placeholder="e.g. KEYNOTE-564 trial"/>
+                <DateInputField label="Requested / saved on" value={date} onChange={setDate} max={_today()}/>
+              </div>
+            )}
+          </div>
+          <DockedButton label="Add to next steps" disabled={!kind || !label.trim()} onClick={() => kind && label.trim() && onComplete({ id: 'pend_' + Date.now(), kind, label: label.trim(), createdDate: date, state: 'todo' })}/>
+        </div>
+      )}
+    </FlowShell>
+  )
+}
+
+// ─── TRACK: SYMPTOMS PANEL (replaces the "coming soon" stub) ────────────────
+const SymptomsPanel = ({ symptoms, onAdd }) => {
+  const sorted = (symptoms || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflowY: 'auto', paddingTop: 60, paddingBottom: 100, position: 'relative', backgroundColor: C.bgCard }}>
+      {sorted.length === 0 ? (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 32px', textAlign: 'center', gap: 16 }}>
+          <div style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: 'rgba(99,102,241,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <span className="material-symbols-rounded" style={{ fontSize: 38, color: '#6366f1', fontVariationSettings: "'FILL' 0, 'wght' 300" }}>vital_signs</span>
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px' }}>Track your symptoms</div>
+          <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.65, maxWidth: 260 }}>Log how you're feeling over time. Entries write to your record and feed your visit summary.</div>
+          <button onClick={onAdd} style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, height: 50, paddingLeft: 24, paddingRight: 24, borderRadius: 25, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 600, color: 'white' }}>
+            <span className="material-symbols-rounded" style={{ fontSize: 20, color: 'white', fontVariationSettings: "'FILL' 1, 'wght' 400" }}>add</span>Log a symptom
+          </button>
+        </div>
+      ) : (
+        <div style={{ paddingBottom: 90 }}>
+          <div style={{ padding: '20px 16px 8px', fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary }}>Logged symptoms</div>
+          {sorted.map(s => (
+            <div key={s.id} style={{ margin: '0 16px 10px', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: '13px 14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary }}>{s.name}</div>
+                <div style={{ fontSize: 12, color: C.textTertiary, flexShrink: 0 }}>{fmtShort(s.date)}</div>
+              </div>
+              <div style={{ fontSize: 13, color: C.textSecondary, marginTop: 2 }}>{s.severity}{s.notes ? ` · ${s.notes}` : ''}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {sorted.length > 0 && (
+        <button onClick={onAdd} style={{ position: 'absolute', bottom: 16, right: 16, display: 'flex', alignItems: 'center', gap: 8, height: 52, paddingLeft: 20, paddingRight: 24, borderRadius: 26, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 600, color: 'white', boxShadow: '0 4px 12px rgba(0,0,0,0.2)' }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 20, color: 'white', fontVariationSettings: "'FILL' 1, 'wght' 400" }}>add</span>Symptom
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ─── TRACK: JOURNAL PANEL (thin) ────────────────────────────────────────────
+const JournalPanel = ({ journal, onAdd }) => {
+  const sorted = (journal || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflowY: 'auto', paddingTop: 60, paddingBottom: 100, position: 'relative', backgroundColor: C.bgCard }}>
+      {sorted.length === 0 ? (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 32px', textAlign: 'center', gap: 16 }}>
+          <div style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <span className="material-symbols-rounded" style={{ fontSize: 38, color: C.textIcon, fontVariationSettings: "'FILL' 0, 'wght' 300" }}>edit_note</span>
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px' }}>Journal</div>
+          <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.65, maxWidth: 260 }}>Free-text notes, kept on your record for you.</div>
+          <button onClick={onAdd} style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, height: 50, paddingLeft: 24, paddingRight: 24, borderRadius: 25, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 600, color: 'white' }}>
+            <span className="material-symbols-rounded" style={{ fontSize: 20, color: 'white', fontVariationSettings: "'FILL' 1, 'wght' 400" }}>add</span>New entry
+          </button>
+        </div>
+      ) : (
+        <div style={{ paddingBottom: 90 }}>
+          <div style={{ padding: '20px 16px 8px', fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary }}>Journal</div>
+          {sorted.map(j => (
+            <div key={j.id} style={{ margin: '0 16px 10px', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: '13px 14px' }}>
+              <div style={{ fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>{fmtShort(j.date)}</div>
+              <div style={{ fontSize: 14, color: C.textPrimary, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{j.text}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {sorted.length > 0 && (
+        <button onClick={onAdd} style={{ position: 'absolute', bottom: 16, right: 16, display: 'flex', alignItems: 'center', gap: 8, height: 52, paddingLeft: 20, paddingRight: 24, borderRadius: 26, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 600, color: 'white', boxShadow: '0 4px 12px rgba(0,0,0,0.2)' }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 20, color: 'white', fontVariationSettings: "'FILL' 1, 'wght' 400" }}>add</span>Entry
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ─── RESOURCES / LIBRARY CONTENT (populated per the production audit) ────────
+const LIBRARY_CONTENT = [
+  { category: 'Dictionary', icon: 'menu_book', items: [
+    { title: 'Adjuvant therapy', sub: 'Treatment given after the main treatment to lower recurrence risk.' },
+    { title: 'Biomarker', sub: 'A measurable indicator used to guide diagnosis and treatment.' },
+    { title: 'Metastasis', sub: 'The spread of cancer from where it started to other parts of the body.' },
+    { title: 'NCCN Guidelines', sub: 'Consensus treatment standards from the National Comprehensive Cancer Network.' },
+  ]},
+  { category: 'FAQs', icon: 'help', items: [
+    { title: 'What should I bring to my first oncology visit?', sub: 'Records, medication list, and questions — your visit summary covers all three.' },
+    { title: 'How are treatment options decided?', sub: 'Diagnosis details, stage, biomarkers, and your preferences, against the guidelines.' },
+    { title: 'What is a clinical trial?', sub: 'A research study testing new approaches; eligibility is matched to your profile.' },
+  ]},
+  { category: 'Webinars', icon: 'smart_display', items: [
+    { title: 'Understanding your pathology report', sub: '38 min · with an oncology nurse navigator' },
+    { title: 'Managing treatment side effects', sub: '45 min · patient panel + pharmacist' },
+    { title: 'Talking to your care team', sub: '29 min · communication strategies' },
+  ]},
+  { category: 'News', icon: 'newspaper', items: [
+    { title: 'FDA updates on targeted therapies', sub: 'Recent approvals relevant to solid tumors.' },
+    { title: 'Advances in genomic testing', sub: 'What broader panels mean for treatment matching.' },
+  ]},
+]
+const ResourcesLibraryScreen = () => {
+  const [cat, setCat] = useState('Dictionary')
+  const active = LIBRARY_CONTENT.find(c => c.category === cat) || LIBRARY_CONTENT[0]
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: C.bgCard, paddingTop: 60 }}>
+      <SegmentedControl tabs={LIBRARY_CONTENT.map(c => ({ id: c.category, label: c.category }))} active={cat} onChange={setCat}/>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 90px', backgroundColor: C.bgApp }}>
+        {active.items.map((it, i) => (
+          <button key={i} style={{ width: '100%', textAlign: 'left', backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: '14px 14px', marginBottom: 10, cursor: 'pointer', display: 'flex', alignItems: 'flex-start', gap: 12, fontFamily: 'Inter,sans-serif' }}>
+            <div style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textIcon, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>{active.icon}</span>
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary, marginBottom: 2 }}>{it.title}</div>
+              <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.45 }}>{it.sub}</div>
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REDESIGN-02 "check-in + to-dos" — Today's imperative layer, split by horizon.
+// Check-in = the daily recurring habit (a launchpad into existing trackers).
+// To-dos   = one-time consequential steps (pass-1 action items + folded pending
+//            + prepare-for-visit). Additive; matches existing tokens.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── MOOD (placeholder capture — production uses the full mood tracker) ─────
+const MOOD_SCALE = [
+  { v: 1, face: 'sentiment_very_dissatisfied', label: 'Rough' },
+  { v: 2, face: 'sentiment_dissatisfied', label: 'Low' },
+  { v: 3, face: 'sentiment_neutral', label: 'Okay' },
+  { v: 4, face: 'sentiment_satisfied', label: 'Good' },
+  { v: 5, face: 'sentiment_very_satisfied', label: 'Great' },
+]
+const MoodFlow = ({ onClose, onComplete }) => {
+  const t = usePatientCopy()
+  const [val, setVal] = useState(null)
+  const [date, setDate] = useState(_today())
+  const [note, setNote] = useState('')
+  return (
+    <FlowShell onClose={onClose} zIndex={80} confirmClose={val != null}>
+      {(dismiss, setNav) => (
+        <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 120px' }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 4 }}>{t('How {are|is} {they} feeling today?')}</div>
+            <div style={{ fontSize: 12.5, color: C.textTertiary, marginBottom: 22, lineHeight: 1.4 }}>Placeholder mood check-in — production uses the full mood tracker.</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, marginBottom: 22 }}>
+              {MOOD_SCALE.map(m => (
+                <button key={m.v} onClick={() => setVal(m.v)} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, padding: '12px 0', borderRadius: 12, border: `1px solid ${val === m.v ? C.primary : C.border}`, backgroundColor: val === m.v ? C.primaryLight : C.bgCard, cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+                  <span className="material-symbols-rounded" style={{ fontSize: 29, color: val === m.v ? C.primary : C.textSecondary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>{m.face}</span>
+                  <span style={{ fontSize: 10.5, fontWeight: 600, color: val === m.v ? C.primary : C.textTertiary }}>{m.label}</span>
+                </button>
+              ))}
+            </div>
+            <DateInputField label="When" value={date} onChange={setDate} max={_today()}/>
+            <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 5 }}>Note (optional)</div>
+            <NotesTextarea value={note} onChange={setNote} placeholder="Anything about today…"/>
+          </div>
+          <DockedButton label="Save to record" disabled={val == null} onClick={() => val != null && onComplete({ id: 'mood_' + Date.now(), date, value: val, label: MOOD_SCALE.find(m => m.v === val)?.label, note })}/>
+        </div>
+      )}
+    </FlowShell>
+  )
+}
+
+// ─── CHECK-IN HUB (daily; launches existing trackers; check reflects the record) ──
+const CheckIcon = ({ done, pop }) => (
+  <div style={{ width: 22, height: 22, borderRadius: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, border: done ? 'none' : `2px solid ${C.border}`, backgroundColor: done ? '#34a853' : 'transparent', animation: pop ? 'o4mCheckPop 0.4s cubic-bezier(0.34,1.56,0.64,1)' : 'none' }}>
+    {done && <span className="material-symbols-rounded" style={{ fontSize: 15, color: '#fff', fontVariationSettings: "'FILL' 1, 'wght' 600" }}>check</span>}
+  </div>
+)
+const _ciBadge = { width: 34, height: 34, borderRadius: 17, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
+const _ciBadgeIcon = { fontSize: 19, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }
+// Daily journaling prompt — rotates each day (honors the dev day-offset) to nudge a journal entry.
+// Patient-copy templates (services/patientCopy.js). About the patient → tokens; about the
+// person writing (their mind, their self-care) → plain "you". journalPrompt() returns a
+// template; callers fill it.
+const JOURNAL_PROMPTS = [
+  'How {are|is} {they} feeling today?',
+  "What's on your mind today?",
+  'What went well today?',
+  'What felt hard today?',
+  "What's one thing to remember about today?",
+  'What are you grateful for today?',
+  'How is {their} energy today?',
+  'What {do you|does {they}} need today?',
+  'Any questions for your care team?',
+  "What's something you're hopeful about?",
+  'How did you take care of yourself today?',
+  'What would you tell a friend going through this?',
+  "What's one small win from today?",
+  'What are you carrying today?',
+]
+const journalPrompt = () => {
+  let off = 0; try { off = parseInt(localStorage.getItem('o4m_dev_day_offset') || '0', 10) || 0 } catch (e) {}
+  const d = new Date(); d.setDate(d.getDate() + off)
+  const doy = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 86400000)
+  return JOURNAL_PROMPTS[((doy % JOURNAL_PROMPTS.length) + JOURNAL_PROMPTS.length) % JOURNAL_PROMPTS.length]
+}
+const CheckInCard = ({ state, justChecked, moodLabel, count = 0, onMood, onSymptomsYes, onSymptomsNo, onJournal }) => {
+  const t = usePatientCopy()
+  const row = { display: 'flex', alignItems: 'center', gap: 12, padding: '14px 0' }
+  const withDiv = { ...row, borderBottom: `1px solid ${C.border}` }
+  const lbl = (done) => ({ fontSize: 14.5, fontWeight: 600, color: done ? C.textTertiary : C.textPrimary })
+  const sub = { fontSize: 12.5, color: C.textSecondary, marginTop: 1 }
+  const subDone = { fontSize: 12, color: C.textTertiary, marginTop: 1 }
+  return (
+    <div style={{ backgroundColor: C.bgCard, ...SOFT_CARD, padding: '6px 18px 10px' }}>
+      <div style={{ padding: '13px 0 6px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary }}>Today's check-in</div>
+          {count > 0 && (
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, backgroundColor: C.bgApp, borderRadius: 9999, padding: '3px 9px', flexShrink: 0 }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 14, color: C.textSecondary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>event_available</span>
+              <span style={{ fontSize: 11.5, fontWeight: 700, color: C.textSecondary }}>{count} check-in{count > 1 ? 's' : ''}</span>
+            </div>
+          )}
+        </div>
+        <div style={{ fontSize: 12.5, color: C.textTertiary, marginTop: 2, lineHeight: 1.4 }}>{t("A minute a day builds {their} daily log, revealing patterns you'd otherwise miss.")}</div>
+      </div>
+
+      {/* Mood */}
+      <div onClick={onMood} style={{ ...withDiv, cursor: 'pointer' }}>
+        <div style={_ciBadge}><span className="material-symbols-rounded" style={_ciBadgeIcon}>mood</span></div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={lbl(state.mood)}>Mood</div>
+          <div style={state.mood ? subDone : sub}>{state.mood ? (moodLabel ? `Feeling ${moodLabel.toLowerCase()}` : 'Logged today') : t('How {are|is} {they} feeling today?')}</div>
+        </div>
+        <CheckIcon done={state.mood} pop={justChecked === 'mood'}/>
+      </div>
+
+      {/* Symptoms — Yes launches the logger, No marks nothing-to-report; once done, tap to add another */}
+      <div onClick={state.symptoms ? onSymptomsYes : undefined} style={{ ...withDiv, cursor: state.symptoms ? 'pointer' : 'default' }}>
+        <div style={_ciBadge}><span className="material-symbols-rounded" style={_ciBadgeIcon}>vital_signs</span></div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={lbl(!!state.symptoms)}>Symptoms</div>
+          <div style={state.symptoms ? subDone : sub}>{state.symptoms ? (state.symptoms === 'none' ? 'None today' : 'Logged today') : 'Any symptoms today?'}</div>
+        </div>
+        {state.symptoms
+          ? <CheckIcon done pop={justChecked === 'symptoms'}/>
+          : (
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              <button onClick={onSymptomsNo} style={{ padding: '7px 14px', borderRadius: 9999, border: `1px solid ${C.border}`, background: C.bgCard, fontSize: 13, fontWeight: 700, color: C.textSecondary, cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>No</button>
+              <button onClick={onSymptomsYes} style={{ padding: '7px 14px', borderRadius: 9999, border: 'none', background: C.bgApp, fontSize: 13, fontWeight: 700, color: C.primary, cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>Yes</button>
+            </div>
+          )}
+      </div>
+
+      {/* Journal — no out; only checks when an entry exists; tap to add/edit */}
+      <div onClick={onJournal} style={{ ...row, cursor: 'pointer' }}>
+        <div style={_ciBadge}><span className="material-symbols-rounded" style={_ciBadgeIcon}>edit_note</span></div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={lbl(state.journal)}>Journal</div>
+          <div style={state.journal ? subDone : sub}>{state.journal ? 'Added today' : t(journalPrompt())}</div>
+        </div>
+        <CheckIcon done={state.journal} pop={justChecked === 'journal'}/>
+      </div>
+    </div>
+  )
+}
+
+// ─── TO-DOS (one-time consequential steps; folds pending + prepare-for-visit) ──
+// Next steps as process-starters with a lifecycle: todo → awaiting → resolved.
+// Resolution source per kind: records/genomic resolve on an authoritative signal
+// (records sync / results arriving — simulated by the day-rollover); genetic/trial
+// are unobservable, so they resolve via a confirmation that captures the outcome.
+const NEXT_STEP_KINDS = {
+  // Titles/reasons are patient-copy templates — NextStepRowContent fills them.
+  records: { icon: 'folder_shared', title: 'Connect {their} medical records', reason: 'So your care team sees {their} full history in one place.', start: 'Connect', awaiting: 'Syncing your records…', resolve: 'signal' },
+  genomic: { icon: 'biotech', title: 'Check genomic testing eligibility', reason: 'Genomic results can unlock targeted treatment options.', start: 'Start', awaiting: 'Awaiting results', resolve: 'signal' },
+  genetic: { icon: 'groups', title: 'Consider genetic counseling', reason: 'A counselor can assess inherited risk for {you and your|{their}} family.', start: 'Start', awaiting: 'Referral in progress', resolve: 'confirm' },
+  trial:   { icon: 'science', title: 'Discuss a clinical trial', reason: 'Worth raising with {their} oncologist at the next visit.', start: 'Add to visit prep', awaiting: 'In your visit prep', resolve: 'confirm' },
+  // Unanswered questions — each says what it unlocks; one tap opens just that question.
+  'q-type':      { icon: 'search',         title: 'Add {their} cancer type to start your plan', reason: "It's what lines up guidance and next steps that fit {they}.", start: 'Add it' },
+  'q-stage':     { icon: 'tune',           title: 'Add {their} stage to sharpen your plan',     reason: 'Knowing where it is lets us match guidance to {their} situation.', start: 'Add it' },
+  'q-drivers':   { icon: 'biotech',        title: "Tell us what's driving {their} cancer",      reason: 'Biomarkers or gene changes can open up more options — we\u2019ll match more.', start: 'Answer' },
+  'q-treatment': { icon: 'event_note',     title: 'Tell us where {they} {are|is} in treatment',  reason: 'So your next steps fit where {they} {are|is} right now.', start: 'Answer' },
+  'trial-match': { icon: 'verified', title: "{They're} eligible for a clinical trial", reason: 'A newly opened trial matches {their} profile.', start: 'See the match', awaiting: 'Shared with your care team', resolve: 'confirm', eligible: true },
+}
+// Migrate the old {status:'open'|'resolved'} shape to the {state} machine.
+const _normalizePending = (arr) => (arr || []).map(p => p.state ? p : ({ ...p, state: p.status === 'resolved' ? 'resolved' : 'todo' }))
+const deriveTodos = ({ pending = [], upcomingAppt = null }) => {
+  const todos = []
+  if (upcomingAppt) todos.push({ id: 'todo_visit', kind: 'prepare-visit', appt: upcomingAppt })
+  const open = pending.filter(p => p.state === 'todo' || p.state === 'awaiting')
+  // an eligible trial match is high-value/novel — rank it up among the next steps
+  open.sort((a, b) => (b.kind === 'trial-match' ? 1 : 0) - (a.kind === 'trial-match' ? 1 : 0))
+  open.forEach(p => todos.push({ id: p.id, kind: p.kind, state: p.state, startedDate: p.startedDate, label: p.label }))
+  return todos
+}
+const NextStepEyebrow = () => <div style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10, opacity: 0.85 }}>Recommended next step</div>
+// v3.13 (Apple-style tint): orange marks only what you can tap. Primary: orange fill, white label.
+// Secondary: gray fill (GRAY_100), orange label. Tertiary: orange text. Content icons are neutral.
+const Q_DARK = '#162937'
+// Inside Today's check-in, the open row's action is its primary (orange, 36) until it's done; "None today"
+// and the edits after (Edit symptoms, Edit note) are secondary (v3.14).
+const _ciPrimary = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, height: 36, padding: '0 14px', boxSizing: 'border-box', border: 'none', borderRadius: 9999, background: C.primary, fontSize: 14, lineHeight: '16px', fontWeight: 600, color: '#fff', cursor: 'pointer', fontFamily: 'Inter,sans-serif', whiteSpace: 'nowrap' }
+const _qLink = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, height: 36, padding: '0 14px', boxSizing: 'border-box', border: 'none', borderRadius: 9999, background: C.bgApp, fontSize: 14, lineHeight: '16px', fontWeight: 600, color: C.primary, cursor: 'pointer', fontFamily: 'Inter,sans-serif', whiteSpace: 'nowrap' }
+const _nsBtn = { display: 'inline-flex', alignItems: 'center', gap: 6, height: 36, padding: '0 14px', boxSizing: 'border-box', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 14, lineHeight: '16px', fontWeight: 600, color: C.primary, fontFamily: 'Inter,sans-serif' }
+const TodoItem = ({ item, onAction }) => {
+  const t = usePatientCopy()
+  const card = { backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px' }
+  const badge = (dim) => ({ width: 36, height: 36, borderRadius: 18, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 })
+
+  if (item.kind === 'prepare-visit') {
+    return (
+      <div style={card}>
+        <NextStepEyebrow/>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+          <div style={badge(false)}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textSecondary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>event</span></div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 3 }}>{t('Prepare for {their} visit')}</div>
+            <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.45, marginBottom: 12 }}>{item.appt.name || 'Appointment'} · {inDays(item.appt.date)}</div>
+            <button onClick={() => onAction(item)} style={_nsBtn}>Prepare</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const cfg = NEXT_STEP_KINDS[item.kind] || { icon: 'schedule', title: item.kind, reason: '', start: 'Start', awaiting: 'In progress', resolve: 'signal' }
+  const awaiting = item.state === 'awaiting'
+  return (
+    <div style={card}>
+      <NextStepEyebrow/>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+        <div style={badge(awaiting)}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>{cfg.icon}</span></div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 3 }}>{t(cfg.title)}</div>
+          {awaiting ? (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: cfg.resolve === 'confirm' ? 12 : 2 }}>
+                <span style={{ width: 13, height: 13, borderRadius: 7, border: `2px solid ${C.border}`, borderTopColor: C.textSecondary, display: 'inline-block', animation: 'o4mSpin 0.8s linear infinite', flexShrink: 0 }}/>
+                <span style={{ fontSize: 13, color: C.textSecondary }}>{cfg.awaiting}</span>
+              </div>
+              {cfg.resolve === 'confirm' && <button onClick={() => onAction(item)} style={_nsBtn}>Mark done</button>}
+            </div>
+          ) : (
+            <div>
+              <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.45, marginBottom: 12 }}>{t(cfg.reason)}</div>
+              <button onClick={() => onAction(item)} style={_nsBtn}>{cfg.start}</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+const ConfirmOutcomeSheet = ({ item, onClose, onConfirm }) => {
+  const t = usePatientCopy()
+  const [vis, setVis] = useState(false)
+  const [note, setNote] = useState('')
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const close = (cb) => { setVis(false); setTimeout(() => cb && cb(), 300) }
+  const cfg = NEXT_STEP_KINDS[item.kind] || {}
+  return ReactDOM.createPortal(
+    <div style={{ position: 'fixed', inset: 0, zIndex: 420 }}>
+      <div onClick={() => close(onClose)} style={{ position: 'absolute', inset: 0, backgroundColor: vis ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0)', transition: 'background-color 0.3s ease' }}/>
+      <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: C.bgCard, borderRadius: '22px 22px 0 0', boxShadow: '0 -6px 28px rgba(0,0,0,0.16)', padding: '10px 20px 30px', transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.34s cubic-bezier(0.32,0.72,0,1)' }}>
+        <div style={{ width: 38, height: 4, backgroundColor: 'rgba(0,0,0,0.12)', borderRadius: 2, margin: '0 auto 16px' }}/>
+        <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 4 }}>{t(cfg.title) || 'Mark as done'}</div>
+        <div style={{ fontSize: 13, color: C.textSecondary, marginBottom: 16 }}>Capture what came of it — this feeds your visit summary.</div>
+        <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 5 }}>What was decided? (optional)</div>
+        <NotesTextarea value={note} onChange={setNote} placeholder="e.g. Referred to genetic counseling"/>
+        <button onClick={() => close(() => onConfirm(item.id, note))} style={{ width: '100%', height: 52, borderRadius: 9999, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 16, fontWeight: 700, color: '#fff', marginTop: 4, fontFamily: 'Inter,sans-serif' }}>Mark done</button>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+// ─── DAILY LOG (read-only past-day record; derived from the stores) ─────────
+const _MOOD_FACE = { 1: 'sentiment_very_dissatisfied', 2: 'sentiment_dissatisfied', 3: 'sentiment_neutral', 4: 'sentiment_satisfied', 5: 'sentiment_very_satisfied' }
+const DailyLogGroup = ({ mood, symptoms = [], journal = [], none = false }) => {
+  const badge = { width: 30, height: 30, borderRadius: 15, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
+  const icon = { fontSize: 17, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }
+  const rowStyle = { display: 'flex', alignItems: 'center', gap: 11, padding: '9px 0' }
+  const primary = { fontSize: 14, color: C.textPrimary }
+  const secondary = { fontSize: 12.5, color: C.textTertiary }
+  return (
+    <div style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '4px 16px 8px' }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.06em', padding: '12px 0 2px' }}>Daily log</div>
+      {mood && (
+        <div style={rowStyle}>
+          <div style={badge}><span className="material-symbols-rounded" style={{ ...icon, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>{_MOOD_FACE[mood.value] || 'mood'}</span></div>
+          <div style={{ flex: 1, minWidth: 0 }}><span style={primary}>Felt {(mood.label || '').toLowerCase()}</span>{mood.note ? <span style={secondary}> · {mood.note}</span> : null}</div>
+        </div>
+      )}
+      {symptoms.map(s => (
+        <div key={s.id} style={rowStyle}>
+          <div style={badge}><span className="material-symbols-rounded" style={icon}>vital_signs</span></div>
+          <div style={{ flex: 1, minWidth: 0 }}><span style={primary}>{s.name}</span><span style={secondary}> · {s.severity}{s.notes ? ` · ${s.notes}` : ''}</span></div>
+        </div>
+      ))}
+      {(!symptoms.length && none) && (
+        <div style={rowStyle}>
+          <div style={badge}><span className="material-symbols-rounded" style={icon}>vital_signs</span></div>
+          <div style={{ flex: 1, minWidth: 0 }}><span style={secondary}>No symptoms reported</span></div>
+        </div>
+      )}
+      {journal.map(j => (
+        <div key={j.id} style={rowStyle}>
+          <div style={badge}><span className="material-symbols-rounded" style={icon}>edit_note</span></div>
+          <div style={{ flex: 1, minWidth: 0 }}><span style={{ ...primary, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 3, overflow: 'hidden', lineHeight: 1.45 }}>{j.text}</span></div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// One grouped "Recommended next steps" card (rows divided), symmetric with the check-in
+// card — replaces the per-item cards + repeated eyebrows.
+const NextStepRowContent = ({ item, onAction }) => {
+  const t = usePatientCopy()
+  const badge = { width: 34, height: 34, borderRadius: 17, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
+  const title = { fontSize: 15, fontWeight: 600, color: C.textPrimary, marginBottom: 3 }
+  const sub = { fontSize: 13, color: C.textSecondary, lineHeight: 1.45 }
+  if (item.kind === 'prepare-visit') {
+    return (
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+        <div style={badge}><span className="material-symbols-rounded" style={{ fontSize: 19, color: C.textSecondary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>event</span></div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={title}>{t('Prepare for {their} visit')}</div>
+          <div style={{ ...sub, marginBottom: 12 }}>{item.appt.name || 'Appointment'} · {inDays(item.appt.date)}</div>
+          <button onClick={() => onAction(item)} style={_nsBtn}>Prepare</button>
+        </div>
+      </div>
+    )
+  }
+  const cfg = NEXT_STEP_KINDS[item.kind] || { icon: 'schedule', title: item.kind, reason: '', start: 'Start', awaiting: 'In progress', resolve: 'signal' }
+  const awaiting = item.state === 'awaiting'
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+      <div style={badge}><span className="material-symbols-rounded" style={{ fontSize: 19, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>{cfg.icon}</span></div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 3 }}>
+          <span style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary }}>{t(cfg.title)}</span>
+          {cfg.eligible && <span style={{ fontSize: 10, fontWeight: 700, color: '#1c7a4f', backgroundColor: '#e6f4ec', borderRadius: 9999, padding: '2px 8px', letterSpacing: '0.03em', textTransform: 'uppercase' }}>Eligible</span>}
+        </div>
+        {awaiting ? (
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: cfg.resolve === 'confirm' ? 12 : 0 }}>
+              <span style={{ width: 13, height: 13, borderRadius: 7, border: `2px solid ${C.border}`, borderTopColor: C.textSecondary, display: 'inline-block', animation: 'o4mSpin 0.8s linear infinite', flexShrink: 0 }}/>
+              <span style={{ fontSize: 13, color: C.textSecondary }}>{cfg.awaiting}</span>
+            </div>
+            {cfg.resolve === 'confirm' && <button onClick={() => onAction(item)} style={_nsBtn}>Mark done</button>}
+          </div>
+        ) : (
+          <div>
+            <div style={{ ...sub, marginBottom: 12 }}>{item.kind === 'trial-match' && item.label ? t(`${item.label} · newly opened, matches {their} profile.`) : t(cfg.reason)}</div>
+            <button onClick={() => onAction(item)} style={_nsBtn}>{cfg.start}</button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+const NextStepsSection = ({ todos = [], onAction }) => {
+  const cardShell = { backgroundColor: C.bgCard, ...SOFT_CARD, padding: '16px' }
+  return (
+    <div>
+      <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary, padding: '2px 2px 10px' }}>Recommended next steps</div>
+      {todos.length ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {todos.map(t => <div key={t.id} style={cardShell}><NextStepRowContent item={t} onAction={onAction}/></div>)}
+        </div>
+      ) : (
+        <div style={{ ...cardShell, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>task_alt</span>
+          <span style={{ fontSize: 13.5, color: C.textSecondary }}>You're all caught up — nothing to act on today.</span>
+        </div>
+      )}
+    </div>
+  )
+}
+const NextStepsCard = ({ todos = [], onAction }) => (
+  <div style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '4px 16px 8px' }}>
+    <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary, padding: '13px 0 4px' }}>Recommended next steps</div>
+    {todos.length ? todos.map((t, i) => (
+      <div key={t.id} style={{ padding: '14px 0', borderTop: i > 0 ? `1px solid ${C.border}` : 'none' }}>
+        <NextStepRowContent item={t} onAction={onAction}/>
+      </div>
+    )) : (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0 14px' }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>task_alt</span>
+        <span style={{ fontSize: 13.5, color: C.textSecondary }}>You're all caught up — nothing to act on today.</span>
+      </div>
+    )}
+  </div>
+)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REDESIGN-03 "the loop" — the daily summary as teaser/gateway. It reads the
+// check-in (its input) and points at the next steps (its output): status line +
+// top 1–2 ranked teaser items, each an inline takeaway that drills into the
+// durable surface where the full thing lives. Insight candidates are deterministic
+// over logged data (simulated-smart) until a real model + trends view exist.
+// ═══════════════════════════════════════════════════════════════════════════
+const _weekIdx = (dateStr) => { const d = new Date(dateStr + 'T12:00:00'), now = new Date(localDateStr() + 'T12:00:00'); return Math.floor((now - d) / (7 * 86400000)) }
+const Sparkline = ({ data, w = 46, h = 18, color }) => {
+  if (!data || data.length < 2) return null
+  const max = Math.max(...data), min = Math.min(...data), range = (max - min) || 1
+  const pts = data.map((v, i) => `${(i / (data.length - 1)) * w},${h - 1 - ((v - min) / range) * (h - 2)}`).join(' ')
+  return <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ flexShrink: 0, overflow: 'visible' }}><polyline points={pts} fill="none" stroke={color || C.textSecondary} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+}
+const buildTeasers = ({ symptoms = [], mood = [], doseLogs = [], pending = [], upcomingAppt = null, visibleRecs = null }) => {
+  const out = []
+  const today = _today()
+  // Insight — symptom frequency trend (weekly buckets over ~4 weeks) for the most-logged symptom
+  const rs = symptoms.filter(s => s.date && _daysBetweenStr(s.date, today) <= 27)
+  if (rs.length >= 3) {
+    const by = {}; rs.forEach(s => { by[s.name] = (by[s.name] || 0) + 1 })
+    const top = Object.entries(by).sort((a, b) => b[1] - a[1])[0][0]
+    const weeks = [0, 0, 0, 0]; rs.filter(s => s.name === top).forEach(s => { weeks[3 - Math.min(3, _weekIdx(s.date))] += 1 })
+    const rising = weeks[3] > 0 && (weeks[3] + weeks[2]) >= (weeks[0] + weeks[1])
+    out.push({ id: 'insight_symptom', type: 'insight', icon: 'vital_signs', takeaway: `${top} has come up more often lately`, basis: 'Based on your check-ins over the last few weeks', spark: weeks, score: 60 + (rising ? 20 : 0) })
+  }
+  // Insight — mood trend (weekly average)
+  const rm = mood.filter(m => m.date && _daysBetweenStr(m.date, today) <= 27 && typeof m.value === 'number')
+  if (rm.length >= 3) {
+    const sums = [[0,0],[0,0],[0,0],[0,0]]; rm.forEach(m => { const b = 3 - Math.min(3, _weekIdx(m.date)); sums[b][0] += m.value; sums[b][1] += 1 })
+    const avgs = sums.map(([s, n]) => n ? s / n : null); const present = avgs.filter(a => a != null)
+    if (present.length >= 2) {
+      const dipping = present[present.length - 1] < present[0]
+      out.push({ id: 'insight_mood', type: 'insight', icon: 'mood', takeaway: dipping ? 'Your mood has trended lower recently' : 'Your mood has held steady lately', basis: 'Based on your daily check-ins', spark: avgs.map(a => a == null ? 0 : a), score: 55 + (dipping ? 20 : 0) })
+    }
+  }
+  // Ready to share — upcoming visit + interval data (drills into the real visit export)
+  if (upcomingAppt) {
+    const start = localDateStr(new Date(Date.now() - 30 * 86400000))
+    const n = symptoms.filter(s => s.date >= start).length + doseLogs.filter(d => d.date >= start).length
+    if (n > 0) { const days = _daysBetweenStr(today, upcomingAppt.date); out.push({ id: 'share', type: 'ready-to-share', icon: 'ios_share', takeaway: `Your check-ins are ready to share for your ${fmtShort(upcomingAppt.date)} visit`, basis: 'Tap to review and send to your care team', score: 85 + (days <= 3 ? 15 : 0) }) }
+  }
+  // Option teaser removed — the guideline-mapped next step lives in the summary narrative now.
+  // Arrival — a next step resolved recently via signal (novelty)
+  pending.filter(p => p.state === 'resolved' && p.resolvedDate && _daysBetweenStr(p.resolvedDate, today) <= 2 && (p.kind === 'records' || p.kind === 'genomic')).forEach(p => {
+    out.push({ id: 'arrival_' + p.id, type: 'arrival', icon: (NEXT_STEP_KINDS[p.kind] || {}).icon || 'check_circle', takeaway: p.kind === 'genomic' ? 'Your genomic results are in' : 'Your records finished syncing', basis: 'Tap to view', score: 110 })
+  })
+  return out.sort((a, b) => b.score - a.score).slice(0, 2)
+}
+// Prose summary — the AI's plain-language read of the pathway: where you are → the
+// guideline-mapped next step (NCCN-style, via the recommendation engine) → how to prepare.
+// Deterministic template over real record fields; keeps clinical claims to what the engine
+// produces and follows the plain-language standard (no procedure names in the summary).
+const _EXTENT_PHRASE = { one_place: " that's in one place", nodes: ' that has spread to nearby lymph nodes', spread: ' that has spread to other parts of the body', early: " that's been described as early" }
+// Summary sentences are patient-copy templates (services/patientCopy.js): facts about the
+// patient use {they}/{their}; things the reader manages stay "your".
+const buildWelcomeSummaryText = (ps, recs) => {
+  const ans = ps.onboardingAnswers || {}
+  const t = (tpl) => fillCopy(tpl, careSubject(ps))
+  const cancer = CANCER_TYPES.find(c => c.code === ps.diagnosisCode)
+  const dx = (cancer ? cancer.name.toLowerCase() : 'cancer') + (_EXTENT_PHRASE[ans.extent] || '')
+  const situation = {
+    just_diagnosed: `{They} {were|was} recently diagnosed with ${dx}, and treatment hasn't started yet.`,
+    in_treatment:   `{They're} in treatment for ${dx}.`,
+    finished:       `{They've} finished treatment for ${dx}.`,
+  }[ans.treatment_phase] || `{They're} dealing with ${dx}.`
+  const gaps = deriveQuestionGaps(ans).map(g => g.kind)
+  let plan
+  if (recs && recs.length) {
+    plan = 'Your care plan lays out the treatment options guidelines describe for this — a starting point for talking with your care team.'
+    if (gaps.includes('q-drivers')) plan += " Telling us what's driving {their} cancer could open up more."
+  } else if (gaps.includes('q-type')) {
+    plan = '{Their} diagnosis is on {your|the} care plan; adding the exact type will let it lay out the options guidelines describe.'
+  } else if (gaps.includes('q-stage')) {
+    plan = '{Their} diagnosis is on {your|the} care plan; adding {your|the} stage will let it lay out the options guidelines describe.'
+  } else {
+    plan = '{Their} diagnosis is on {your|the} care plan, and your next steps are below.'
+  }
+  return t(`Welcome — here's where things stand. ${situation} ${plan} Checking in below keeps this up to date, day to day.`)
+}
+const buildSummaryNarrative = (ps, timeline = [], recs = null) => {
+  const todayStr = localDateStr()
+  // First run: the day's summary, built from what they just told us. Same card and voice
+  // as every later day — it demonstrates what the summary does (pulls the situation together
+  // and points to what's next) rather than describing it. A light welcome opens it; the
+  // closing line hints that it stays current. Normal summary from day two.
+  if (ps && ps.onboardedDate && ps.onboardedDate === todayStr) {
+    return { text: buildWelcomeSummaryText(ps, recs), enrich: false }
+  }
+  const monthName = d => { try { return new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'long' }) } catch { return null } }
+  const events = (timeline || []).flatMap(day => (day.events || []).map(e => ({ ...e, _date: day.date, _isToday: !!day.isToday })))
+  const nonDx = events.filter(e => e.type !== 'diagnosis')
+  const surg = nonDx.find(e => /nephrectomy|prostatectomy|mastectomy|lumpectomy|resection|ablation|surgery/i.test(e.name || ''))
+  const path = nonDx.find(e => /patholog/i.test(e.name || ''))
+  const dx = events.find(e => e.type === 'diagnosis')
+  const todayAppt = nonDx.find(e => e._isToday && e.type === 'appointment')
+  const nextAppt = nonDx.filter(e => e.type === 'appointment' && !e._isToday && e._date > todayStr).sort((a, b) => a._date.localeCompare(b._date))[0] || null
+  const hasRecs = !!(recs && recs.length)
+  const s = []
+
+  const t = (tpl) => fillCopy(tpl, careSubject(ps))   // patient-copy templates
+  if (todayAppt) { const dr = shortDrName(todayAppt.provider || todayAppt.name); s.push(t(dr ? `Today {they} {have|has} an appointment with ${dr}.` : '{They} {have|has} an appointment today.')) }
+  if (surg) {
+    const wks = Math.round(_daysBetweenStr(surg._date, todayStr) / 7)
+    const when = (wks >= 1 && wks <= 10) ? `about ${wks} week${wks > 1 ? 's' : ''} out from surgery` : `past surgery${monthName(surg._date) ? ` from ${monthName(surg._date)}` : ''}`
+    s.push(t(`{They're} ${when.replace('from surgery', 'from {your |}surgery').replace('past surgery', 'past {your |}surgery')}${path ? ', and {your|the} results have been reviewed' : ''}.`))
+  } else if (dx && !hasRecs && !nextAppt) {
+    s.push(t(`You've shared {their} diagnosis, and we're building {your|the} care picture.`))
+  }
+  if (hasRecs) {
+    if (nextAppt) s.push(t(`Based on everything in {their} record, the guidelines map out your next steps — the focus of {your|the} appointment ${relativeApptDate(nextAppt._date)}. You can review them under Suggested treatments below.`))
+    else s.push(t(`Based on everything in {their} record, the guidelines map out your next steps to weigh — see Suggested treatments below.`))
+  } else if (nextAppt) {
+    s.push(t(`Your next step is {their} appointment ${relativeApptDate(nextAppt._date)}.`))
+  }
+  if (hasRecs || nextAppt) s.push(t(`Logging how {they're} feeling and noting your questions now will help {you understand and|you both} prepare for it.`))
+
+  if (s.length === 0) return { text: `We're still building your picture. The more you add — a daily check-in, your events and their details, or connecting your records — the clearer this summary and your next steps become.`, enrich: true }
+  return { text: s.join(' '), enrich: false }
+}
+const TeaserDetailSheet = ({ teaser, onClose }) => {
+  const [vis, setVis] = useState(false)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const close = (cb) => { setVis(false); setTimeout(() => cb && cb(), 300) }
+  const spark = teaser.spark || []
+  const max = Math.max(...spark, 1)
+  return ReactDOM.createPortal(
+    <div style={{ position: 'fixed', inset: 0, zIndex: 420 }}>
+      <div onClick={() => close(onClose)} style={{ position: 'absolute', inset: 0, backgroundColor: vis ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0)', transition: 'background-color 0.3s ease' }}/>
+      <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: C.bgCard, borderRadius: '22px 22px 0 0', boxShadow: '0 -6px 28px rgba(0,0,0,0.16)', padding: '10px 20px 34px', transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.34s cubic-bezier(0.32,0.72,0,1)' }}>
+        <div style={{ width: 38, height: 4, backgroundColor: 'rgba(0,0,0,0.12)', borderRadius: 2, margin: '0 auto 18px' }}/>
+        <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 6 }}>{teaser.takeaway}</div>
+        {teaser.basis && <div style={{ fontSize: 13, color: C.textSecondary, marginBottom: 16 }}>{teaser.basis}</div>}
+        {spark.length > 1 && (
+          <div style={{ backgroundColor: C.bgApp, borderRadius: 12, padding: '16px 16px 12px', marginBottom: 16, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 10, height: 120 }}>
+            {spark.map((v, i) => (
+              <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, height: '100%', justifyContent: 'flex-end' }}>
+                <div style={{ width: '100%', maxWidth: 34, height: `${Math.max(6, (v / max) * 78)}px`, backgroundColor: i === spark.length - 1 ? C.textSecondary : C.border, borderRadius: 6 }}/>
+                <span style={{ fontSize: 10, color: C.textTertiary }}>{['3 wk', '2 wk', '1 wk', 'Now'][i] || ''}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ fontSize: 13, color: C.textTertiary, lineHeight: 1.5 }}>The full trends & insights view is a later pass — this previews the detail you'll drill into from the summary.</div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REDESIGN-04 "Today" — Home becomes its own edited daily surface (not the top
+// of the timeline scroll). A finite, curated stack of zones; the timeline and
+// treatment options become destinations reached from here. Reuses the check-in,
+// prose summary, and next-steps built in 02/03. Content & Opportunities are
+// honest first-slice placeholders. Rule: a zone shows only when it has something.
+// ═══════════════════════════════════════════════════════════════════════════
+const _greetPart = () => { const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening' }
+// Time-of-day: salutation + a subtle mark (sunrise / sun / moon) with a soft per-time tint.
+const _TOD = {
+  // rise: how far the glyph sits above the Daily summary card, which acts as the horizon.
+  // Morning = the same sun, low and half-hidden behind the card (rising); afternoon = fully up.
+  // (No wb_twilight — its built-in horizon line read as a hamburger stacked on the card.)
+  morning:   { part: 'Good morning',   icon: 'wb_sunny', tint: '#fbeecd', color: '#c8802f', rise: 84 },
+  afternoon: { part: 'Good afternoon', icon: 'wb_sunny', tint: '#fdf1d6', color: '#d39a34', rise: 128 },
+  evening:   { part: 'Good evening',   icon: 'bedtime',  tint: '#e8eafb', color: '#5f68b8', rise: 128 },
+}
+// override: 'morning' | 'afternoon' | 'evening' | null/'auto' (dev toggle in profile)
+const _todInfo = (override) => {
+  if (override && _TOD[override]) return _TOD[override]
+  const h = new Date().getHours()
+  return h < 12 ? _TOD.morning : h < 18 ? _TOD.afternoon : _TOD.evening
+}
+const TodayZone = ({ label, children }) => (
+  <div style={{ marginBottom: 28 }}>
+    {label && <div style={{ fontSize: 13, fontWeight: 600, color: C.textSecondary, letterSpacing: '0.01em', padding: '0 4px 11px' }}>{label}</div>}
+    {children}
+  </div>
+)
+// ─── REDESIGN-04: card-less check-in (nodes on a spine) ─────────────────────
+const CheckInSpine = ({ state, justChecked, moodLabel, count = 0, onMood, onMoodSelect, onSymptomsYes, onSymptomsNo, onSymptomsEdit, symptomEntry, onJournal, onJournalEdit, journalEntry }) => {
+  const t = usePatientCopy()
+  const [openKey, setOpenKey] = useState(() => !state.mood ? 'mood' : !state.symptoms ? 'symptoms' : !state.journal ? 'journal' : null)
+  const nodes = [
+    { key: 'mood', label: 'Mood', done: !!state.mood, promptSub: t('How {are|is} {they} feeling today?'), doneSub: moodLabel ? `Feeling ${moodLabel.toLowerCase()}` : 'Logged today' },
+    { key: 'symptoms', label: 'Symptoms', done: !!state.symptoms, promptSub: t('Any symptoms {|for {they} }today?'), doneSub: state.symptoms === 'none' ? 'None today' : (symptomEntry ? symptomEntry.name + (symptomEntry.severity ? ' · ' + symptomEntry.severity : '') : 'Logged today') },
+    { key: 'journal', label: 'Journal', done: !!state.journal, promptSub: t(journalPrompt()), doneSub: journalEntry ? (journalEntry.text.length > 42 ? journalEntry.text.slice(0, 42).trim() + '…' : journalEntry.text) : 'Added today' },
+  ]
+  const moodFace = (MOOD_SCALE.find(m => m.label === moodLabel) || {}).face || 'sentiment_satisfied'
+  const advanceFrom = (key) => setOpenKey((nodes.find(x => x.key !== key && !x.done) || {}).key || null)
+  const doneRef = useRef({ mood: false, symptoms: false, journal: false })
+  useEffect(() => {
+    const cur = { mood: !!state.mood, symptoms: !!state.symptoms, journal: !!state.journal }
+    const prev = doneRef.current
+    const justDone = ['mood', 'symptoms', 'journal'].find(k => cur[k] && !prev[k])
+    if (justDone && (openKey === justDone || openKey == null)) setOpenKey((nodes.find(x => !x.done) || {}).key || null)
+    doneRef.current = cur
+  }, [state.mood, state.symptoms, state.journal])
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '0 2px 3px' }}>
+        <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary }}>Today's check-in</div>
+        {count > 0 && (
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <span className="material-symbols-rounded" style={{ fontSize: 14, color: C.textTertiary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>event_available</span>
+            <span style={{ fontSize: 11.5, fontWeight: 600, color: C.textTertiary }}>{count} check-in{count > 1 ? 's' : ''}</span>
+          </div>
+        )}
+      </div>
+      <div style={{ fontSize: 12.5, color: C.textTertiary, lineHeight: 1.45, padding: '0 2px 16px' }}>{t("A minute a day builds {their} daily log, revealing patterns you'd otherwise miss.")}</div>
+      <div>
+        {nodes.map((n, i) => {
+          const last = i === nodes.length - 1
+          const open = openKey === n.key
+          const collapsedDone = n.done && !open
+          return (
+            <div key={n.key} style={{ display: 'flex', gap: 12 }}>
+              <div style={{ width: 26, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <div style={{ paddingTop: 14 }}><CheckIcon done={n.done} pop={justChecked === n.key}/></div>
+                {!last && <div style={{ flex: 1, width: 2, backgroundColor: C.timelineLine, marginTop: 6, marginBottom: -12 }}/>}
+              </div>
+              <div style={{ flex: 1, minWidth: 0, marginBottom: last ? 0 : 12 }}>
+                <div style={{ backgroundColor: open ? '#ffffff' : '#fdf1ea', borderRadius: 16, padding: '13px 15px', border: `1px solid ${open ? 'rgba(0,0,0,0.06)' : 'rgba(0,0,0,0.05)'}`, boxShadow: open ? '0 1px 3px rgba(0,0,0,0.06)' : 'none', transition: 'background-color 0.16s ease' }}>
+                  <div onClick={() => { setOpenKey(open ? null : n.key) }} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary }}>{n.label}</div>
+                      <div style={{ fontSize: 12.5, color: C.textSecondary, marginTop: 1, display: 'flex', alignItems: 'center', gap: 5 }}>
+                        {collapsedDone && n.key === 'mood' && <span className="material-symbols-rounded" style={{ fontSize: 17, color: C.textSecondary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>{moodFace}</span>}
+                        <span>{collapsedDone ? n.doneSub : n.promptSub}</span>
+                      </div>
+                    </div>
+                    <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.16s ease' }}>expand_more</span>
+                  </div>
+
+                  {open && n.key === 'mood' && (
+                    <div style={{ display: 'flex', gap: 4, marginTop: 12 }}>
+                      {MOOD_SCALE.map(m => { const sel = moodLabel && m.label === moodLabel; return (
+                        <button key={m.v} onClick={() => { onMoodSelect && onMoodSelect(m.v); advanceFrom('mood') }} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0', fontFamily: 'Inter,sans-serif' }}>
+                          <span className="material-symbols-rounded" style={{ fontSize: 30, color: sel ? C.primary : C.textIcon, fontVariationSettings: sel ? "'FILL' 1, 'wght' 500" : "'FILL' 0, 'wght' 300" }}>{m.face}</span>
+                          <span style={{ fontSize: 10, fontWeight: 600, color: sel ? C.primary : C.textTertiary }}>{m.label}</span>
+                        </button>
+                      )})}
+                    </div>
+                  )}
+
+                  {open && n.key === 'symptoms' && (
+                    state.symptoms === 'logged' && symptomEntry ? (
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary }}>{symptomEntry.name}{symptomEntry.severity ? ` · ${symptomEntry.severity}` : ''}</div>
+                        {symptomEntry.notes ? <div style={{ fontSize: 12.5, color: C.textSecondary, lineHeight: 1.5, marginTop: 3 }}>{symptomEntry.notes}</div> : null}
+                        <button onClick={() => onSymptomsEdit && onSymptomsEdit()} style={{ ..._qLink, marginTop: 10 }}>Edit symptoms</button>
+                      </div>
+                    ) : (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
+                      <button onClick={() => { onSymptomsNo && onSymptomsNo(); advanceFrom('symptoms') }} style={_qLink}>None today</button>
+                      <button onClick={() => { onSymptomsYes && onSymptomsYes() }} style={_ciPrimary}>Log symptoms</button>
+                    </div>
+                    )
+                  )}
+
+                  {open && n.key === 'journal' && (
+                    <div style={{ marginTop: 12 }}>
+                      {n.done && journalEntry && <div style={{ fontSize: 13.5, color: C.textPrimary, lineHeight: 1.55, whiteSpace: 'pre-wrap', marginBottom: 11 }}>{journalEntry.text}</div>}
+                      <button onClick={() => { (n.done ? onJournalEdit : onJournal) && (n.done ? onJournalEdit() : onJournal()) }} style={n.done ? _qLink : _ciPrimary}>{n.done ? 'Edit note' : 'Write a note'}</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+
+// ─── REDESIGN-04: recency-led Today bands ("new and relevant to me") ─────────
+// Today = recency. Evergreen content lives in Resources; care-plan-contextual content
+// (incl. sponsored campaigns) belongs in Care Plan. seeAll routes: news/webinars →
+// resources, community → community.
+// Caregiver content — relationship is the content signal. A SAMPLE, not a takeover: one
+// item in the webinars band and one in the community band swap for a caregiver-relevant
+// one (2 of 6 cards); the news band (incl. the sponsored slot) is unchanged.
+const CAREGIVER_CONTENT = {
+  parent:  { webinar: 'Caring for a parent with cancer',                       post: { initials: 'RM', title: "How do you keep track of a parent's appointments and meds?", body: "My dad was just diagnosed and I'm the one driving him to everything. How do you keep track of meds, questions, and who said what?", replies: 7 } },
+  spouse:  { webinar: 'When your partner has cancer: caring for them and you',  post: { initials: 'TK', title: 'Spouses and partners — how did you get through the first weeks?', body: "My husband starts treatment next week. I'm trying to hold everything together — what helped you in those first weeks?", replies: 9 } },
+  child:   { webinar: 'When your child has cancer: where to start',             post: { initials: 'AL', title: 'Parents of kids in treatment — how do you explain it?', body: "Our son is 9. How have you explained treatment and side effects at a level a kid can handle?", replies: 5 } },
+  sibling: { webinar: 'Supporting a sibling through treatment',                 post: { initials: 'JB', title: 'Supporting my sister from three states away', body: "I can't be there day to day. How do you stay useful to a sibling going through treatment from a distance?", replies: 3 } },
+  friend:  { webinar: 'How to show up for a friend with cancer',                post: { initials: 'NS', title: 'What actually helped when a friend was in treatment?', body: "I want to help my best friend without overstepping. What did people do for you that genuinely helped?", replies: 6 } },
+  other:   { webinar: 'Caregiving 101: supporting someone through treatment',   post: { initials: 'DW', title: "New caregiver here — what do you wish you'd known?", body: "I'm suddenly helping someone through cancer treatment and don't know where to start. What do you wish someone had told you?", replies: 8 } },
+}
+const todayBands = (cancer, relationship = null) => {
+  const bands = _baseTodayBands(cancer)
+  const cg = relationship && (CAREGIVER_CONTENT[relationship] || CAREGIVER_CONTENT.other)
+  if (!cg) return bands
+  return bands.map(b =>
+    b.id === 'webinars'  ? { ...b, items: [{ kind: 'For caregivers', icon: 'diversity_1', tint: '#fdeee8', title: cg.webinar, sub: 'Watch the replay' }, b.items[0]] } :
+    b.id === 'community' ? { ...b, items: [{ format: 'text', author: 'Caregiver', time: '3 days ago', ...cg.post }, b.items[0]] } :
+    b)
+}
+const _baseTodayBands = (cancer) => [
+  { id: 'news', title: cancer && cancer !== 'your cancer' ? `New in ${cancer}` : 'New for you', seeAll: 'resources', items: [
+    { kind: 'News', image: IMG_FDA_LAB, icon: 'newspaper', tint: '#eef2fb', title: 'FDA expands approval for a kidney cancer combination', sub: 'Reuters Health · 2d ago' },
+    { kind: 'Sponsored', sponsored: true, image: IMG_SPONSORED_THERAPY, icon: 'medication', tint: '#eef7f1', title: 'Understanding a newer targeted therapy', sub: 'From a treatment partner' },
+  ]},
+  { id: 'webinars', title: 'Expert webinars', seeAll: 'resources', items: [
+    { kind: 'Webinar', image: IMG_WEBINAR_FUH, icon: 'smart_display', tint: '#f3eefb', title: 'Ask the Expert with Dr. Fuh', sub: 'Watch the replay' },
+    { kind: 'Webinar', image: IMG_WEBINAR_LENZ, icon: 'smart_display', tint: '#fdf3ea', title: 'Ask the Expert with Dr. Lenz', sub: 'Watch the replay' },
+  ]},
+  { id: 'community', title: 'From the community', seeAll: 'community', items: [
+    { format: 'text', initials: 'HF', author: 'Community Member', time: '10 days ago', title: 'How can I manage severe treatment flushing and sleep problems?', body: 'Eight years in treatment for sarcomatoid metastatic RCC. My naturopath has neutralized most side effects except flushing — it\u2019s become severe and is interrupting my sleep. Has anyone found something that helps?', replies: 1 },
+    { format: 'text', initials: 'JS', author: 'Community Member', time: '19 days ago', title: 'Has anyone had Keytruda for kidney cancer?', body: 'Diagnosed with RCC and had a full nephrectomy; scans are clear. I\u2019m scheduled to start Keytruda soon — is anyone on this treatment, and how bad are the side effects?', replies: 4 },
+  ]},
+]
+// 2-up band. Two card formats: media (image/kind/title/sub) and text (community:
+// initials avatar + author·time, title only, comment count).
+const ContentBand = ({ title, items = [], onSeeAll }) => {
+  if (!items || items.length < 2) return null
+  return (
+    <div style={{ marginBottom: 30 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', padding: '0 4px 13px' }}>
+        <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary }}>{title}</div>
+        <button onClick={onSeeAll} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 600, color: C.primary, fontFamily: 'Inter,sans-serif' }}>See all</button>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 11 }}>
+        {items.slice(0, 2).map((it, i) => (
+          <button key={i} onClick={onSeeAll} style={{ display: 'flex', flexDirection: 'column', textAlign: 'left', backgroundColor: C.bgCard, ...SOFT_CARD, padding: 0, overflow: 'hidden', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+            {it.format === 'text' ? (
+              <div style={{ padding: '13px 14px 14px', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 152 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 10 }}>
+                  <div style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10.5, fontWeight: 700, color: C.textIcon, flexShrink: 0 }}>{it.initials}</div>
+                  <div style={{ fontSize: 11, color: C.textTertiary, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.author} · {it.time}</div>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 4, WebkitBoxOrient: 'vertical', overflow: 'hidden', flex: 1 }}>{it.title}</div>
+                <div style={{ fontSize: 11, color: C.textTertiary, marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <span className="material-symbols-rounded" style={{ fontSize: 14, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>forum</span>
+                  {it.replies} {it.replies === 1 ? 'comment' : 'comments'}
+                </div>
+              </div>
+            ) : (
+              <>
+                <div style={{ position: 'relative', height: 84, background: it.image ? '#eee' : `linear-gradient(135deg, ${it.tint} 0%, #ffffff 100%)`, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                  {it.image
+                    ? <img src={it.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
+                    : <span className="material-symbols-rounded" style={{ fontSize: 27, color: C.textSecondary, opacity: 0.85, fontVariationSettings: "'FILL' 0, 'wght' 300" }}>{it.icon}</span>}
+                  {it.sponsored && <span style={{ position: 'absolute', top: 8, left: 8, fontSize: 9, fontWeight: 700, color: C.textTertiary, backgroundColor: 'rgba(255,255,255,0.88)', borderRadius: 5, padding: '2px 6px', letterSpacing: '0.04em', textTransform: 'uppercase' }}>Sponsored</span>}
+                </div>
+                <div style={{ padding: '11px 13px 14px' }}>
+                  {it.kind && <div style={{ fontSize: 10, fontWeight: 700, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4, opacity: 0.9 }}>{it.kind}</div>}
+                  <div style={{ fontSize: 13.5, fontWeight: 600, color: C.textPrimary, lineHeight: 1.35 }}>{it.title}</div>
+                  <div style={{ fontSize: 11.5, color: C.textTertiary, marginTop: 3 }}>{it.sub}</div>
+                </div>
+              </>
+            )}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Ask O4M — the clinical-team form ─────────────────────────────
+// A one-off question to Outcomes4Me's oncology clinical team (people, not AI). Distinct from
+// the patient's own care team, so the form says so — and points urgent issues elsewhere.
+// Prototype stand-in: production launches the real clinical-team form; fields here are a
+// strawman (optional topic + question).
+const ASK_TOPICS = ['Treatment options', 'Side effects', 'Test results', 'Clinical trials', 'Something else']
+const AskO4MSheet = ({ onClose, onSend, initialQuestion = '', fullView = false }) => {  // fullView: opened from chat, slides up as a full view
+  const t = usePatientCopy()
+  const [vis, setVis] = useState(false)
+  const [topic, setTopic] = useState(null)
+  const [q, setQ] = useState(initialQuestion)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const close = (cb) => { setVis(false); setTimeout(() => cb && cb(), 300) }
+  const ok = !!q.trim()
+  return ReactDOM.createPortal(
+    <div style={{ position: 'fixed', inset: 0, zIndex: 420 }}>
+      <div onClick={() => close(onClose)} style={{ position: 'absolute', inset: 0, backgroundColor: vis ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0)', transition: 'background-color 0.3s ease' }}/>
+      <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, top: fullView ? 0 : 'auto', maxHeight: fullView ? 'none' : '92%', overflowY: 'auto', backgroundColor: C.bgCard, borderRadius: fullView ? 0 : '22px 22px 0 0', boxShadow: fullView ? 'none' : '0 -6px 28px rgba(0,0,0,0.16)', padding: fullView ? 'calc(8px + env(safe-area-inset-top, 0px)) 20px calc(24px + env(safe-area-inset-bottom, 0px))' : '10px 20px calc(24px + env(safe-area-inset-bottom, 0px))', transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.34s cubic-bezier(0.32,0.72,0,1)', fontFamily: 'Inter,sans-serif' }}>
+        {fullView
+          ? <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '0 -8px 8px' }}><button onClick={() => close(onClose)} aria-label="Close" style={{ width: 44, height: 44, border: 'none', background: '#fff', borderRadius: 22, boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: '#414652' }}>close</span></button></div>
+          : <div style={{ width: 38, height: 4, backgroundColor: 'rgba(0,0,0,0.12)', borderRadius: 2, margin: '0 auto 16px' }}/>}
+        <div style={{ fontSize: 20, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 6 }}>Ask O4M</div>
+        <div style={{ fontSize: 14, color: C.textSecondary, marginBottom: 20, lineHeight: 1.55 }}>Send a question to our oncology clinical team. A person reads every question and follows up, usually within a day.</div>
+
+        <div style={{ fontSize: 13, fontWeight: 600, color: C.textSecondary, marginBottom: 9 }}>What's it about? <span style={{ fontWeight: 400, color: C.textTertiary }}>Optional</span></div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginBottom: 18 }}>
+          {ASK_TOPICS.map(tp => {
+            const on = topic === tp
+            return <button key={tp} onClick={() => setTopic(on ? null : tp)} style={{ height: 36, padding: '0 14px', borderRadius: 9999, border: `${on ? 1.5 : 1}px solid ${on ? C.primary : C.border}`, backgroundColor: on ? C.primaryLight : C.bgCard, color: on ? C.primary : C.textPrimary, fontSize: 13.5, fontWeight: on ? 600 : 500, cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>{tp}</button>
+          })}
+        </div>
+
+        <NotesTextarea value={q} onChange={setQ} placeholder={t('What would you like to ask{| about {their} care}?')}/>
+
+        <div style={{ display: 'flex', gap: 9, alignItems: 'flex-start', backgroundColor: C.bgApp, borderRadius: 12, padding: '11px 13px', margin: '4px 0 16px' }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textTertiary, marginTop: 1 }}>info</span>
+          <div style={{ fontSize: 12.5, color: C.textSecondary, lineHeight: 1.5 }}>{t("This goes to Outcomes4Me's clinical team, not {your|the} doctor's office. For anything urgent, call {your|the} care team or 911.")}</div>
+        </div>
+
+        <button onClick={() => ok && close(() => onSend({ topic, question: q.trim() }))} style={{ width: '100%', height: 52, borderRadius: 9999, backgroundColor: ok ? C.primary : C.bgApp, border: 'none', cursor: ok ? 'pointer' : 'default', fontSize: 16, fontWeight: 700, color: ok ? '#fff' : C.textTertiary, fontFamily: 'Inter,sans-serif' }}>Send to the clinical team</button>
+      </div>
+    </div>,
+    document.body
+  )
+}
+// ─── REDESIGN-04: "Share your full picture" — on-demand care summary snapshot ──
+// Assembled live from what the patient has logged (symptoms/meds/journal/mood/
+// timeline/patientState). NOT a persisted daily object — distinct from the Daily
+// summary and from Your care plan. Transparent header; glass control chips float
+// over the content, which scrolls underneath.
+const CANCER_LABELS = { RCC: 'kidney cancer', BREAST: 'breast cancer', CRC: 'colorectal cancer', LUNG: 'lung cancer', PROS: 'prostate cancer', BLAD: 'bladder cancer', OV: 'ovarian cancer' }
+const _shortDate = (iso) => { try { return new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) } catch { return iso } }
+const GLASS_CHIP = { pointerEvents: 'auto', width: 44, height: 44, borderRadius: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', backgroundColor: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', cursor: 'pointer' }  // v3.19: header buttons are white floating
+const SummarySectionLabel = ({ children }) => <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: '0.04em', textTransform: 'uppercase', color: C.textTertiary, margin: '22px 0 10px' }}>{children}</div>
+const SummaryCard = ({ children }) => <div style={{ backgroundColor: C.bgCard, ...SOFT_CARD, borderRadius: 14, padding: '14px 16px' }}>{children}</div>
+const SummaryEmpty = ({ children }) => <SummaryCard><div style={{ fontSize: 13.5, color: C.textTertiary }}>{children}</div></SummaryCard>
+// Sharing goes to a care team, so it needs the patient's real name. A caregiver's warm name
+// ("Mom") stays on screen; the first share asks once for the full name and keeps it on the
+// record (patientState.patientFullName). Self uses the account name.
+const CareSummarySheet = ({ symptoms = [], medications = [], journal = [], mood = [], timeline = [], patientState = {}, accountName = '', onSavePatientDetails, onClose }) => {
+  const t = usePatientCopy()
+  const sub = t.sub
+  const [askName, setAskName] = useState(false)
+  const [fullName, setFullName] = useState(patientState.patientFullName || '')
+  const [dob, setDob] = useState(patientState.dateOfBirth || '')
+  // What the care team needs that the record doesn't have yet (caregivers only — self always has both).
+  const needName = !sub.self && !patientState.patientFullName
+  const needDob = !sub.self && !patientState.dateOfBirth
+  const [vis, setVis] = useState(false)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  const close = () => { setVis(false); setTimeout(onClose, 300) }
+  const cancer = CANCER_LABELS[patientState.diagnosisCode] || 'your cancer'
+  const recentSymptoms = symptoms.slice(-6).reverse()
+  const recentJournal = journal.slice(-3).reverse()
+  const latestMood = mood.slice(-1)[0]
+  const recentEvents = timeline.map(d => d.event).filter(Boolean).slice(-4).reverse()
+  const doShare = (legalName, birthDate = patientState.dateOfBirth) => {
+    const who = [legalName, birthDate ? `DOB ${birthDate}` : null].filter(Boolean).join(', ')
+    const text = `Care summary${who ? ` for ${who}` : ''} — ${cancer}. ${recentSymptoms.length} recent symptoms, ${medications.length} current medications, ${journal.length} journal entries.`
+    if (navigator.share) navigator.share({ title: t('{My|{Their}} full picture'), text }).catch(() => {})
+    else { try { navigator.clipboard.writeText(text) } catch {} }
+  }
+  const share = () => {
+    if (sub.self) { doShare(accountName); return }
+    if (!needName && !needDob) { doShare(patientState.patientFullName); return }
+    setAskName(true)
+  }
+  // Name is required to share; the date of birth is asked again only if it's still unknown,
+  // and they can share without it.
+  const confirmName = () => {
+    const n = (needName ? fullName : patientState.patientFullName || '').trim(); if (!n) return
+    const details = {}
+    if (needName) details.patientFullName = n
+    if (needDob && dob) details.dateOfBirth = dob
+    if (Object.keys(details).length) onSavePatientDetails && onSavePatientDetails(details)
+    setAskName(false); doShare(n, dob || patientState.dateOfBirth)
+  }
+  const askTitle = needName && needDob ? t('Add {their} full name and date of birth') : needName ? t('Add {their} full name') : t('Add {their} date of birth')
+  const rowDivider = (i) => ({ padding: i ? '10px 0 0' : 0, borderTop: i ? `1px solid ${C.border}` : 'none', marginTop: i ? 10 : 0 })
+  return ReactDOM.createPortal(
+    <div style={{ position: 'fixed', inset: 0, zIndex: 150, background: 'linear-gradient(180deg, #fbf6f4 0%, #fdfbfb 26%, #ffffff 100%)', transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.34s cubic-bezier(0.32,0.72,0,1)', display: 'flex', flexDirection: 'column', fontFamily: "'Inter',sans-serif" }}>
+      {/* Transparent header — floating glass chips */}
+      <div style={{ position: 'absolute', top: 'calc(8px + env(safe-area-inset-top, 0px))', left: 0, right: 0, zIndex: 5, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 9, padding: '0 14px', pointerEvents: 'none' }}>
+        <button onClick={share} aria-label="Share" style={GLASS_CHIP}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.primary }}>ios_share</span></button>
+        <button onClick={close} aria-label="Close" style={GLASS_CHIP}><span className="material-symbols-rounded" style={{ fontSize: 22, color: C.textIcon }}>close</span></button>
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto', padding: 'calc(20px + env(safe-area-inset-top, 0px)) 18px 28px' }}>
+        <div style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.5px', color: C.textPrimary, marginBottom: 7, maxWidth: 'calc(100% - 92px)' }}>{t('{Their} full picture')}</div>
+        <div style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.6 }}>Everything you've logged — symptoms, medications, journal, and treatment — pulled together as of today, ready to share with your care team.</div>
+
+        <SummarySectionLabel>Overview</SummarySectionLabel>
+        <SummaryCard>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 6, textTransform: 'capitalize' }}>{cancer}{patientState.stage ? ` · Stage ${patientState.stage}` : ''}</div>
+          {(patientState.dateOfBirth || (patientState.ageRange && patientState.ageRange !== 'unsure')) && (
+            <div style={{ fontSize: 12.5, color: C.textTertiary, marginBottom: 6 }}>
+              {patientState.dateOfBirth ? `Born ${new Date(patientState.dateOfBirth + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}` : `Age ${ageRangeLabel(patientState.ageRange).toLowerCase()} · exact date not added`}
+            </div>
+          )}
+          <div style={{ fontSize: 13.5, color: C.textSecondary, lineHeight: 1.6 }}>
+            Recently you've logged {symptoms.length} symptom {symptoms.length === 1 ? 'entry' : 'entries'} and {journal.length} journal {journal.length === 1 ? 'entry' : 'entries'}, and you're tracking {medications.length} {medications.length === 1 ? 'medication' : 'medications'}.{latestMood ? ` Your latest mood was ${(latestMood.label || '').toLowerCase()}.` : ''}
+          </div>
+        </SummaryCard>
+
+        <SummarySectionLabel>Recent symptoms</SummarySectionLabel>
+        {recentSymptoms.length ? recentSymptoms.map((sx, i) => (
+          <div key={sx.id || i} style={{ marginBottom: 8 }}>
+            <SummaryCard>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                <div style={{ flex: 1, fontSize: 14.5, fontWeight: 600, color: C.textPrimary }}>{sx.name}{sx.severity ? <span style={{ fontWeight: 500, color: C.textSecondary }}> · {sx.severity}</span> : null}</div>
+                <div style={{ fontSize: 12, color: C.textTertiary }}>{_shortDate(sx.date)}</div>
+              </div>
+              {sx.notes ? <div style={{ fontSize: 12.5, color: C.textSecondary, lineHeight: 1.5, marginTop: 4 }}>{sx.notes}</div> : null}
+            </SummaryCard>
+          </div>
+        )) : <SummaryEmpty>No symptoms logged yet.</SummaryEmpty>}
+
+        <SummarySectionLabel>Current medications</SummarySectionLabel>
+        {medications.length ? (
+          <SummaryCard>
+            {medications.map((m, i) => (
+              <div key={m.id || i} style={{ display: 'flex', alignItems: 'center', gap: 8, ...rowDivider(i) }}>
+                <span className="material-symbols-rounded" style={{ fontSize: 19, color: C.primary }}>medication</span>
+                <div style={{ fontSize: 14.5, fontWeight: 600, color: C.textPrimary }}>{m.name}</div>
+              </div>
+            ))}
+          </SummaryCard>
+        ) : <SummaryEmpty>No medications tracked yet.</SummaryEmpty>}
+
+        <SummarySectionLabel>Recent journal</SummarySectionLabel>
+        {recentJournal.length ? recentJournal.map((j, i) => (
+          <div key={j.id || i} style={{ marginBottom: 8 }}>
+            <SummaryCard>
+              <div style={{ fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>{_shortDate(j.date)}</div>
+              <div style={{ fontSize: 13.5, color: C.textPrimary, lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{j.text}</div>
+            </SummaryCard>
+          </div>
+        )) : <SummaryEmpty>No journal entries yet.</SummaryEmpty>}
+
+        <SummarySectionLabel>What's changed lately</SummarySectionLabel>
+        {recentEvents.length ? (
+          <SummaryCard>
+            {recentEvents.map((ev, i) => (
+              <div key={ev.id || i} style={{ display: 'flex', alignItems: 'baseline', gap: 8, ...rowDivider(i) }}>
+                <div style={{ flex: 1, fontSize: 14, color: C.textPrimary }}>{ev.name}</div>
+                <div style={{ fontSize: 12, color: C.textTertiary }}>{_shortDate(ev.date)}</div>
+              </div>
+            ))}
+          </SummaryCard>
+        ) : <SummaryEmpty>Nothing notable recently.</SummaryEmpty>}
+
+        <div style={{ fontSize: 11.5, color: C.textTertiary, lineHeight: 1.5, margin: '20px 2px 0' }}>Assembled from what you've logged in Outcomes4Me. Share or print to bring to your care team.</div>
+      </div>
+      <div style={{ padding: '10px 18px calc(16px + env(safe-area-inset-bottom, 0px))', flexShrink: 0 }}>
+        <button onClick={share} style={{ width: '100%', height: 52, borderRadius: 14, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 16, fontWeight: 700, color: '#fff', fontFamily: 'Inter,sans-serif', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7 }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 20 }}>ios_share</span>Share with your care team
+        </button>
+      </div>
+      {askName && (
+        <div onClick={() => setAskName(false)} style={{ position: 'absolute', inset: 0, zIndex: 10, backgroundColor: 'rgba(0,0,0,0.32)', display: 'flex', alignItems: 'flex-end' }}>
+          <div onClick={e => e.stopPropagation()} style={{ width: '100%', backgroundColor: C.bgCard, borderRadius: '20px 20px 0 0', padding: '22px 20px calc(18px + env(safe-area-inset-bottom, 0px))' }}>
+            <div style={{ fontSize: 19, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 6 }}>{askTitle}</div>
+            <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.55, marginBottom: 18 }}>The care team uses {needName && needDob ? 'both' : 'it'} to match this summary to the right person. We'll keep {needName && needDob ? 'them' : 'it'} for next time.</div>
+            {needName && <AuthField label="Full name" value={fullName} onChange={setFullName} type="text" placeholder="First and last name" required/>}
+            {needDob && <DateInputField label="Date of birth" value={dob} onChange={setDob} max={localDateStr()} yearRange={[new Date().getFullYear() - 110, new Date().getFullYear()]} defaultValue={`${new Date().getFullYear() - 65}-01-01`} hint={needName ? "Don't know it yet? You can share without it." : null}/>}
+            {(() => { const ok = !needName || fullName.trim(); return (
+              <button onClick={confirmName} style={{ width: '100%', height: 52, borderRadius: 14, backgroundColor: C.primary, border: 'none', cursor: ok ? 'pointer' : 'default', opacity: ok ? 1 : 0.45, fontSize: 16, fontWeight: 700, color: '#fff', fontFamily: 'Inter,sans-serif' }}>{needDob && !dob && !needName ? 'Share without it' : 'Save and share'}</button>
+            ) })()}
+          </div>
+        </div>
+      )}
+    </div>,
+    document.body
+  )
+}
+// ─── REDESIGN-04: two side-by-side CTAs off the summary (options + ask a human) ──
+// The pair off the summary: self-serve (your care plan) + ask a person (O4M's clinical team).
+const TodayCTAs = ({ onViewPlan, onAskClinical }) => {
+  const ctas = [
+    { key: 'plan', icon: 'route', label: 'Your care plan', sub: 'Treatment options and history', onClick: onViewPlan },
+    { key: 'ask',  icon: 'forum', label: 'Ask O4M',        sub: 'Questions to our clinical team', onClick: onAskClinical },
+  ]
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 11 }}>
+      {ctas.map(c => (
+        <button key={c.key} onClick={c.onClick} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', textAlign: 'left', backgroundColor: C.bgCard, ...SOFT_CARD, padding: '16px', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+          <div style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 11 }}>
+            <span className="material-symbols-rounded" style={{ fontSize: 21, color: C.textIcon, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>{c.icon}</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, width: '100%', fontSize: 14.5, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.2px' }}>
+            {c.label}
+            <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textTertiary, marginLeft: 'auto' }}>chevron_right</span>
+          </div>
+          <div style={{ fontSize: 12, color: C.textTertiary, marginTop: 2 }}>{c.sub}</div>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+const TreatmentOptionsCard = ({ onView }) => (
+  <button onClick={onView} style={{ display: 'block', width: '100%', textAlign: 'left', backgroundColor: C.bgCard, ...SOFT_CARD, padding: '18px', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+    <div style={{ fontSize: 11, fontWeight: 700, color: C.textTertiary, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: 11 }}>Based on NCCN guidelines</div>
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+      <div style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 21, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>clinical_notes</span>
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 16.5, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 3 }}>Your treatment options</div>
+        <div style={{ fontSize: 13.5, color: C.textSecondary, lineHeight: 1.5 }}>The guidelines map your next steps from everything in your record — review them and prepare to discuss.</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 3, marginTop: 12 }}>
+          <span style={{ fontSize: 14, fontWeight: 700, color: C.primary }}>Review options</span>
+          <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.primary }}>chevron_right</span>
+        </div>
+      </div>
+    </div>
   </button>
 )
-const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFlash = false, summaryShown = true, onApproachSelect, addedIds = {}, onRemoveEvent, onEditClinical, visibleRecs = [], revealedCards = null, blockGenStates = {}, genText = null, genBlockId = null, generationDone = false, onSummarize = null, onAddEvent = null, cancerSupported = true, onReviewRecs = null, showRecordsCard = false, onOpenSettings = null, onDismissRecordsCard = null, onAddDate = null, connectAbove = false, connectBelow = false }) => {
+const TodayScreen = ({ userName, summary, narrative, teasers, onTeaserAction, onAddEvent, checkin, checkinJustChecked, checkinMoodLabel, checkinCount, onCheckinMood, onCheckinMoodSelect, onCheckinSymptomsYes, onCheckinSymptomsNo, onCheckinSymptomsEdit, checkinSymptomEntry, onCheckinJournal, onCheckinJournalSave, onCheckinJournalEdit, checkinJournalEntry, todos = [], onTodoAction, onViewTimeline, onViewTreatments, hasTreatments = false, onAsk, onOpenCommunity, onViewCareSummary, cancerLabel = 'your cancer', onViewResources, todOverride = null, onAskClinical }) => {
+  const t = usePatientCopy()
+  const subject = t.sub
+  const first = (userName || '').trim().split(' ')[0] // may be empty — onboarding doesn't ask a name
+  const today = new Date()
+  const dateLine = today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+  const doorway = (icon, title, sub, onClick) => (
+    <button onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left', backgroundColor: C.bgCard, ...SOFT_CARD, padding: '15px 18px', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+      <div style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>{icon}</span>
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14.5, fontWeight: 600, color: C.textPrimary }}>{title}</div>
+        {sub && <div style={{ fontSize: 12.5, color: C.textTertiary, marginTop: 1 }}>{sub}</div>}
+      </div>
+      <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary, flexShrink: 0 }}>chevron_right</span>
+    </button>
+  )
+  return (
+    <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', paddingTop: 60, paddingBottom: 96, background: 'linear-gradient(180deg, #fbf6f4 0%, #fdfbfb 30%, #ffffff 100%)' }}>
+      <div style={{ padding: '32px 18px 52px', maxWidth: 640, margin: '0 auto', position: 'relative' }}>
+        {/* Greeting. The time-of-day glyph is drawn with the Daily summary below so the card's
+            top edge is its horizon; the greeting sits above it (zIndex 2). */}
+        {(() => { const tod = _todInfo(todOverride); return (
+          <>
+            <div style={{ position: 'relative', zIndex: 2, marginBottom: 30, padding: '0 2px' }}>
+              <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.15 }}>{first ? `${tod.part}, ${first}.` : `${tod.part}.`}</div>
+              <div style={{ fontSize: 13, color: C.textTertiary, marginTop: 3 }}>{dateLine}</div>
+              {/* Caregiver anchor — says whose record this is, so "you/your" across the app
+                  reads as "you two". The one place the typed name appears outside onboarding/sharing. */}
+              {subject && !subject.self && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 13.5, fontWeight: 600, color: C.textSecondary }}>
+                  <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>favorite</span>
+                  Caring for {subject.name}
+                </div>
+              )}
+            </div>
+          </>
+        ) })()}
+
+        {/* AI — your read (orientation; live-derived so it reflects a check-in made below) */}
+        <TodayZone>
+          <div style={{ position: 'relative', zIndex: 1 }}>
+            {(() => { const tod = _todInfo(todOverride); return (
+              // Behind the card (zIndex -1 inside this stacking context): the card is the horizon,
+              // so the morning sun reads as rising from behind it.
+              <div aria-hidden style={{ position: 'absolute', top: -tod.rise, right: 14, zIndex: -1, opacity: 0.3, pointerEvents: 'none', lineHeight: 1 }}>
+                <span className="material-symbols-rounded" style={{ fontSize: 172, color: tod.color, fontVariationSettings: "'FILL' 1, 'wght' 200" }}>{tod.icon}</span>
+              </div>
+            ) })()}
+            <DailySummaryCard summary={summary} isToday={true} onAddEvent={onAddEvent} teasers={teasers} onTeaserAction={onTeaserAction} narrative={narrative} onViewRecord={onViewTimeline}/>
+          </div>
+        </TodayZone>
+
+        {/* The daily habit — check-in, right under the summary it updates */}
+        <TodayZone>
+          <CheckInSpine state={checkin} justChecked={checkinJustChecked} moodLabel={checkinMoodLabel} count={checkinCount} onMood={onCheckinMood} onMoodSelect={onCheckinMoodSelect} onSymptomsYes={onCheckinSymptomsYes} onSymptomsNo={onCheckinSymptomsNo} onSymptomsEdit={onCheckinSymptomsEdit} symptomEntry={checkinSymptomEntry} onJournal={onCheckinJournal} onJournalEdit={onCheckinJournalEdit} journalEntry={checkinJournalEntry}/>
+        </TodayZone>
+
+        {/* Act — recommended next steps (hides itself when empty) */}
+        {todos.length > 0 && <TodayZone><NextStepsSection todos={todos} onAction={onTodoAction}/></TodayZone>}
+
+        {/* When something happens — the care plan (results, treatment change, a visit coming up)
+            and asking a person. One tap away, below the daily habit (interview synthesis: the
+            check-in is the daily job; the care plan is valued most but used on events). */}
+        <TodayZone><TodayCTAs onViewPlan={onViewTimeline} onAskClinical={onAskClinical}/></TodayZone>
+
+        {/* Prepare — standing entry to the on-demand care summary */}
+        <TodayZone>
+          <button onClick={onViewCareSummary} style={{ display: 'flex', alignItems: 'center', gap: 13, width: '100%', textAlign: 'left', backgroundColor: C.bgCard, ...SOFT_CARD, padding: '15px 16px', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+            <div style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 22, color: C.textIcon, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>clinical_notes</span>
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14.5, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.2px' }}>{t('Share {their} full picture')}</div>
+              <div style={{ fontSize: 12.5, color: C.textSecondary, lineHeight: 1.4, marginTop: 1 }}>Symptoms, meds, journal, and treatment pulled together to share with your care team</div>
+            </div>
+            <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.primary }}>ios_share</span>
+          </button>
+        </TodayZone>
+
+        {/* Content — recency-led bands, 2-up grids, each shown only when it has ≥2 items */}
+        {todayBands(cancerLabel, subject && !subject.self ? (subject.relationship || 'other') : null).map(b => <ContentBand key={b.id} title={b.title} items={b.items} onSeeAll={() => b.seeAll === 'community' ? onOpenCommunity() : onViewResources()}/>)}
+      </div>
+    </div>
+  )
+}
+
+const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFlash = false, summaryShown = true, onApproachSelect, addedIds = {}, onRemoveEvent, onEditClinical, visibleRecs = [], revealedCards = null, blockGenStates = {}, genText = null, genBlockId = null, generationDone = false, onSummarize = null, onAddEvent = null, cancerSupported = true, onReviewRecs = null, showRecordsCard = false, onOpenSettings = null, onDismissRecordsCard = null, checkin = null, checkinJustChecked = null, checkinMoodLabel = null, checkinCount = 0, onCheckinMood = null, onCheckinSymptomsYes = null, onCheckinSymptomsNo = null, onCheckinJournal = null, todos = [], onTodoAction = null, dailyLog = null, summaryTeasers = [], onTeaserAction = null, treatmentBasis = [] }) => {
   const allItems = []
   // The daily summary is absent while the timeline builds; it's inserted at the top of
   // Today right after the scroll-to-Today settles.
   const showSummary = day.summary && (!day.isToday || summaryShown)
-  // "Records not synced" takes the top position under Today when present; the daily summary
-  // follows. When the card is dismissed/connected, the summary naturally returns to the top.
-  if (day.isToday && summaryShown && showRecordsCard) allItems.push({ key: 'records-card', icon: null, card: <RecordsNotSyncedCard onOpenSettings={onOpenSettings} onDismiss={onDismissRecordsCard}/> })
+  // (redesign-04: the daily summary lives on the Today surface, not on the care-plan record.)
+  // Persistent "records not synced" card sits directly below the summary on Today.
+  if (day.isToday && showSummary && showRecordsCard) allItems.push({ key: 'records-card', icon: null, card: <RecordsNotSyncedCard onOpenSettings={onOpenSettings} onDismiss={onDismissRecordsCard}/> })
+  // ── redesign-04: the timeline is the medical record. The daily log (mood/symptoms/
+  // journal, derived from the stores) shows on every day incl today; the interactive
+  // check-in / next steps live on the Today surface, not here. ──
+  if (dailyLog && (dailyLog.mood || (dailyLog.symptoms || []).length || (dailyLog.journal || []).length)) {
+    allItems.push({ key: 'daylog', icon: null, card: <DailyLogGroup mood={dailyLog.mood} symptoms={dailyLog.symptoms} journal={dailyLog.journal} none={dailyLog.none}/> })
+  }
   day.events.forEach(ev => allItems.push({
-    key: ev.id, icon: SPINE_NODE.event(ev.type),
+    key: ev.id, icon: null,
     card: ev.type === 'appointment'
-      ? <AppointmentCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent ? () => onRemoveEvent(ev.id, day.date) : null} onEdit={onEditClinical ? () => onEditClinical(ev) : undefined} onAddDate={onAddDate ? () => onAddDate(ev, day.date) : undefined}/>
-      : <EventCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent && ev.type !== 'diagnosis' ? () => onRemoveEvent(ev.id, day.date) : null} onEdit={onEditClinical ? () => onEditClinical(ev) : undefined} onAddDate={onAddDate ? () => onAddDate(ev, day.date) : undefined} visibleRecs={visibleRecs}/>
+      ? <AppointmentCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent ? () => onRemoveEvent(ev.id, day.date) : null} onEdit={onEditClinical ? () => onEditClinical(ev) : undefined}/>
+      : <EventCard event={ev} highlightId={highlightId} onRemove={onRemoveEvent && ev.type !== 'diagnosis' ? () => onRemoveEvent(ev.id, day.date) : null} onEdit={onEditClinical ? () => onEditClinical(ev) : undefined} visibleRecs={visibleRecs}/>
   }))
-  const firstRealIdx = (day.suggested || []).findIndex(b => b.group !== 'clinical-trials')
-  ;(day.suggested || []).forEach((blk, i) => {
-    const isStanding = blk.group === 'clinical-trials'
-    const node = isStanding ? SPINE_NODE.standing() : SPINE_NODE.suggested()
-    const card = isStanding
-      ? <CTStandingCard onOpen={() => onApproachSelect && onApproachSelect(blk.options[0])}/>
-      : (genBlockId === blk.id
-          ? <div style={{ padding: '12px 16px' }}><span style={{ fontSize: 13, color: C.textSecondary }}>{genText}</span></div>
-          : <SuggestedBlock block={blk} defaultOpen={i===firstRealIdx} onApproachSelect={onApproachSelect} addedIds={addedIds} genState={blockGenStates[blk.id] || 'idle'} onSummarize={onSummarize}/>)
-    allItems.push({ key: blk.id, isSugBlock: true, icon: node, card })
-  })
+  ;(day.suggested || []).forEach((blk, i) => allItems.push({ key: blk.id, isSugBlock: true, icon: <div style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: C.bgCard, border: `1.5px solid ${C.primary}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.primary, fontVariationSettings: "'FILL' 0, 'wght' 300" }}>kid_star</span></div>, card: genBlockId === blk.id
+              ? <div style={{ padding: '12px 16px' }}>
+                  <span style={{ fontSize: 13, color: C.textSecondary }}>{genText}</span>
+                </div>
+              : <SuggestedBlock block={blk} defaultOpen={i===0} onApproachSelect={onApproachSelect} addedIds={addedIds} genState={blockGenStates[blk.id] || 'idle'} onSummarize={onSummarize} basis={treatmentBasis}/> }))
   const lineColor = C.timelineLine  // grey for all regular connections
   const suggestedLineColor = C.timelineLineToday  // orange only adjacent to suggested
-  const sugIds = new Set((day.suggested || []).map(s => s.id))
-  // One continuous rail across all dated days (diagnosis → last day). Undated events never connect.
-  const linked = !day.isUndated
-  // Chain: … → date → its items → next date → … The rail starts at the timeline's first ITEM (the
-  // diagnosis): the first date gets no segments at all, and the last item has nothing below.
-  const railIntoDate = linked && connectAbove
-  const railFromDate = linked && connectAbove && allItems.length > 0
-  const firstIsNodeless = allItems.length > 0 && !allItems[0].icon
+  // Find index of last item with an icon
+  let lastIconIdx = -1
+  allItems.forEach((item, i) => { if (item.icon) lastIconIdx = i })
 
   return (
     <div style={{ backgroundColor: C.bgApp }}>
       <div ref={sentinelRef} style={{ height: 0 }} data-date={day.date} data-label={day.isToday ? `Today · ${day.label}` : day.label}/>
-      {/* The date is a stop on the rail: the line ends SPINE.clearance px above the label and resumes the same distance below it. */}
-      <div style={{ position: 'sticky', top: 0, zIndex: 10, backgroundColor: C.bgApp, padding: '16px 16px 12px', lineHeight: '20px' }}>
-        {railIntoDate && <div style={{ position: 'absolute', left: 16 + SPINE.col / 2, top: 0, height: 16 - SPINE.clearance, width: SPINE.line, transform: 'translateX(-50%)', background: C.timelineLine }}/>}
-        {railFromDate && <div style={{ position: 'absolute', left: 16 + SPINE.col / 2, top: 16 + 20 + SPINE.clearance, bottom: firstIsNodeless ? SPINE.clearance : 0, width: SPINE.line, transform: 'translateX(-50%)', background: C.timelineLine }}/>}
-        {day.isUndated
-          ? <span style={{ fontSize: 16, fontWeight: 700, color: C.textSecondary, letterSpacing: '-0.3px' }}>{day.label}</span>
-          : day.isToday
+      <div style={{ backgroundColor: C.bgApp, padding: '16px 16px 12px' }}>
+        <div data-dayline={day.date}>
+        {day.isToday
           ? <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
               <span style={{ fontSize: 16, fontWeight: 700, color: C.primary, letterSpacing: '-0.3px', transition: 'opacity 0.15s', opacity: todayFlash ? 0.5 : 1 }}>Today</span>
               <span style={{ fontSize: 12, color: C.textTertiary, fontWeight: 400 }}>·</span>
@@ -3204,8 +4562,9 @@ const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFla
               : <span style={{ fontSize: 16, fontWeight: 700, color: C.textSecondary, letterSpacing: '-0.3px' }}>{shortDate}</span>
             })()
         }
+        </div>
       </div>
-      <div style={{ paddingLeft: 16, paddingRight: 16 }}>
+      <div style={{ paddingLeft: 20, paddingRight: 16 }}>
         {allItems.map((item, idx) => {
           const cardKey = `${day.date}-${item.key}`
           const isRevealed = revealedCards.has(cardKey)
@@ -3216,29 +4575,51 @@ const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFla
             : generationDone
               ? { animation: 'cardfadein 0.4s ease forwards' }  // new card added after generation
               : { opacity: 0 }
-          const prevItem = allItems[idx - 1]
+          const isLastIcon = isLastDay && idx === lastIconIdx
           const nextItem = allItems[idx + 1]
-          const isSuggested = sugIds.has(item.key)
-          const colorOf = (it) => sugIds.has(it.key) ? suggestedLineColor : lineColor
-          // One rail per day: line runs between consecutive items; no tail past the day's last item.
-          // above = solid in this item's class colour; below = gradient into the next item's colour.
-          // Only node-to-node connections: node-less banners (e.g. records-not-synced) sit off the rail.
-          // Undated events have no real order (only when they were added), so they don't connect.
-          // Dated days: the rail continues from the previous day (through the date header) and on to the next.
-          // Dated days: the date header above always counts as the previous stop; the next stop is the
-          // next item, or the next day's date.
-          const hasNext = linked && (!!nextItem || connectBelow)
-          const toColor = nextItem ? colorOf(nextItem) : lineColor
-          const above = item.icon && linked && (idx > 0 || connectAbove) ? colorOf(item) : null
-          const fromColor = item.icon ? colorOf(item) : lineColor
-          const below = hasNext
-            ? (fromColor === toColor ? fromColor : `linear-gradient(to bottom, ${fromColor}, ${toColor})`)
-            : null
-          // Stop short of a following node-less card (banner) instead of touching it.
-          const belowInset = nextItem && !nextItem.icon ? SPINE.clearance : 0
+          const isSuggested = item.key && (day.suggested || []).some(s => s.id === item.key)
+          const nextIsSuggested = nextItem && (day.suggested || []).some(s => s.id === nextItem.key)
+          // Line runs below icon unless it's the last icon on last day
+          const lineBelow = item.icon && !isLastIcon
+          // Gradient: grey→orange when transitioning into suggested, solid orange within suggested, grey otherwise
+          // 4 cases for the connector line between this item and the next:
+          // event → event: gray
+          // event → suggested: gray → orange gradient
+          // suggested → event: orange → gray gradient
+          // suggested → suggested: orange
+          const segmentBg = isSuggested && nextIsSuggested
+            ? suggestedLineColor
+            : isSuggested && !nextIsSuggested
+              ? `linear-gradient(to bottom, ${suggestedLineColor}, ${lineColor})`
+              : !isSuggested && nextIsSuggested
+                ? `linear-gradient(to bottom, ${lineColor}, ${suggestedLineColor})`
+                : lineColor
+
+          if (!item.icon) {
+            // No icon (summary card): show line on left, card on right
+            // no-icon row: full width card, line left-aligned with icon position
+            return (
+              <div key={item.key} data-cardkey={cardKey} style={{ ...animStyle }}>
+                {item.card}
+                {idx < allItems.length - 1 && (
+                  <div style={{ height: 32, paddingTop: 8, paddingBottom: 8, paddingLeft: 35, boxSizing: 'border-box' }}>
+                    <div style={{ width: 3, height: '100%', background: segmentBg }}/>
+                  </div>
+                )}
+              </div>
+            )
+          }
+
+          // icon row: full width card, line left-aligned with icon center
           return (
-            <SpineRow key={item.key} node={item.icon} card={item.card} above={above} below={below} belowInset={belowInset} gapBelow={!!nextItem}
-              wrapProps={{ 'data-cardkey': cardKey, 'data-recs': isSuggested ? '1' : undefined, style: animStyle }}/>
+            <div key={item.key} data-cardkey={cardKey} data-recs={isSuggested ? '1' : undefined} style={{ ...animStyle }}>
+              {item.card}
+              {lineBelow && (
+                <div style={{ height: 32, paddingTop: 8, paddingBottom: 8, paddingLeft: 35, boxSizing: 'border-box' }}>
+                  <div style={{ width: 3, height: '100%', background: segmentBg }}/>
+                </div>
+              )}
+            </div>
           )
         })}
       </div>
@@ -3337,7 +4718,7 @@ const Toast = ({ message, subtext, action, onDone }) => {
 
 const SEVERITY_COLOR = { 'Common': '#f59e0b', 'Monitor': '#6366f1', 'Less common': C.textSecondary }
 
-const RegimenDetailView = ({ reg, parentTitle, onClose, onAddToPlan, addedIds = {}, patientState, planItems = [], onAbandonSignal = null }) => {
+const RegimenDetailView = ({ reg, parentTitle, onClose, onAddToPlan, addedIds = {}, patientState, planItems = [] }) => {
   const data = getRegimenData(reg)
   const regRule = findRuleMatchingItem(reg?.name)
   const isAdded = !!(regRule && addedIds[regRule.id])
@@ -3351,8 +4732,17 @@ const RegimenDetailView = ({ reg, parentTitle, onClose, onAddToPlan, addedIds = 
   useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
   const dismiss = () => { setVis(false); setTimeout(onClose, 320) }
 
+  useEffect(() => {
+    if (!titleRef.current || !scrollRef.current) return
+    const obs = new IntersectionObserver(
+      ([e]) => setTitleVisible(!e.isIntersecting),
+      { root: scrollRef.current, threshold: 0, rootMargin: '-60px 0px 0px 0px' }
+    )
+    obs.observe(titleRef.current)
+    return () => obs.disconnect()
+  }, [])
 
-  const handleScroll = (e) => { setDockShadow(e.target.scrollHeight - e.target.scrollTop > e.target.clientHeight + 2); setTitleVisible(scrolledPastTitle(e.target, titleRef.current)) }
+  const handleScroll = (e) => setDockShadow(e.target.scrollHeight - e.target.scrollTop > e.target.clientHeight + 2)
 
   return (
     <div style={{
@@ -3381,13 +4771,13 @@ const RegimenDetailView = ({ reg, parentTitle, onClose, onAddToPlan, addedIds = 
         </div>
       </div>
 
-      <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', paddingBottom: 100, position: 'relative' }}>
+      <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', paddingBottom: 100 }}>
 
         {/* 1. HEADER */}
         <div style={{ padding: '24px 20px 0' }}>
           <div ref={titleRef} style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 6 }}>{data.name}</div>
           {parentTitle && (
-            <div style={{ fontSize: 11, fontWeight: 600, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14 }}>{parentTitle}</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14 }}>{parentTitle}</div>
           )}
           <p style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.65 }}>{data.overview}</p>
           {isAdded && (
@@ -3527,7 +4917,7 @@ const RegimenDetailView = ({ reg, parentTitle, onClose, onAddToPlan, addedIds = 
       {/* Flow slides up over regimen detail */}
       {regimenFlow === 'procedure' && (
         <AddProcedureFlow
-          onClose={() => { setRegimenFlow(null); onAbandonSignal && onAbandonSignal() }}
+          onClose={() => setRegimenFlow(null)}
           onComplete={(event) => { setRegimenFlow(null); onAddToPlan(event, true) }}
           preload={{ name: data.name, subtitle: data.category, searchTerms: [data.name.toLowerCase()] }}
           fromDetail={true}
@@ -3537,7 +4927,7 @@ const RegimenDetailView = ({ reg, parentTitle, onClose, onAddToPlan, addedIds = 
       )}
       {regimenFlow === 'scan' && (
         <AddScanFlow
-          onClose={() => { setRegimenFlow(null); onAbandonSignal && onAbandonSignal() }}
+          onClose={() => setRegimenFlow(null)}
           onComplete={(event) => { setRegimenFlow(null); onAddToPlan(event, true) }}
           preload={{ name: data.name, subtitle: data.category, searchTerms: [data.name.toLowerCase()] }}
           fromDetail={true}
@@ -3547,7 +4937,7 @@ const RegimenDetailView = ({ reg, parentTitle, onClose, onAddToPlan, addedIds = 
       )}
       {regimenFlow === 'medication' && (
         <AddMedicationFlow
-          onClose={() => { setRegimenFlow(null); onAbandonSignal && onAbandonSignal() }}
+          onClose={() => setRegimenFlow(null)}
           onComplete={(event) => { setRegimenFlow(null); onAddToPlan(event, true) }}
           preload={{ name: data.name, subtitle: data.category, searchTerms: [data.name.toLowerCase()] }}
           fromDetail={true}
@@ -3606,186 +4996,7 @@ const PickerSheet = ({ regimens = [], addedIds = {}, onClose, onPick }) => {
   )
 }
 
-// ── Clinical trial as a suggested treatment — detail + drill-ins (matches production) ──
-const TreatmentPlanAgentSheet = ({ cancer, stage, onClose }) => {
-  const [vis, setVis] = useState(false)
-  const [phase, setPhase] = useState(0) // 0..2 status, 3 = revealed
-  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
-  useEffect(() => {
-    const t1 = setTimeout(() => setPhase(1), 700), t2 = setTimeout(() => setPhase(2), 1500), t3 = setTimeout(() => setPhase(3), 2400)
-    return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3) }
-  }, [])
-  const close = (cb) => { setVis(false); setTimeout(() => cb && cb(), 280) }
-  const status = ['Personalizing…', 'Processing…', 'Clarifying…'][phase] || ''
-  const st = stage ? `${stage} ` : ''
-  return ReactDOM.createPortal(
-    <div style={{ position: 'fixed', inset: 0, zIndex: 130, backgroundColor: C.bgCard, transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.32s cubic-bezier(0.32,0.72,0,1)', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ display: 'flex', alignItems: 'center', padding: '14px 14px 10px', flexShrink: 0 }}>
-        <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>auto_awesome</span>
-        <span style={{ flex: 1, fontSize: 15, fontWeight: 700, color: C.textPrimary, marginLeft: 6 }}>Treatment Plan Agent</span>
-        <button onClick={() => close(onClose)} aria-label="Close" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6 }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textIcon }}>close</span></button>
-      </div>
-      <div style={{ flex: 1, overflowY: 'auto', padding: '8px 20px 32px' }}>
-        <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, marginBottom: 14 }}>Explain how this treatment fits my plan</div>
-        {phase < 3
-          ? <div style={{ fontSize: 14, color: C.textTertiary }}>{status}</div>
-          : (
-            <div style={{ animation: 'hdrFade 0.4s ease' }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 10, lineHeight: 1.4 }}>Understanding Your Treatment Options for {st}{cancer}</div>
-              <div style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.65 }}>Based on your {st ? st.toLowerCase() : ''}{cancer.toLowerCase()} diagnosis, you have several treatment paths available to you. The treatments shown here represent evidence-based options that oncologists commonly recommend for patients in your situation.</div>
-            </div>
-          )}
-      </div>
-    </div>,
-    document.body
-  )
-}
-
-const _phaseLabel = (p) => ({ PHASE1: 'Phase 1', PHASE2: 'Phase 2', PHASE3: 'Phase 3', PHASE4: 'Phase 4' }[p] || p)
-// Drill-in for the standing "Explore clinical trials" card. Recycles TreatmentDetailView's layout,
-// titling and slots: app bar (title fades in on scroll, share/bookmark) → title + description →
-// drillable options (here: Most Relevant Clinical Trials → TrialDetail) → source → docked primary action.
-// Copy is placeholder pending final content.
-const CT_EXPLORE_CONTENT = {
-  title: 'Clinical trials',
-  description: 'Clinical trials are research studies that test new treatments, or new ways of using existing ones. NCCN recommends considering a clinical trial at every stage of care.',
-}
-const CTExploreDetail = ({ patientState, onClose, onSeeAll }) => {
-  const data = CT_EXPLORE_CONTENT
-  const [vis, setVis] = useState(false)
-  const [titleVisible, setTitleVisible] = useState(false)
-  const [selectedTrial, setSelectedTrial] = useState(null)
-  const [bookmarks, setBookmarks] = useState(() => _ctLoad('o4m_ct_bookmarks', []))
-  const [notes, setNotes] = useState(() => _ctLoad('o4m_ct_notes', {}))
-  const [toast, setToast] = useState(null)
-  const scrollRef = useRef(null)
-  const titleRef = useRef(null)
-  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
-  useEffect(() => { _ctSave('o4m_ct_bookmarks', bookmarks) }, [bookmarks])
-  useEffect(() => { _ctSave('o4m_ct_notes', notes) }, [notes])
-  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2000); return () => clearTimeout(t) }, [toast])
-  const dismiss = () => { setVis(false); setTimeout(onClose, 320) }
-  // App-bar title appears once the page title has scrolled under the bar (scroll-position based,
-  // so it isn't fooled by the slide-in transform the way an IntersectionObserver can be).
-  const handleScroll = (e) => {
-    const el = e.target
-    setTitleVisible(scrolledPastTitle(el, titleRef.current))
-  }
-  const cancer = (patientState && CT_CANCER_LABEL[patientState.diagnosisCode]) || 'your cancer'
-  // ctMatches flag (Profile → Experiments): 'off' forces the empty state for review.
-  const matched = exp('ctMatches') === 'off' ? [] : patientTrials(patientState).sort((a, b) => b.score - a.score).slice(0, 3)
-  const toggleBookmark = (t) => { const on = bookmarks.includes(t.id); setBookmarks(p => on ? p.filter(x => x !== t.id) : [...p, t.id]); setToast(on ? 'Removed from your Bookmarks.' : 'Clinical Trial added to your Bookmarks.') }
-  const share = (t) => { const text = `Here's a clinical trial I found on Outcomes4Me: ${t.title} (${t.id})`; if (navigator.share) navigator.share({ title: t.title, text }).catch(() => {}); else { try { navigator.clipboard.writeText(text); setToast('Copied to clipboard.') } catch (e) {} } }
-  const sectionTitle = { fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 12 }
-
-  return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 65, transform: vis ? 'translateX(0)' : 'translateX(100%)', transition: 'transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)', display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard, fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", WebkitFontSmoothing: 'antialiased' }}>
-      {/* App bar — same as TreatmentDetailView */}
-      <div style={{ display: 'flex', alignItems: 'center', height: 60, paddingLeft: 8, paddingRight: 12, flexShrink: 0, position: 'relative', borderBottom: `1px solid ${titleVisible ? C.border : 'transparent'}`, transition: 'border-color 0.2s' }}>
-        <button onClick={dismiss} aria-label="Back" style={{ width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}><Ico.back/></button>
-        <div style={{ flex: 1, minWidth: 0, textAlign: 'center', opacity: titleVisible ? 1 : 0, transition: 'opacity 0.22s ease' }}>
-          <div style={{ fontSize: 16, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 8px' }}>{data.title}</div>
-        </div>
-        {/* Right spacer balances the back button so the title stays centered (no share/bookmark here) */}
-        <div style={{ width: 36, flexShrink: 0 }}/>
-      </div>
-
-      <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', paddingBottom: 40, position: 'relative' }}>
-        {/* 1. HEADER */}
-        <div style={{ padding: '24px 20px 0' }}>
-          <div ref={titleRef} style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 6 }}>{data.title}</div>
-          <p style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.65, marginBottom: 0 }}>{data.description}</p>
-        </div>
-
-        {/* 2. OPTIONS SLOT — matched trials, each drills into TrialDetail */}
-        <div style={{ padding: '24px 20px 0' }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
-            <div style={{ ...sectionTitle, flex: 1 }}>Most Relevant Clinical Trials</div>
-            {matched.length > 0 && <button onClick={onSeeAll} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary, fontFamily: 'Inter,sans-serif', flexShrink: 0, padding: 0 }}>See all</button>}
-          </div>
-          {matched.length === 0 && (
-            <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 12 }}>We didn’t find any currently available trials that match your clinical profile. Your care team may be able to help identify other options.</div>
-          )}
-        </div>
-        {matched.length > 0 && (
-          <div style={{ margin: '0 4px' }}>
-            {matched.map(t => (
-              <TrialCard key={t.id} trial={t} folder="relevant" bookmarked={bookmarks.includes(t.id)} onOpen={() => setSelectedTrial(t)} onBookmark={() => toggleBookmark(t)} onShare={() => share(t)}/>
-            ))}
-          </div>
-        )}
-
-        {/* 3. SOURCE */}
-        <div style={{ padding: '20px 20px 0' }}>
-          <div style={{ fontSize: 11, color: C.textTertiary, lineHeight: 1.6 }}>ClinicalTrials.gov · U.S. National Library of Medicine</div>
-        </div>
-      </div>
-
-      {selectedTrial && (
-        <PushLayer zIndex={130} onBack={() => setSelectedTrial(null)}>
-          {(back) => <TrialDetail trial={selectedTrial} bookmarked={bookmarks.includes(selectedTrial.id)} notes={notes} onBookmark={() => toggleBookmark(selectedTrial)} onShare={() => share(selectedTrial)} onBack={back} onAddNote={(id, n) => setNotes(p => ({ ...p, [id]: [n, ...(p[id] || [])] }))}/>}
-        </PushLayer>
-      )}
-      {toast && <div style={{ position: 'absolute', bottom: 24, left: 16, right: 16, backgroundColor: '#273E4E', color: '#fff', borderRadius: 12, padding: '13px 16px', fontSize: 13.5, fontWeight: 500, boxShadow: '0 6px 20px rgba(0,0,0,0.2)', zIndex: 5 }}>{toast}</div>}
-    </div>
-  )
-}
-// In-step NCCN option ("Clinical trial for … that has spread"): an example of clinical trials as a
-// treatment option inside the NCCN Guidelines. It does NOT list trials — matched trials live only in
-// the standing "Explore clinical trials" drill-in (CTExploreDetail).
-const ClinicalTrialTreatmentDetail = ({ opt, patientState, onClose }) => {
-  const [vis, setVis] = useState(false)
-  const [agent, setAgent] = useState(false)
-  const [titleVisible, setTitleVisible] = useState(false)
-  const titleRef = useRef(null)
-  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
-  const dismiss = () => { setVis(false); setTimeout(onClose, 320) }
-  const cancer = (patientState && CT_CANCER_LABEL[patientState.diagnosisCode]) || 'kidney cancer'
-  const stage = (patientState && (patientState.stage || patientState.stageLabel)) || ''
-  const title = opt.title && /for /i.test(opt.title) ? opt.title : `Clinical trial for ${cancer} that has spread`
-  const Cap = s => s ? s[0].toUpperCase() + s.slice(1) : s
-  const scroll = { flex: 1, overflowY: 'auto', padding: '20px 0 40px' }
-  const pad = { padding: '0 20px' }
-  const section = { fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 10 }
-
-  return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 65, transform: vis ? 'translateX(0)' : 'translateX(100%)', transition: 'transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)', display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard, fontFamily: "'Inter',sans-serif" }}>
-      <div style={{ display: 'flex', alignItems: 'center', height: 56, paddingLeft: 8, paddingRight: 48, flexShrink: 0, borderBottom: `1px solid ${titleVisible ? C.border : 'transparent'}`, transition: 'border-color 0.2s' }}>
-        <button onClick={dismiss} aria-label="Back" style={{ width: 40, height: 40, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textIcon }}>arrow_back</span></button>
-        <div style={{ flex: 1, minWidth: 0, textAlign: 'center', fontSize: 16, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: titleVisible ? 1 : 0, transition: 'opacity 0.22s ease' }}>{title}</div>
-      </div>
-      <div style={{ ...scroll, position: 'relative' }} onScroll={e => setTitleVisible(scrolledPastTitle(e.target, titleRef.current))}>
-        <div style={pad}>
-          <div ref={titleRef} style={{ fontSize: 24, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.4px', lineHeight: 1.25, marginBottom: 14 }}>{title}</div>
-          <button onClick={() => setAgent(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, backgroundColor: C.primaryLight, border: 'none', borderRadius: 9999, padding: '9px 16px', cursor: 'pointer', marginBottom: 18, fontFamily: 'Inter,sans-serif' }}>
-            <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>auto_awesome</span>
-            <span style={{ fontSize: 14, fontWeight: 700, color: C.primary }}>Explain this treatment</span>
-          </button>
-          <p style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.65, marginBottom: 14 }}>Clinical trials are a type of research study with a goal of safely improving treatments for cancer patients.</p>
-          <p style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.65, marginBottom: 22 }}>For patients with potentially operable {stage ? `stage ${String(stage).replace(/^stage\s*/i, '')} ` : ''}{cancer} who go on a clinical trial, NCCN does not provide explicit guidance for subsequent treatment options.</p>
-        </div>
-
-        <div style={{ ...pad, borderTop: `1px solid ${C.border}`, paddingTop: 18 }}>
-          <div style={section}>Source</div>
-          <div style={{ fontSize: 12.5, color: C.textTertiary, lineHeight: 1.6 }}>
-            According to NCCN Clinical Practice Guidelines In Oncology (NCCN Guidelines®) for {Cap(cancer)} V.1.2027, this treatment has the following recommendation for your diagnosis:
-            <div style={{ height: 10 }}/>
-            <span style={{ fontWeight: 700, color: C.textSecondary }}>NCCN Category of Evidence and Consensus</span><br/>
-            <span style={{ fontWeight: 700, color: C.textSecondary }}>Category 2B:</span> Based upon lower-level evidence, there is NCCN consensus (≥50%, but &lt;85% support of the Panel) that the intervention is appropriate.
-            <div style={{ height: 10 }}/>
-            <span style={{ fontWeight: 700, color: C.textSecondary }}>NCCN:</span> Referenced with permission from the NCCN Clinical Practice Guidelines in Oncology (NCCN Guidelines®) for {Cap(cancer)} V.1.2027. © National Comprehensive Cancer Network, Inc. 2026. All rights reserved. Accessed July 1, 2026. To view the most recent and complete version of the guideline, go online to NCCN.org.
-            <div style={{ height: 10 }}/>
-            <span style={{ color: C.primary }}>https://NCCN.org</span>
-          </div>
-        </div>
-      </div>
-
-      {agent && <TreatmentPlanAgentSheet cancer={cancer} stage={stage} onClose={() => setAgent(false)}/>}
-    </div>
-  )
-}
-
-const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patientState, planItems = [], onAbandonSignal = null }) => {
+const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patientState, planItems = [] }) => {
   const data = getDetailData(opt)
   const [vis, setVis] = useState(false)
   const [titleVisible, setTitleVisible] = useState(false)
@@ -3803,9 +5014,19 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
 
   const dismiss = () => { setVis(false); setTimeout(onClose, 320) }
 
+  // IntersectionObserver to detect when page title scrolls out of view
+  useEffect(() => {
+    if (!titleRef.current || !scrollRef.current) return
+    const obs = new IntersectionObserver(
+      ([e]) => setTitleVisible(!e.isIntersecting),
+      { root: scrollRef.current, threshold: 0, rootMargin: '-60px 0px 0px 0px' }
+    )
+    obs.observe(titleRef.current)
+    return () => obs.disconnect()
+  }, [])
 
   // Detect scroll to show dock shadow
-  const handleScroll = (e) => { setDockShadow(e.target.scrollHeight - e.target.scrollTop > e.target.clientHeight + 2); setTitleVisible(scrolledPastTitle(e.target, titleRef.current)) }
+  const handleScroll = (e) => setDockShadow(e.target.scrollHeight - e.target.scrollTop > e.target.clientHeight + 2)
 
   return (
     <div style={{
@@ -3824,8 +5045,8 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
           <Ico.back/>
         </button>
         {/* Title — fades in when page title scrolls out */}
-        <div style={{ flex: 1, minWidth: 0, textAlign: 'center', opacity: titleVisible ? 1 : 0, transition: 'opacity 0.22s ease' }}>
-          <div style={{ fontSize: 16, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 8px' }}>{data.title}</div>
+        <div style={{ flex: 1, textAlign: 'center', opacity: titleVisible ? 1 : 0, transition: 'opacity 0.22s ease' }}>
+          <div style={{ fontSize: 16, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 8px', maxWidth: 'calc(100% - 80px)' }}>{data.title}</div>
         </div>
         {/* Share + Bookmark */}
         <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
@@ -3839,7 +5060,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
       </div>
 
       {/* Scrollable content */}
-      <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', paddingBottom: 100, position: 'relative' }}>
+      <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', paddingBottom: 100 }}>
 
         {/* 1. HEADER — title + short description */}
         <div style={{ padding: '24px 20px 0' }}>
@@ -3849,7 +5070,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
 
         {/* 2. TREATMENT OPTIONS — highest priority, shown first */}
         <div style={{ padding: '24px 20px 0' }}>
-          <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 12 }}>Treatment Options</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>Treatment Options</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 1, borderRadius: 13, overflow: 'hidden', border: `1px solid ${C.border}` }}>
             {(data.regimens || []).map((reg, i) => {
               const rule = findRuleMatchingItem(reg.name)
@@ -3878,7 +5099,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
 
         {/* 3. WHAT THIS APPROACH MEANS */}
         <div style={{ padding: '28px 20px 0' }}>
-          <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 12 }}>What This Approach Means</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>What This Approach Means</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {(data.goals || []).map((goal, i) => (
               <div key={i} style={{ display: 'flex', gap: 10 }}>
@@ -3891,7 +5112,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
 
         {/* 4. WHAT TO CONSIDER */}
         <div style={{ padding: '28px 20px 0' }}>
-          <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 12 }}>What to Consider</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>What to Consider</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {(data.overview || []).map((item, i) => (
               <div key={i} style={{ backgroundColor: C.bgApp, borderRadius: 12, padding: '13px 15px' }}>
@@ -3904,7 +5125,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
 
         {/* 5. QUESTIONS TO ASK YOUR DOCTOR */}
         <div style={{ padding: '28px 20px 0' }}>
-          <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 12 }}>Questions to Ask Your Doctor</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>Questions to Ask Your Doctor</div>
           <button onClick={() => { if (navigator.share) navigator.share({ title: `Questions about ${data.title}`, text: `I have questions about ${data.title} as a treatment option.` }) }} style={{ width: '100%', padding: '14px 16px', backgroundColor: C.bgApp, border: `1px solid ${C.border}`, borderRadius: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12, textAlign: 'left' }}>
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="8.5" stroke={C.primary} strokeWidth="1.4"/><path d="M10 14v-1M10 11c0-1.5 2-1.5 2-3a2 2 0 1 0-4 0" stroke={C.primary} strokeWidth="1.4" strokeLinecap="round"/></svg>
             <div style={{ flex: 1 }}>
@@ -3967,7 +5188,6 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
         <RegimenDetailView
           reg={selectedRegimen}
           parentTitle={data.title}
-          onAbandonSignal={onAbandonSignal}
           onClose={() => setSelectedRegimen(null)}
           addedIds={addedIds}
           patientState={patientState}
@@ -3984,7 +5204,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
       {/* Flow slides up over detail — stays mounted on top */}
       {detailFlow === 'procedure' && (
         <AddProcedureFlow
-          onClose={() => { setDetailFlow(null); setDetailFlowPreload(null); onAbandonSignal && onAbandonSignal() }}
+          onClose={() => { setDetailFlow(null); setDetailFlowPreload(null) }}
           onComplete={(event) => { setDetailFlow(null); setDetailFlowPreload(null); onAddToPlan({ ...event, createdFromRecommendationId: opt?.id }, true) }}
           preload={detailFlowPreload || { name: data.title, subtitle: data.clinicalClass, searchTerms: [data.title.toLowerCase()] }}
           fromDetail={true}
@@ -3994,7 +5214,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
       )}
       {detailFlow === 'scan' && (
         <AddScanFlow
-          onClose={() => { setDetailFlow(null); setDetailFlowPreload(null); onAbandonSignal && onAbandonSignal() }}
+          onClose={() => { setDetailFlow(null); setDetailFlowPreload(null) }}
           onComplete={(event) => { setDetailFlow(null); setDetailFlowPreload(null); onAddToPlan({ ...event, createdFromRecommendationId: opt?.id }, true) }}
           preload={detailFlowPreload || { name: data.title, subtitle: data.clinicalClass, searchTerms: [data.title.toLowerCase()] }}
           fromDetail={true}
@@ -4004,7 +5224,7 @@ const TreatmentDetailView = ({ opt, onClose, onAddToPlan, addedIds = {}, patient
       )}
       {detailFlow === 'medication' && (
         <AddMedicationFlow
-          onClose={() => { setDetailFlow(null); setDetailFlowPreload(null); onAbandonSignal && onAbandonSignal() }}
+          onClose={() => { setDetailFlow(null); setDetailFlowPreload(null) }}
           onComplete={(event) => { setDetailFlow(null); setDetailFlowPreload(null); onAddToPlan({ ...event, createdFromRecommendationId: opt?.id }, true) }}
           preload={detailFlowPreload || { name: data.title, subtitle: data.clinicalClass, searchTerms: [data.title.toLowerCase()] }}
           fromDetail={true}
@@ -4042,24 +5262,22 @@ const AuthScreen = ({ onLogin, onNewUser }) => {
       WebkitFontSmoothing: 'antialiased',
     }}>
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '32px 32px 24px' }}>
-        {/* Logo area */}
-        <div style={{ marginBottom: 48, textAlign: 'center' }}>
-          <div style={{ width: 56, height: 56, borderRadius: 16, backgroundColor: C.primaryLight, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-            <span className="material-symbols-rounded" style={{ fontSize: 30, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>clinical_notes</span>
-          </div>
-          <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.5px', color: C.textPrimary, marginBottom: 8 }}>Outcomes4Me</div>
-          <div style={{ fontSize: 15, color: C.textSecondary, lineHeight: 1.6, maxWidth: 260 }}>Evidence-based guidance for your cancer journey</div>
+      {/* Front door (redesign-04) — no account, no diagnosis needed. One path in;
+          "Sign in" stays as a quiet link for people who already have an account. */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: 'calc(32px + env(safe-area-inset-top, 0px)) 28px 24px', maxWidth: 440, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+        <img src={OUTCOMES_LOGO_SRC} alt="Outcomes4Me" style={{ display: 'block', alignSelf: 'flex-start', height: 30, width: 'auto', maxWidth: '100%', marginBottom: 36 }}/>
+        <div style={{ fontSize: 30, fontWeight: 700, letterSpacing: '-0.7px', color: C.textPrimary, lineHeight: 1.2 }}>
+          Understand your cancer, build a plan, and walk into your appointments prepared.
         </div>
+      </div>
 
-        {/* CTAs */}
-        <div style={{ width: '100%', maxWidth: 320 }}>
-          <button onClick={() => exitThen(onNewUser)} style={{ width: '100%', height: 52, borderRadius: 26, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 16, fontWeight: 600, color: 'white', marginBottom: 12 }}>
-            Get started
-          </button>
-          <button onClick={() => setView('login')} style={{ width: '100%', height: 52, borderRadius: 26, backgroundColor: 'transparent', border: `1.5px solid ${C.border}`, cursor: 'pointer', fontSize: 16, fontWeight: 500, color: C.textPrimary }}>
-            Sign in
-          </button>
+      <div style={{ padding: '0 28px 12px', maxWidth: 440, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+        <button onClick={() => exitThen(onNewUser)} style={{ width: '100%', height: 54, borderRadius: 9999, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 16, fontWeight: 600, color: 'white', fontFamily: 'Inter,sans-serif' }}>
+          Get started
+        </button>
+        <div style={{ textAlign: 'center', fontSize: 14, color: C.textSecondary, padding: '16px 0 4px' }}>
+          Already have an account?{' '}
+          <button onClick={() => setView('login')} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 14, fontWeight: 600, color: C.primary, fontFamily: 'Inter,sans-serif' }}>Sign in</button>
         </div>
       </div>
 
@@ -4241,19 +5459,23 @@ const CANCER_TYPES = [
   { code: 'MM',     name: 'Multiple Myeloma',           subtitle: null,                          surgery: 'Autologous stem cell transplant' },
 ]
 
-const ONBOARDING_STEPS = ['role', 'situation', 'cancer_type', 'cancer_ack', 'diagnosis_date', 'welcome_personalized', 'stage', 'histology', 'treatment_status', 'medications', 'summary', 'account_creation']
-
-// ─── CLINICAL HELPERS (module-level so ClinicalEditSheet and completeOnboarding can share them) ──
+// ─── CLINICAL HELPERS (module-level: shared by onboarding, gap answers, ClinicalEditSheet) ──
 const _daysAgoStr = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return localDateStr(d) }
 
-const buildSeedEventsFromAnswers = (ans, cancer, stage, hadSurgery) => {
-  const diagDate = ans.diagnosis_date || _daysAgoStr(14)
+const _STAGE_ROMAN_LABEL = { I: 'Stage I', II: 'Stage II', III: 'Stage III', IV: 'Stage IV' }
+const _EXTENT_DETAIL = { one_place: 'In one place', nodes: 'Spread to nearby lymph nodes', spread: 'Spread to other parts of the body', early: 'Described as early' }
+
+// The diagnosis is placed on the timeline. Onboarding no longer asks the diagnosis date, so
+// a new record places it on the day it was added (never a made-up past date). Legacy
+// answers (diagnosis_date, treatment_status = surgery) still seed as before.
+const buildSeedEventsFromAnswers = (ans, cancer, stage, hadSurgery, addedDate) => {
+  const diagDate = ans.diagnosis_date || addedDate || _daysAgoStr(14)
   const events = []
   events.push({ date: diagDate, event: {
     id: 'seed_diag', type: 'diagnosis', source: 'onboarding',
-    name: cancer.name, date: diagDate,
+    name: cancer ? cancer.name : 'Cancer — type not confirmed yet', date: diagDate,
     details: [
-      ans.stage && ans.stage !== 'unsure' ? `Stage ${ans.stage === 'stage_1' ? 'I' : ans.stage === 'stage_2' ? 'II' : ans.stage === 'stage_3' ? 'III' : 'IV'}` : null,
+      ans.stage && ans.stage !== 'unsure' ? _STAGE_ROMAN_LABEL[stage] : (_EXTENT_DETAIL[ans.extent] || null),
       ans.histology === 'clear_cell' ? 'Clear cell histology' : ans.histology === 'non_clear' ? 'Non-clear cell histology' : null,
     ].filter(Boolean),
   }})
@@ -4261,619 +5483,507 @@ const buildSeedEventsFromAnswers = (ans, cancer, stage, hadSurgery) => {
     events.push({ date: _daysAgoStr(10), event: { id: 'seed_surgery', type: 'procedure', source: 'onboarding', name: 'Surgery', date: _daysAgoStr(10) }})
     events.push({ date: _daysAgoStr(4),  event: { id: 'seed_pathology', type: 'procedure', source: 'onboarding', name: 'Pathology review', date: _daysAgoStr(4) }})
   }
-  if (stage === 'IV') {
+  if (stage === 'IV' && ans.stage) {
     events.push({ date: diagDate, event: { id: 'seed_staging', type: 'scan', source: 'onboarding', name: 'Staging CT scan', date: diagDate }})
   }
   return events
 }
 
-const buildPatientStateFromAnswers = (ans) => {
-  const cancer = CANCER_TYPES.find(c => c.code === ans.cancer_type) || CANCER_TYPES[CANCER_TYPES.length - 1]
-  const stage = ans.stage === 'stage_1' ? 'I' : ans.stage === 'stage_2' ? 'II' : ans.stage === 'stage_3' ? 'III' : ans.stage === 'stage_4' ? 'IV' : 'I'
+// opts.onboardedDate: set on first onboarding (drives the first-run welcome summary and
+// the reload check). opts.dateOfBirth: from account creation. Both are record facts that
+// don't come from the answers, so every rebuild must pass them through (see recordFacts).
+const recordFacts = (ps = {}) => ({ onboardedDate: ps.onboardedDate || null, dateOfBirth: ps.dateOfBirth || null, patientFullName: ps.patientFullName || null })
+const buildPatientStateFromAnswers = (ans, opts = {}) => {
+  const typeKnown = ans.cancer_type && ans.cancer_type !== 'unsure'
+  const cancer = typeKnown ? (CANCER_TYPES.find(c => c.code === ans.cancer_type) || null) : null
+  const stage = stageFromAnswers(ans)   // null when unknown — never a silent default
   const hadSurgery = ans.treatment_status === 'surgery'
   return {
     patientState: {
-      diagnosisCode: ans.cancer_type || 'RCC',
+      diagnosisCode: cancer ? cancer.code : null,
       stage,
       biomarkers: { histology: ans.histology === 'clear_cell' ? 'clear-cell' : ans.histology === 'non_clear' ? 'non-clear-cell' : 'unknown' },
       performanceStatus: 0,
-      cancerName: cancer.name,
+      cancerName: cancer ? cancer.name : null,
+      treatmentPhase: ans.treatment_phase || null,
+      role: ans.role || 'self',
+      patientName: ans.role === 'caregiver' ? (ans.patient_name || null) : null,
+      relationship: ans.role === 'caregiver' ? (ans.relationship || null) : null,
+      ageRange: ans.role === 'caregiver' ? (ans.patient_age_range || null) : null,  // only when the DOB isn't known
+      onboardedDate: opts.onboardedDate || null,
+      dateOfBirth: opts.dateOfBirth || null,
+      patientFullName: opts.patientFullName || null,
       onboardingAnswers: ans,
     },
-    seedEvents: buildSeedEventsFromAnswers(ans, cancer, stage, hadSurgery),
+    seedEvents: buildSeedEventsFromAnswers(ans, cancer, stage, hadSurgery, opts.onboardedDate || opts.addedDate),
   }
 }
 
-const OnboardingAccountCreation = ({ onFinish, SlideIn }) => {
-  const [name, setName] = useState('')
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-  const valid = name.trim() && email.includes('@') && password.length >= 6
+// ─── ONBOARDING (redesign-04) ─────────────────────────────────────
+// One flow: front door (AuthScreen) → 4 plain-language questions → create
+// account → Today. Answers are held in component state (pre-registration cache) and
+// only written to the record once the account exists. "Not sure" is a real answer on
+// every clinical question: it produces a partial record and plants a gap, which
+// resurfaces in Today's next steps as a one-tap item straight back to that question.
+//
+// Answer keys (stored on patientState.onboardingAnswers):
+//   cancer_type     CANCER_TYPES code | 'unsure'
+//   extent          'one_place' | 'nodes' | 'spread' | 'early' | 'unsure'
+//   treatment_phase 'just_diagnosed' | 'in_treatment' | 'finished' | 'unsure'
+//   role            'self' | 'caregiver'   (a label — changes copy only)
+//   drivers         'tested' | 'planned' | 'not_tested' | 'unsure'  (asked later, from a gap)
+// Legacy keys (stage, histology, treatment_status) are still honoured — ClinicalEditSheet
+// writes them for records created by the earlier onboarding.
+// STRAWMAN: the fields and the extent→stage mapping are placeholders until the real
+// NCCN essentials list replaces them.
 
-  const handleCreate = () => {
-    setError('')
-    setLoading(true)
-    setTimeout(() => {
-      const result = createAccount(name, email, password)
-      setLoading(false)
-      if (result.ok) onFinish(result.user)
-      else setError(result.error)
-    }, 400)
+// ─── Patient copy — see services/patientCopy.js for the rule and tokens ───────
+// One string per sentence; {they}/{their}/{are|is}… fill in "you" (self) or the name a
+// caregiver gave ("Mom"). Components read the subject from context; module-level builders
+// take it as an argument.
+const PatientCopyContext = createContext(careSubject(null))
+const usePatientCopy = () => {
+  const sub = useContext(PatientCopyContext)
+  const t = useCallback((tpl) => fillCopy(tpl, sub), [sub])
+  t.sub = sub
+  return t
+}
+
+const ONB_FEATURED_CANCERS = ['RCC', 'BREAST', 'LUNG', 'CRC', 'PROS']
+const _cancerDisplay = (c) => c.name.replace(/ Cancer$/, ' cancer')
+
+// The questions, written once and shared by onboarding AND the one-tap gap sheet.
+const ONB_QUESTIONS = {
+  extent: {
+    key: 'extent',
+    title: 'What have you been told about where it is?',
+    opts: [
+      { value: 'one_place', label: "It's in one place" },
+      { value: 'nodes',     label: "It's spread to nearby lymph nodes" },
+      { value: 'spread',    label: "It's spread to other parts of {my|{their}} body" },
+      { value: 'early',     label: "{I've|We've} been told it's early" },
+      { value: 'unsure',    label: "{I haven't|We haven't} been told / {I'm|we're} not sure" },
+    ],
+  },
+  treatment_phase: {
+    key: 'treatment_phase',
+    title: 'Where {are|is} {they} right now?',
+    opts: [
+      { value: 'just_diagnosed', label: "Just diagnosed, {haven't|hasn't} started treatment" },
+      { value: 'in_treatment',   label: 'In treatment now' },
+      { value: 'finished',       label: 'Finished treatment' },
+      { value: 'unsure',         label: 'Not sure' },
+    ],
+  },
+  role: {
+    key: 'role',
+    title: 'Who are you setting this up for?',
+    opts: [
+      { value: 'self',      label: 'Myself' },
+      { value: 'caregiver', label: "Someone I'm caring for" },
+    ],
+  },
+  drivers: {
+    key: 'drivers',
+    title: "Has anyone talked with you about what's driving {their} cancer?",
+    hint: 'Things like biomarkers or gene changes found by testing {your|the} tumor. These can open up more options.',
+    opts: [
+      { value: 'tested',     label: 'Yes — {I|we} have test results' },
+      { value: 'planned',    label: 'Testing is planned or in progress' },
+      { value: 'not_tested', label: "{I haven't|{They} hasn't} been tested" },
+      { value: 'unsure',     label: "I'm not sure" },
+    ],
+  },
+}
+
+// Extent (plain language) → the engine's stage input. Explicit legacy stage wins.
+const _EXTENT_STAGE = { one_place: 'I', early: 'I', nodes: 'III', spread: 'IV' }
+const _LEGACY_STAGE = { stage_1: 'I', stage_2: 'II', stage_3: 'III', stage_4: 'IV' }
+const stageFromAnswers = (ans = {}) => _LEGACY_STAGE[ans.stage] || _EXTENT_STAGE[ans.extent] || null
+
+// Gaps = what this unlocks. Derived from the answers (one source of truth), so answering
+// a question anywhere closes its gap everywhere. "Not sure" leaves the gap open.
+const deriveQuestionGaps = (ans) => {
+  if (!ans) return []
+  const gaps = []
+  const typeKnown = ans.cancer_type && ans.cancer_type !== 'unsure'
+  if (!typeKnown) gaps.push({ id: 'q_type', kind: 'q-type', question: 'cancer_type', state: 'question' })
+  if (typeKnown && !stageFromAnswers(ans)) gaps.push({ id: 'q_stage', kind: 'q-stage', question: 'extent', state: 'question' })
+  if (typeKnown && (!ans.drivers || ans.drivers === 'unsure')) gaps.push({ id: 'q_drivers', kind: 'q-drivers', question: 'drivers', state: 'question' })
+  if (!ans.treatment_phase || ans.treatment_phase === 'unsure') {
+    // Legacy records answered treatment_status instead — don't re-ask them.
+    if (!ans.treatment_status || ans.treatment_status === 'unsure') gaps.push({ id: 'q_treatment', kind: 'q-treatment', question: 'treatment_phase', state: 'question' })
   }
+  return gaps
+}
 
+// Shared question primitive — radio-style options. Tapping selects, shows the choice
+// briefly, then calls onPick (so the selection registers visually before advancing).
+const OnbQuestion = ({ title: titleTpl, hint: hintTpl, opts: optsTpl, value, onPick, footer = null }) => {
+  const t = usePatientCopy()
+  const title = t(titleTpl), hint = t(hintTpl)
+  const opts = optsTpl.map(o => ({ ...o, label: t(o.label) }))
+  const [picked, setPicked] = useState(value || null)
+  const pick = (v) => { setPicked(v); setTimeout(() => onPick(v), 180) }
   return (
-    <SlideIn>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 8 }}>
-          Save your care plan
-        </div>
-        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.65, marginBottom: 28 }}>
-          Create a free account to save your plan and access it anytime.
-        </div>
-        <AuthField label="Name" value={name} onChange={setName} type="text" placeholder="Your name" required/>
-        <AuthField label="Email" value={email} onChange={setEmail} type="email" placeholder="your@email.com" required/>
-        <AuthField label="Password" value={password} onChange={setPassword} type="password" placeholder="At least 6 characters" required
-          hint={password.length > 0 && password.length < 6 ? 'At least 6 characters required' : null}/>
-        {error && <div style={{ fontSize: 13, color: '#ef4444', marginBottom: 16, padding: '10px 14px', backgroundColor: '#fef2f2', borderRadius: 8 }}>{error}</div>}
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '28px 24px 40px', overflowY: 'auto' }}>
+      <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.25, marginBottom: hint ? 10 : 26 }}>{title}</div>
+      {hint && <div style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>{hint}</div>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {opts.map(o => {
+          const on = picked === o.value
+          return (
+            <button key={o.value} onClick={() => pick(o.value)} style={{ display: 'flex', alignItems: 'center', gap: 13, width: '100%', textAlign: 'left', padding: '15px 16px', borderRadius: 14, border: `${on ? 1.5 : 1}px solid ${on ? C.primary : C.border}`, backgroundColor: on ? C.primaryLight : C.bgCard, cursor: 'pointer', fontFamily: 'Inter,sans-serif', transition: 'background-color 0.15s, border-color 0.15s' }}>
+              <span style={{ width: 22, height: 22, borderRadius: 11, border: `2px solid ${on ? C.primary : C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'border-color 0.15s' }}>
+                {on && <span style={{ width: 11, height: 11, borderRadius: 6, backgroundColor: C.primary }}/>}
+              </span>
+              <span style={{ fontSize: 15.5, fontWeight: 500, color: C.textPrimary, lineHeight: 1.35 }}>{o.label}</span>
+            </button>
+          )
+        })}
       </div>
-      <div style={{ flexShrink: 0 }}>
-        <button onClick={handleCreate} disabled={loading || !valid}
-          style={{ width: '100%', height: 54, borderRadius: 9999, backgroundColor: (loading || !valid) ? '#e0e0e0' : C.primary, border: 'none', cursor: (loading || !valid) ? 'default' : 'pointer', fontSize: 16, fontWeight: 600, color: (loading || !valid) ? '#aaa' : 'white', marginBottom: 12 }}>
-          {loading ? 'Creating account…' : 'Create account'}
-        </button>
-        <div style={{ fontSize: 11, color: C.textTertiary, textAlign: 'center', lineHeight: 1.6 }}>
-          By creating an account you agree to our Terms of Service and Privacy Policy.
-        </div>
-      </div>
-    </SlideIn>
+      {footer}
+    </div>
   )
 }
 
-const OnboardingScreen = ({ onComplete, onAddMedication, onExit }) => {
-  const [step, setStep] = useState('role')
-  const [stepDir, setStepDir] = useState(1) // 1 = forward, -1 = back
-  const [stepKey, setStepKey] = useState(0) // increments to retrigger animation
-  const [answers, setAnswers] = useState({})
+// Cancer type — search + a short featured list + an honest "not sure" exit.
+const OnbCancerType = ({ value, onPick, showNote = false }) => {
+  const [q, setQ] = useState('')
+  const term = q.trim().toLowerCase()
+  const list = term
+    ? CANCER_TYPES.filter(c => c.name.toLowerCase().includes(term) || (c.subtitle || '').toLowerCase().includes(term))
+    : ONB_FEATURED_CANCERS.map(code => CANCER_TYPES.find(c => c.code === code))
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '28px 24px 40px', overflowY: 'auto' }}>
+      <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.25, marginBottom: showNote ? 8 : 20 }}>What type of cancer are you dealing with?</div>
+      {/* Sets the expectation for the whole flow on its first screen (the old separate
+          "Let's build your plan" screen felt like a second Get started). */}
+      {showNote && <div style={{ fontSize: 14.5, color: C.textSecondary, lineHeight: 1.55, marginBottom: 20 }}>A few quick questions to build your plan. Not sure about something? That's okay, you can add it later.</div>}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, height: 48, padding: '0 14px', borderRadius: 12, backgroundColor: C.bgApp, marginBottom: 14 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 21, color: C.textTertiary }}>search</span>
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search…" aria-label="Search cancer types" style={{ flex: 1, minWidth: 0, border: 'none', outline: 'none', background: 'transparent', fontSize: 16, color: C.textPrimary, fontFamily: 'Inter,sans-serif' }}/>
+        {q && <button onClick={() => setQ('')} aria-label="Clear search" style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', padding: 0 }}><span className="material-symbols-rounded" style={{ fontSize: 19, color: C.textTertiary }}>close</span></button>}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column' }}>
+        {list.map(c => {
+          const on = value === c.code
+          return (
+            <button key={c.code} onClick={() => onPick(c.code)} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', padding: '15px 4px', background: 'none', border: 'none', borderBottom: `1px solid ${C.border}`, cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: 'block', fontSize: 16, fontWeight: on ? 600 : 500, color: on ? C.primary : C.textPrimary }}>{_cancerDisplay(c)}</span>
+                {term && c.subtitle && <span style={{ display: 'block', fontSize: 13, color: C.textTertiary, marginTop: 2 }}>{c.subtitle}</span>}
+              </span>
+              {on && <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.primary }}>check</span>}
+            </button>
+          )
+        })}
+        {term && list.length === 0 && <div style={{ fontSize: 14, color: C.textTertiary, padding: '16px 4px' }}>No matches for “{q.trim()}”.</div>}
+      </div>
+      <button onClick={() => onPick('unsure')} style={{ alignSelf: 'flex-start', marginTop: 18, padding: '6px 0', background: 'none', border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 600, color: C.primary, fontFamily: 'Inter,sans-serif' }}>
+        I'm not sure of the exact type →
+      </button>
+    </div>
+  )
+}
+
+// Create account, step 1 — choose how to sign in (honest privacy framing). Email expands an
+// inline email + password form; Apple/Google are simulated provider sign-ins. Nothing is
+// created yet: the chosen credentials go forward to the "About you" step.
+const _onbBtn = (primary) => ({ width: '100%', height: 54, borderRadius: 9999, border: primary ? 'none' : `1.5px solid ${C.border}`, backgroundColor: primary ? C.primary : C.bgCard, color: primary ? '#fff' : C.textPrimary, fontSize: 16, fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter,sans-serif', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9, marginBottom: 12 })
+const OnbAccount = ({ creds, onContinue, error: externalError = '' }) => {
+  const [mode, setMode] = useState(creds?.provider === 'email' ? 'email' : 'choose') // 'choose' | 'email'
+  const [email, setEmail] = useState(creds?.email || '')
+  const [password, setPassword] = useState(creds?.password || '')
+  const [error, setError] = useState('')
+  const valid = email.includes('@') && password.length >= 6
+  const continueEmail = () => {
+    if (!valid) return
+    const r = checkEmailAvailable(email)
+    if (!r.ok) { setError(r.error); return }
+    onContinue({ provider: 'email', email, password })
+  }
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '28px 24px 36px', overflowY: 'auto' }}>
+      <div style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 25, color: C.textIcon, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>lock</span>
+      </div>
+      <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.25, marginBottom: 10 }}>Create a new account</div>
+      <div style={{ fontSize: 15, color: C.textSecondary, lineHeight: 1.6, marginBottom: 28 }}>Because this is your health information, you'll need an account to keep it safe and come back to it.</div>
+      <div style={{ flex: 1 }}>
+        {mode === 'email' && (
+          <div style={{ marginBottom: 6 }}>
+            <AuthField label="Email" value={email} onChange={v => { setEmail(v); setError('') }} type="email" placeholder="your@email.com" required/>
+            <AuthField label="Password" value={password} onChange={setPassword} type="password" placeholder="At least 6 characters" required
+              hint={password.length > 0 && password.length < 6 ? 'At least 6 characters required' : null}/>
+          </div>
+        )}
+        {(error || externalError) && <div style={{ fontSize: 13, color: '#ef4444', marginBottom: 16, padding: '10px 14px', backgroundColor: '#fef2f2', borderRadius: 8 }}>{error || externalError}</div>}
+      </div>
+      {mode === 'email' ? (
+        <>
+          <button onClick={continueEmail} style={{ ..._onbBtn(true), opacity: valid ? 1 : 0.45, cursor: valid ? 'pointer' : 'default' }}>Continue</button>
+          <button onClick={() => { setMode('choose'); setError('') }} style={{ ..._onbBtn(false), border: 'none', color: C.textSecondary, fontWeight: 500 }}>Other ways to continue</button>
+        </>
+      ) : (
+        <>
+          <button onClick={() => setMode('email')} style={_onbBtn(true)}>
+            <span className="material-symbols-rounded" style={{ fontSize: 20 }}>mail</span>Continue with email
+          </button>
+          <button onClick={() => onContinue({ provider: 'apple' })} style={_onbBtn(false)}>
+            <svg width="17" height="20" viewBox="0 0 17 20" aria-hidden><path fill={C.textPrimary} d="M14.1 10.6c0-2.6 2.1-3.8 2.2-3.9-1.2-1.8-3.1-2-3.7-2-1.6-.2-3.1.9-3.9.9-.8 0-2-.9-3.4-.9C3.6 4.8 2 5.8 1.1 7.4c-1.9 3.2-.5 8 1.3 10.6.9 1.3 1.9 2.7 3.3 2.6 1.3-.1 1.8-.8 3.4-.8s2 .8 3.4.8c1.4 0 2.3-1.3 3.2-2.6 1-1.5 1.4-2.9 1.4-3-.1 0-2.8-1-3-4.4zM11.6 3c.7-.9 1.2-2 1.1-3.2-1 0-2.3.7-3 1.6-.7.8-1.3 2-1.1 3.1 1.1.1 2.3-.6 3-1.5z"/></svg>
+            Continue with Apple
+          </button>
+          <button onClick={() => onContinue({ provider: 'google' })} style={_onbBtn(false)}>
+            <svg width="19" height="19" viewBox="0 0 48 48" aria-hidden><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
+            Continue with Google
+          </button>
+        </>
+      )}
+      <div style={{ fontSize: 11, color: C.textTertiary, textAlign: 'center', lineHeight: 1.6, marginTop: 4 }}>By continuing you agree to our Terms of Service and Privacy Policy.</div>
+    </div>
+  )
+}
+
+// Caregiver only — who the record is about. Name + relationship drive every reference
+// to the patient afterwards ("your mom", "Alex").
+// Age is what the app uses (guidance + content), so a caregiver who doesn't know the exact
+// birthday gives an approximate range instead — never blocked. The exact date is asked at
+// share time, with the full name, when the care team needs it.
+const AGE_RANGES = [
+  { value: 'under_40', label: 'Under 40' },
+  { value: '40_64',    label: '40–64' },
+  { value: '65_plus',  label: '65 and older' },
+  { value: 'unsure',   label: 'Not sure' },
+]
+const ageRangeLabel = (v) => (AGE_RANGES.find(a => a.value === v) || {}).label || null
+const OnbPatient = ({ name = '', relationship = null, dob = '', ageRange = null, onContinue }) => {
+  const [n, setN] = useState(name)
+  const [rel, setRel] = useState(relationship)
+  const [bd, setBd] = useState(dob)
+  const [dobUnknown, setDobUnknown] = useState(!dob && !!ageRange)
+  const [age, setAge] = useState(ageRange)
+  const today = localDateStr()
+  const thisYear = new Date().getFullYear()
+  const shown = careName(n)
+  const valid = n.trim() && rel && (dobUnknown ? !!age : (bd && bd <= today))
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '28px 24px 36px', overflowY: 'auto' }}>
+      <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.25, marginBottom: 10 }}>Who are you caring for?</div>
+      <div style={{ fontSize: 15, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>Their plan, check-ins, and notes will be about them — you're keeping track on their behalf.</div>
+      <div style={{ flex: 1 }}>
+        <AuthField label="What do you call them?" value={n} onChange={setN} type="text" placeholder="e.g. Mom, or their first name" required
+          hint="We'll use this throughout — “How is Mom feeling today?”"/>
+        <div style={{ fontSize: 13, fontWeight: 500, color: C.textSecondary, margin: '4px 0 10px' }}>Your relationship<span style={{ color: C.primary }}> *</span></div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {RELATIONSHIPS.map(r => {
+            const on = rel === r.value
+            return (
+              <button key={r.value} onClick={() => setRel(r.value)} style={{ height: 40, padding: '0 16px', borderRadius: 9999, border: `${on ? 1.5 : 1}px solid ${on ? C.primary : C.border}`, backgroundColor: on ? C.primaryLight : C.bgCard, color: on ? C.primary : C.textPrimary, fontSize: 14.5, fontWeight: on ? 600 : 500, cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>{r.label}</button>
+            )
+          })}
+        </div>
+        <div style={{ height: 20 }}/>
+        {!dobUnknown ? (
+          <>
+            <DateInputField label={shown ? `${_cap(_possessive(shown))} date of birth` : 'Date of birth'} value={bd} onChange={setBd} required max={today} yearRange={[thisYear - 110, thisYear]} defaultValue={`${thisYear - 65}-01-01`} hint={null}/>
+            <button onClick={() => setDobUnknown(true)} style={{ marginTop: -4, padding: '4px 0', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 600, color: C.primary, fontFamily: 'Inter,sans-serif' }}>
+              {shown ? `I don't know ${_possessive(shown)} birthday` : "I don't know the birthday"}
+            </button>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 13, fontWeight: 500, color: C.textSecondary, margin: '0 0 10px' }}>{shown ? `About how old is ${shown}?` : 'About how old?'}<span style={{ color: C.primary }}> *</span></div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {AGE_RANGES.map(a => {
+                const on = age === a.value
+                return <button key={a.value} onClick={() => setAge(a.value)} style={{ height: 40, padding: '0 16px', borderRadius: 9999, border: `${on ? 1.5 : 1}px solid ${on ? C.primary : C.border}`, backgroundColor: on ? C.primaryLight : C.bgCard, color: on ? C.primary : C.textPrimary, fontSize: 14.5, fontWeight: on ? 600 : 500, cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>{a.label}</button>
+              })}
+            </div>
+            <div style={{ fontSize: 12.5, color: C.textTertiary, lineHeight: 1.5, marginTop: 10 }}>We'll ask for the exact date if you share with the care team.</div>
+            <button onClick={() => { setDobUnknown(false); setAge(null) }} style={{ marginTop: 8, padding: '4px 0', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 600, color: C.primary, fontFamily: 'Inter,sans-serif' }}>I know the date</button>
+          </>
+        )}
+      </div>
+      <button onClick={() => valid && onContinue(dobUnknown
+          ? { patient_name: n.trim(), relationship: rel, patient_dob: null, patient_age_range: age }
+          : { patient_name: n.trim(), relationship: rel, patient_dob: bd, patient_age_range: null })} style={{ ..._onbBtn(true), marginTop: 24, opacity: valid ? 1 : 0.45, cursor: valid ? 'pointer' : 'default' }}>Continue</button>
+    </div>
+  )
+}
+
+// Create account, step 2 — "About you": name + date of birth, then the account is created
+// with the credentials from step 1. Back returns to step 1 with those credentials kept.
+// Always the account holder's own details. For a caregiver, the patient's name, relationship and
+// date of birth were already given on "Who are you caring for?", so this screen says plainly
+// that it's theirs ("Now, a little about you" / "This is just for your account").
+const OnbAbout = ({ mode = 'create', creds, details, onDetailsChange, onCreated, onContinue, subject }) => {
+  const sub = subject || careSubject(null)
+  const { firstName = '', lastName = '', birthDate = '' } = details
+  const set = (k) => (v) => { onDetailsChange({ ...details, [k]: v }); setError('') }
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const today = localDateStr()
+  const thisYear = new Date().getFullYear()
+  const valid = firstName.trim() && lastName.trim() && birthDate && birthDate <= today
+  const create = () => {
+    if (!valid || loading) return
+    if (mode === 'collect') { onContinue && onContinue(); return }
+    setLoading(true)
+    setTimeout(() => {
+      const r = createOnboardingAccount({ ...creds, firstName, lastName, birthDate })
+      setLoading(false)
+      if (r.ok) onCreated(r.user)
+      else setError(r.error)
+    }, 450)
+  }
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '28px 24px 36px', overflowY: 'auto' }}>
+      <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.25, marginBottom: 10 }}>{sub.self ? 'A little about you.' : 'Now, a little about you.'}</div>
+      <div style={{ fontSize: 15, color: C.textSecondary, lineHeight: 1.6, marginBottom: 26 }}>
+        {sub.self ? 'Your name and date of birth keep your health information matched to you.' : `This is just for your account — you've already told us about ${sub.ref}.`}
+      </div>
+      <div style={{ flex: 1 }}>
+        <AuthField label={sub.self ? 'First name' : 'Your first name'} value={firstName} onChange={set('firstName')} type="text" placeholder="First name" required/>
+        <AuthField label={sub.self ? 'Last name' : 'Your last name'} value={lastName} onChange={set('lastName')} type="text" placeholder="Last name" required/>
+        <DateInputField label={sub.self ? 'Date of birth' : 'Your date of birth'} value={birthDate} onChange={set('birthDate')} required max={today} yearRange={[thisYear - 110, thisYear]} defaultValue={`${thisYear - 50}-01-01`} hint={null}/>
+        {error && <div style={{ fontSize: 13, color: '#ef4444', margin: '4px 0 16px', padding: '10px 14px', backgroundColor: '#fef2f2', borderRadius: 8 }}>{error}</div>}
+      </div>
+      <button onClick={create} style={{ ..._onbBtn(true), opacity: valid ? 1 : 0.45, cursor: valid ? 'pointer' : 'default' }}>{mode === 'collect' ? 'Continue' : loading ? 'Creating account…' : 'Create account'}</button>
+    </div>
+  )
+}
+
+// Matched community (silent auto-join), from the answers.
+const _matchCommunity = (ans) => {
+  const MAP = {
+    RCC: { default: 'rcc-general', clear_cell: 'rcc-clear-cell', stage_4: 'rcc-stage-iv' },
+  }
+  const m = MAP[ans.cancer_type] || { default: 'newly-diagnosed' }
+  const id = stageFromAnswers(ans) === 'IV' && m.stage_4 ? m.stage_4
+    : ans.histology === 'clear_cell' && m.clear_cell ? m.clear_cell
+    : m.default
+  return COMMUNITIES.flatMap(s => s.items).find(c => c.id === id) || null
+}
+
+// Record info (who the patient is) comes right after "who's this for"; the account step is
+// only about the account. Self: the patient IS the user, so one "About you" covers both, then
+// sign-in creates the account. Caregiver: the patient's details, then sign-in, then the
+// caregiver's own details create the account.
+const onbSteps = (ans) => ['cancer_type', 'extent', 'treatment_phase', 'role',
+  ...(ans.role === 'caregiver' ? ['patient', 'account', 'about'] : ['about', 'account'])]
+
+const OnboardingScreen = ({ onComplete, onExit }) => {
+  const [step, setStep] = useState('cancer_type')
+  const [dir, setDir] = useState(1)
+  const [stepKey, setStepKey] = useState(0)
+  const [answers, setAnswers] = useState({})   // pre-registration cache — written to the record on account creation
+  const [creds, setCreds] = useState(null)     // sign-in method chosen on 'account', used on 'about'
+  const [details, setDetails] = useState({})   // name + date of birth, kept if the person steps back
+  const [accountError, setAccountError] = useState('')
+  const isCaregiver = answers.role === 'caregiver'
   const [vis, setVis] = useState(false)
   useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
-  const [cancerSearch, setCancerSearch] = useState('')
 
-  const selectedCancer = CANCER_TYPES.find(c => c.code === answers.cancer_type)
-
-  const stepTo = (next, dir = 1) => {
-    setStepDir(dir)
-    setStepKey(k => k + 1)
-    setStep(next)
-  }
-
-  const advance = (newAnswers) => {
-    const ans = newAnswers || answers
-    if      (step === 'role')                 stepTo(ans.role === 'patient' ? 'situation' : 'summary_generic')
-    else if (step === 'situation')            stepTo('cancer_type')
-    else if (step === 'cancer_type')          stepTo('cancer_ack')
-    else if (step === 'cancer_ack')           stepTo('diagnosis_date')
-    else if (step === 'diagnosis_date')       stepTo(answers.cancer_type === 'RCC' ? 'stage' : 'treatment_status')
-    else if (step === 'stage')                stepTo(ans.cancer_type === 'RCC' ? 'histology' : 'treatment_status')
-    else if (step === 'histology')            stepTo('treatment_status')
-    else if (step === 'treatment_status')     stepTo('medications')
-    else if (step === 'medications')          stepTo('summary')
-  }
-
-  const answer = (key, value) => {
-    const next = { ...answers, [key]: value }
-    setAnswers(next)
-    advance(next)
-  }
+  const go = (next, d = 1) => { setDir(d); setStepKey(k => k + 1); setStep(next) }
+  // Steps depend on the answers (caregivers get the 'patient' step), so advancing reads the
+  // step list for the answers as they'll be after this one.
+  const steps = onbSteps(answers)
+  const idx = steps.indexOf(step)
+  const forward = (ans = answers) => { const st = onbSteps(ans); go(st[st.indexOf(step) + 1], 1) }
+  const back = () => { if (idx === 0) { setVis(false); setTimeout(() => onExit && onExit(), 300); return } go(steps[idx - 1], -1) }
+  const answer = (key, value) => { const next = { ...answers, [key]: value }; setAnswers(next); forward(next) }
 
   const finish = (user) => {
-    // Resolve matched community from answers
-    const CANCER_COMMUNITY_MAP = {
-      RCC: { default: 'rcc-general', clear_cell: 'rcc-clear-cell', stage_4: 'rcc-stage-iv' },
-      BREAST: { default: 'newly-diagnosed' }, CRC: { default: 'newly-diagnosed' },
-      LUNG: { default: 'newly-diagnosed' }, PROS: { default: 'newly-diagnosed' },
-      BLAD: { default: 'newly-diagnosed' }, OV: { default: 'newly-diagnosed' },
-      LEUK: { default: 'newly-diagnosed' }, LYMP: { default: 'newly-diagnosed' },
-      MM: { default: 'newly-diagnosed' },
-    }
-    const cancerMap = CANCER_COMMUNITY_MAP[answers.cancer_type] || { default: 'newly-diagnosed' }
-    const communityId = answers.stage === 'stage_4' && cancerMap.stage_4
-      ? cancerMap.stage_4
-      : answers.histology === 'clear_cell' && cancerMap.clear_cell
-      ? cancerMap.clear_cell
-      : cancerMap.default
-    const matchedCommunity = COMMUNITIES.flatMap(s => s.items).find(c => c.id === communityId) || null
-
+    const ans = { ...answers, role: answers.role || 'self' }
+    // The record's date of birth is the patient's: the account holder's own for self,
+    // the one given on "Who are you caring for?" for a caregiver.
+    const recordDob = ans.role === 'caregiver' ? (ans.patient_dob || null) : (user.birthDate || null)
     setVis(false)
     setTimeout(() => {
       onComplete({
-        ...buildPatientState(answers),
-        user: user || answers._user || null,
-        onboardingMedications: answers.onboardingMedications || [],
-        matchedCommunity,
+        ...buildPatientStateFromAnswers(ans, { onboardedDate: localDateStr(), dateOfBirth: recordDob }),
+        user,
+        onboardingMedications: [],
+        matchedCommunity: _matchCommunity(ans),
       })
-    }, 400)
+    }, 380)
   }
 
-  // Use module-level helpers (shared with ClinicalEditSheet)
-  const buildPatientState = buildPatientStateFromAnswers
-
-  // ── Shared primitives ────────────────────────────────────────────
-  const Btn = ({ children, onClick, primary, disabled, selected }) => (
-    <button onClick={!disabled ? onClick : undefined} style={{
-      width: '100%', padding: primary ? '15px 20px' : '14px 20px',
-      backgroundColor: disabled ? C.bgApp : primary ? C.primary : selected ? C.primaryLight : C.bgCard,
-      border: primary ? 'none' : `${selected ? 1.5 : 1}px solid ${disabled ? 'transparent' : selected ? C.primary : C.border}`,
-      borderRadius: 13, cursor: disabled ? 'default' : 'pointer', textAlign: 'left',
-      fontSize: 15, fontWeight: primary ? 600 : 500,
-      color: primary ? 'white' : disabled ? C.textTertiary : C.textPrimary,
-      marginBottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      opacity: disabled ? 0.5 : 1,
-    }}>
-      <span>{children}</span>
-      {!selected && <span style={{ color: primary ? 'rgba(255,255,255,0.7)' : C.primary, fontSize: 18 }}>→</span>}
-    </button>
-  )
-
-  const SlideIn = ({ children }) => (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '24px 24px 40px', overflowY: 'auto' }}>
-      {children}
-    </div>
-  )
-
-  const NextBtn = ({ onPress, disabled, label = 'Next →' }) => (
-    <button onClick={!disabled ? onPress : undefined}
-      style={{ width: '100%', height: 54, borderRadius: 9999, backgroundColor: disabled ? '#e0e0e0' : C.primary, border: 'none', cursor: disabled ? 'default' : 'pointer', fontSize: 16, fontWeight: 600, color: disabled ? '#aaa' : 'white', flexShrink: 0 }}>
-      {label}
-    </button>
-  )
-
-  // ── Step content ─────────────────────────────────────────────────
-  const filteredCancers = cancerSearch.trim()
-    ? CANCER_TYPES.filter(c => c.name.toLowerCase().includes(cancerSearch.toLowerCase()) || (c.subtitle || '').toLowerCase().includes(cancerSearch.toLowerCase()))
-    : CANCER_TYPES
-
-  const STEPS = {
-    role: (
-      <SlideIn>
-        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 28 }}>Tell us a little about yourself</div>
-        {[
-          { value: 'patient',      title: "I'm a patient",               sub: "I have cancer or I'm waiting to find out if I do",   enabled: true },
-          { value: 'caregiver',    title: "I'm a caregiver",             sub: "I'm helping a loved one who has or may have cancer",  enabled: false },
-          { value: 'professional', title: "I'm a medical professional",  sub: "I work with oncology patients",                      enabled: false },
-          { value: 'exploring',    title: "I'm just exploring",          sub: "I'm here to learn about cancer and see what the app offers", enabled: false },
-        ].map(opt => (
-          <Btn key={opt.value} onClick={() => opt.enabled && answer('role', opt.value)} disabled={!opt.enabled} selected={answers.role === opt.value}>
-            <div>
-              <div style={{ fontWeight: 600, marginBottom: 2 }}>{opt.title}</div>
-              <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>
-            </div>
-          </Btn>
-        ))}
-      </SlideIn>
-    ),
-
-    situation: (
-      <SlideIn>
-        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 8 }}>What best describes your current situation?</div>
-        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>You can update this anytime. It helps us give you the right tools and support for where you are now.</div>
-        {[
-          { value: 'waiting',        title: 'Waiting for diagnosis',    sub: 'Test results are pending',                                          enabled: false },
-          { value: 'just_diagnosed', title: 'Just diagnosed',           sub: 'Not yet in treatment',                                               enabled: true },
-          { value: 'in_treatment',   title: 'In treatment',             sub: 'Receiving treatment now',                                            enabled: false },
-          { value: 'ned',            title: 'No evidence of disease',   sub: 'Recovering from cancer or have no evidence of disease',              enabled: false },
-        ].map(opt => (
-          <Btn key={opt.value} onClick={() => opt.enabled && answer('situation', opt.value)} disabled={!opt.enabled} selected={answers.situation === opt.value}>
-            <div>
-              <div style={{ fontWeight: 600, marginBottom: 2 }}>{opt.title}</div>
-              <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>
-            </div>
-          </Btn>
-        ))}
-      </SlideIn>
-    ),
-
-    cancer_type: (
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ padding: '24px 24px 12px', flexShrink: 0 }}>
-          <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 6 }}>Which cancer have you been diagnosed with?</div>
-          <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.5, marginBottom: 14 }}>If you have more than one, choose the one you want to focus on.</div>
-          <div style={{ position: 'relative', marginBottom: 4 }}>
-            <span className="material-symbols-rounded" style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 18, color: C.textTertiary, pointerEvents: 'none', fontVariationSettings: "'FILL' 0, 'wght' 400" }}>search</span>
-            <input type="text" value={cancerSearch} onChange={e => setCancerSearch(e.target.value)}
-              placeholder="Search by cancer name"
-              style={{ width: '100%', height: 44, borderRadius: 10, border: `1px solid ${C.border}`, padding: '0 12px 0 38px', fontSize: 15, color: C.textPrimary, backgroundColor: C.bgCard, outline: 'none', fontFamily: 'Inter, sans-serif', boxSizing: 'border-box' }}
-            />
-          </div>
-          {!cancerSearch && <div style={{ fontSize: 12, color: C.textTertiary, padding: '8px 0 4px', fontWeight: 500 }}>Common cancers:</div>}
-        </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: '0 24px 32px' }}>
-          {filteredCancers.map(cancer => (
-            <button key={cancer.code} onClick={() => answer('cancer_type', cancer.code)}
-              style={{ width: '100%', padding: '13px 14px', backgroundColor: answers.cancer_type === cancer.code ? C.primaryLight : C.bgCard, border: `${answers.cancer_type === cancer.code ? 1.5 : 1}px solid ${answers.cancer_type === cancer.code ? C.primary : C.border}`, borderRadius: 12, cursor: 'pointer', textAlign: 'left', marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary }}>{cancer.name}</div>
-                {cancer.subtitle && <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 2 }}>{cancer.subtitle}</div>}
-              </div>
-              {answers.cancer_type !== cancer.code && <span style={{ color: C.primary, fontSize: 18, flexShrink: 0, marginLeft: 8 }}>→</span>}
-            </button>
-          ))}
-          {filteredCancers.length === 0 && (
-            <div style={{ textAlign: 'center', padding: '32px 0', color: C.textSecondary, fontSize: 14 }}>No results for "{cancerSearch}"</div>
-          )}
-        </div>
-      </div>
-    ),
-
-    cancer_ack: (() => {
-      const cancer = selectedCancer || { name: 'your cancer', code: 'OTHER' }
-      return (
-        <SlideIn>
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', paddingTop: 20 }}>
-            <div style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: C.primaryLight, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 28 }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 40, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>
-                {cancer.code === 'RCC' ? 'nephrology' : cancer.code === 'BREAST' ? 'cardiology' : cancer.code === 'LEUK' || cancer.code === 'LYMP' || cancer.code === 'MM' ? 'bloodtype' : 'oncology'}
-              </span>
-            </div>
-            <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, marginBottom: 16 }}>{cancer.name}</div>
-            <div style={{ fontSize: 15, color: C.textSecondary, lineHeight: 1.7, maxWidth: 300 }}>
-              Navigating {cancer.name.toLowerCase()} can feel overwhelming, but you're in the right place. We're here to help you find expert-backed guidance and the support you deserve.
-            </div>
-            <div style={{ fontSize: 15, color: C.textSecondary, lineHeight: 1.7, marginTop: 12 }}>Let's take this next step together.</div>
-          </div>
-          <NextBtn onPress={() => advance()} />
-        </SlideIn>
-      )
-    })(),
-
-    diagnosis_date: (
-      <SlideIn>
-        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 8 }}>
-          When were you diagnosed with {selectedCancer?.name || 'cancer'}?
-        </div>
-        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>
-          Even if your cancer changed or came back later, please enter the date you were first diagnosed.
-        </div>
-        <DateInputField label="Date of initial diagnosis" value={answers.diagnosis_date || ''} onChange={v => setAnswers(a => ({ ...a, diagnosis_date: v }))} max={(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` })()} />
-        <div style={{ flex: 1 }} />
-        <NextBtn onPress={() => advance()} disabled={!answers.diagnosis_date} />
-      </SlideIn>
-    ),
-
-
-    stage: (
-      <SlideIn>
-        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 8 }}>What stage is your {selectedCancer?.name || 'cancer'}?</div>
-        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>Your doctor will have described this after imaging or surgery. If you're not sure, choose the closest option.</div>
-        {[
-          { value: 'stage_1', label: 'Stage I',   sub: "Cancer is localised, hasn't spread" },
-          { value: 'stage_2', label: 'Stage II',  sub: 'Cancer has grown but is still contained' },
-          { value: 'stage_3', label: 'Stage III', sub: 'Cancer has spread to nearby lymph nodes' },
-          { value: 'stage_4', label: 'Stage IV',  sub: 'Cancer has spread to other organs' },
-          { value: 'unsure',  label: "I'm not sure", sub: null },
-        ].map(opt => (
-          <Btn key={opt.value} onClick={() => answer('stage', opt.value)} selected={answers.stage === opt.value}>
-            <div>
-              <div style={{ fontWeight: 600, marginBottom: opt.sub ? 2 : 0 }}>{opt.label}</div>
-              {opt.sub && <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>}
-            </div>
-          </Btn>
-        ))}
-      </SlideIn>
-    ),
-
-    histology: (
-      <SlideIn>
-        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 8 }}>What type of kidney cancer cell did your doctor mention?</div>
-        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>This is usually found in the pathology report after a biopsy or surgery.</div>
-        {[
-          { value: 'clear_cell', label: 'Clear cell',     sub: 'The most common type, about 75% of kidney cancers' },
-          { value: 'non_clear',  label: 'Non-clear cell', sub: 'Papillary, chromophobe, or other type' },
-          { value: 'unsure',     label: "I'm not sure or don't have a report yet", sub: null },
-        ].map(opt => (
-          <Btn key={opt.value} onClick={() => answer('histology', opt.value)} selected={answers.histology === opt.value}>
-            <div>
-              <div style={{ fontWeight: 600, marginBottom: opt.sub ? 2 : 0 }}>{opt.label}</div>
-              {opt.sub && <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>}
-            </div>
-          </Btn>
-        ))}
-      </SlideIn>
-    ),
-
-    treatment_status: (
-      <SlideIn>
-        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 8 }}>Have you started treatment yet?</div>
-        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>This helps us show you the most relevant recommendations for where you are right now.</div>
-        {[
-          { value: 'surgery', label: 'Yes — I\'ve had surgery',          sub: selectedCancer?.surgery ? `e.g. ${selectedCancer.surgery}` : 'A surgical procedure' },
-          { value: 'other',   label: 'Yes — I\'ve had another treatment', sub: 'Radiation, ablation, or systemic therapy' },
-          { value: 'no',      label: 'No, treatment hasn\'t started yet', sub: null },
-          { value: 'unsure',  label: 'I\'m not sure',                     sub: null },
-        ].map(opt => (
-          <Btn key={opt.value} onClick={() => answer('treatment_status', opt.value)} selected={answers.treatment_status === opt.value}>
-            <div>
-              <div style={{ fontWeight: 600, marginBottom: opt.sub ? 2 : 0 }}>{opt.label}</div>
-              {opt.sub && <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 400 }}>{opt.sub}</div>}
-            </div>
-          </Btn>
-        ))}
-      </SlideIn>
-    ),
-
-
-    medications: (() => {
-      const meds = answers.onboardingMedications || []
-      const diagnosisCode = answers.cancer_type || ''
-
-      return (
-        <SlideIn>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 8 }}>
-              Are you taking any medications?
-            </div>
-            <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 24 }}>
-              Adding them now puts everything in one place from day one. You can always add more later.
-            </div>
-
-            {meds.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
-                {meds.map((med, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: '12px 14px' }}>
-                    <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.primary, fontVariationSettings: "'FILL' 0, 'wght' 300" }}>medication</span>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary }}>{med.name}</div>
-                      {med.subtitle && <div style={{ fontSize: 12, color: C.textSecondary }}>{med.subtitle}</div>}
-                    </div>
-                    <button onClick={() => {
-                      const next = { ...answers, onboardingMedications: meds.filter((_, j) => j !== i) }
-                      setAnswers(next)
-                    }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}>
-                      <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textTertiary, fontVariationSettings: "'FILL' 0, 'wght' 300" }}>close</span>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <button onClick={() => onAddMedication && onAddMedication(item => {
-              setAnswers(prev => ({ ...prev, onboardingMedications: [...(prev.onboardingMedications || []), item] }))
-            }, diagnosisCode)} style={{
-              width: '100%', height: 48, borderRadius: 12, border: `1.5px dashed ${C.border}`,
-              backgroundColor: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center',
-              justifyContent: 'center', gap: 8, color: C.textSecondary, fontSize: 14, fontWeight: 500,
-            }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 18, fontVariationSettings: "'FILL' 0, 'wght' 300" }}>add</span>
-              {meds.length === 0 ? 'Add a medication' : 'Add another'}
-            </button>
-          </div>
-
-          <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 10, marginTop: 16 }}>
-            <button onClick={() => advance()} style={{ width: '100%', height: 54, borderRadius: 9999, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 16, fontWeight: 600, color: 'white' }}>
-              Continue
-            </button>
-            {meds.length === 0 && (
-              <button onClick={() => advance()} style={{ width: '100%', height: 44, borderRadius: 9999, backgroundColor: 'transparent', border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 500, color: C.textTertiary }}>
-                Skip for now
-              </button>
-            )}
-          </div>
-        </SlideIn>
-      )
-    })(),
-    summary: (() => {
-      const cancer = selectedCancer || { name: 'Cancer', code: 'OTHER', surgery: null }
-      const stage = answers.stage === 'stage_1' ? 'Stage I' : answers.stage === 'stage_2' ? 'Stage II' : answers.stage === 'stage_3' ? 'Stage III' : answers.stage === 'stage_4' ? 'Stage IV' : null
-      const histLabel = answers.histology === 'clear_cell' ? 'Clear cell' : answers.histology === 'non_clear' ? 'Non-clear cell' : null
-      const hadSurgery = answers.treatment_status === 'surgery'
-      const isStageIV = answers.stage === 'stage_4'
-      const isRCC = answers.cancer_type === 'RCC'
-      const role = answers.role || 'patient'
-      const onboardingMeds = answers.onboardingMedications || []
-
-      // Match cancer_type + stage to best community
-      const CANCER_COMMUNITY_MAP = {
-        RCC: { default: 'rcc-general', clear_cell: 'rcc-clear-cell', stage_4: 'rcc-stage-iv' },
-        BREAST: { default: 'newly-diagnosed' },
-        CRC: { default: 'newly-diagnosed' },
-        LUNG: { default: 'newly-diagnosed' },
-        PROS: { default: 'newly-diagnosed' },
-        BLAD: { default: 'newly-diagnosed' },
-        OV: { default: 'newly-diagnosed' },
-        LEUK: { default: 'newly-diagnosed' },
-        LYMP: { default: 'newly-diagnosed' },
-        MM: { default: 'newly-diagnosed' },
-      }
-      const cancerMap = CANCER_COMMUNITY_MAP[answers.cancer_type] || { default: 'newly-diagnosed' }
-      const communityId = answers.stage === 'stage_4' && cancerMap.stage_4
-        ? cancerMap.stage_4
-        : answers.histology === 'clear_cell' && cancerMap.clear_cell
-        ? cancerMap.clear_cell
-        : cancerMap.default
-      const matchedCommunity = COMMUNITIES.flatMap(s => s.items).find(c => c.id === communityId)
-
-      // Timeline rail items
-      const seededItems = []
-      seededItems.push({ type: 'diagnosis', label: 'Diagnosis added', detail: [cancer.name, stage, histLabel].filter(Boolean).join(' · ') })
-      if (hadSurgery && cancer.surgery) seededItems.push({ type: 'procedure', label: 'Surgery recorded', detail: cancer.surgery })
-      if (isStageIV) seededItems.push({ type: 'scan', label: 'Staging scan added', detail: 'CT scan confirming metastatic disease' })
-      onboardingMeds.forEach(med => seededItems.push({ type: 'medication', label: med.name, detail: 'Added to your plan and tracker' }))
-
-      const nextStepsText = hadSurgery
-        ? `Based on your surgery, we've identified recommended next steps${isRCC ? ' including adjuvant therapy options and surveillance' : ''}.`
-        : `Based on your diagnosis, we've identified${isRCC ? ' primary treatment options your care team may recommend' : ' relevant resources and information for your situation'}.`
-
-      const roleContent = {
-        patient: {
-          headline: 'Understanding your options changes everything.',
-          body: `Your plan is built from the same clinical guidelines your care team uses. That means you're not guessing — you're informed, at every step.`,
-        },
-        caregiver: {
-          headline: 'You just became their best advocate.',
-          body: `The people who make the biggest difference show up prepared. This plan is built from the same clinical guidelines the care team uses — so you can advocate with confidence, not just hope.`,
-        },
-        professional: {
-          headline: 'Shared decision-making starts here.',
-          body: `Your patient has a plan grounded in the same NCCN guidelines you work from — a shared foundation for every decision ahead.`,
-        },
-      }
-      const rc = roleContent[role] || roleContent.patient
-
-      return (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '24px 24px 100px' }}>
-            <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.3px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 8 }}>
-              {rc.headline}
-            </div>
-            <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.7, marginBottom: 20 }}>
-              {rc.body}
-            </div>
-
-            {/* Section 1 — Your plan (timeline rail) */}
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 12 }}>Your plan preview</div>
-            <div style={{ marginBottom: 20 }}>
-              {seededItems.map((item, i) => (
-                <div key={i}>
-                  <div style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <div style={{ flexShrink: 0 }}>{railIcon(item.type, 40)}</div>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary }}>{item.label}</div>
-                      <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 2 }}>{item.detail}</div>
-                    </div>
-                  </div>
-                  <div style={{ paddingLeft: 34, boxSizing: 'border-box' }}>
-                    <div style={{ width: 3, height: 12, background: i < seededItems.length - 1 ? C.timelineLine : `linear-gradient(to bottom, ${C.timelineLine}, ${C.timelineLineToday})`, borderRadius: 2 }}/>
-                  </div>
-                </div>
-              ))}
-              <div style={{ backgroundColor: C.primaryLight, border: `1px solid rgba(255,121,88,0.25)`, borderRadius: 14, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,121,88,0.12)', border: `1.5px solid ${C.primary}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.primary, fontVariationSettings: "'FILL' 0, 'wght' 300" }}>kid_star</span>
-                </div>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: C.primary }}>Recommendations ready</div>
-                  <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 2 }}>{nextStepsText}</div>
-                </div>
-              </div>
-            </div>
-
-            {/* Section 2 — Also set up for you */}
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 12 }}>Also set up for you</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
-              {onboardingMeds.length > 0 && (
-                <div style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#f0fdf4', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <span className="material-symbols-rounded" style={{ fontSize: 20, color: '#16a34a', fontVariationSettings: "'FILL' 0, 'wght' 300" }}>medication</span>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary }}>Medication tracker seeded</div>
-                    <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 2 }}>{onboardingMeds.map(m => m.name).join(', ')}</div>
-                  </div>
-                </div>
-              )}
-              {matchedCommunity && (
-                <div style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: `${matchedCommunity.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <span style={{ fontSize: 13, fontWeight: 800, color: matchedCommunity.color }}>{matchedCommunity.initials}</span>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary }}>Joined {matchedCommunity.name}</div>
-                    <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 2 }}>{matchedCommunity.memberCount.toLocaleString()} members</div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div style={{ fontSize: 12, color: C.textTertiary, lineHeight: 1.6 }}>
-              {isRCC ? 'Based on NCCN Clinical Practice Guidelines for Kidney Cancer. ' : 'Based on your answers. '}
-              Your care team will personalise these recommendations. Nothing here replaces medical advice.
-            </div>
-          </div>
-
-          <DockedButton label="Save my plan" onClick={() => stepTo('account_creation')}/>
-        </div>
-      )
-    })(),
-
-
-    summary_generic: (
-      <SlideIn>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 22, fontWeight: 700, color: C.textPrimary, marginBottom: 16 }}>Welcome</div>
-          <div style={{ fontSize: 15, color: C.textSecondary, lineHeight: 1.65 }}>
-            You can explore the care plan features and resources available. Update your profile anytime to personalise your experience.
-          </div>
-        </div>
-        <button onClick={() => finish(null)} style={{ width: '100%', height: 54, borderRadius: 9999, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 16, fontWeight: 600, color: 'white' }}>
-          Continue
-        </button>
-      </SlideIn>
-    ),
-
-    account_creation: <OnboardingAccountCreation onFinish={finish} SlideIn={SlideIn}/>,
+  const progress = (idx + 1) / steps.length
+  const showProgress = true
+  // Self: choosing a sign-in method creates the account with the "About you" details already given.
+  const onAccountChosen = (c) => {
+    setCreds(c); setAccountError('')
+    if (isCaregiver) { forward(); return }
+    const r = createOnboardingAccount({ ...c, ...details })
+    if (r.ok) finish(r.user)
+    else setAccountError(r.error)
   }
 
-  // Progress bar — green, production style
-  const progressSteps = ['role', 'situation', 'cancer_type', 'cancer_ack', 'diagnosis_date', 'stage', 'histology', 'treatment_status', 'medications']
-  const stepIdx = progressSteps.indexOf(step)
-  const progress = stepIdx >= 0 ? (stepIdx + 1) / progressSteps.length : (step === 'summary' || step === 'account_creation' ? 1 : 0)
-  const showProgress = !['summary_generic'].includes(step)
-  const showBack = !['welcome_personalized', 'summary_generic', 'account_creation'].includes(step)
-
-  const goBack = () => {
-    if (step === 'role') { onExit && onExit(); return }
-    const backMap = {
-      situation: 'role', cancer_type: 'situation',
-      cancer_ack: 'cancer_type', diagnosis_date: 'cancer_ack',
-      stage: 'diagnosis_date', histology: 'stage',
-      treatment_status: answers.cancer_type === 'RCC' ? 'histology' : 'diagnosis_date',
-      medications: 'treatment_status',
-      summary: 'medications',
-    }
-    if (backMap[step]) stepTo(backMap[step], -1)
-  }
+  let body
+  if (step === 'cancer_type') body = <OnbCancerType showNote value={answers.cancer_type} onPick={v => answer('cancer_type', v)}/>
+  // Required one-tap choice (no Skip): it decides whose record this is, whose name the copy
+  // uses, and whose date of birth goes on the record.
+  else if (step === 'role') body = <OnbQuestion {...ONB_QUESTIONS.role} value={answers.role} onPick={v => answer('role', v)}/>
+  else if (step === 'patient') body = <OnbPatient name={answers.patient_name} relationship={answers.relationship} dob={answers.patient_dob} ageRange={answers.patient_age_range} onContinue={p => { const next = { ...answers, ...p }; setAnswers(next); forward(next) }}/>
+  else if (step === 'account') body = <OnbAccount creds={creds} error={accountError} onContinue={onAccountChosen}/>
+  else if (step === 'about') body = isCaregiver
+    ? <OnbAbout mode="create" creds={creds} details={details} onDetailsChange={setDetails} onCreated={finish} subject={careSubject({ role: answers.role, relationship: answers.relationship, patientName: answers.patient_name })}/>
+    : <OnbAbout mode="collect" details={details} onDetailsChange={setDetails} onContinue={() => forward()} subject={careSubject(null)}/>
+  else { const q = ONB_QUESTIONS[step]; body = <OnbQuestion {...q} value={answers[q.key]} onPick={v => answer(q.key, v)}/> }
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 90,
-      backgroundColor: C.bgCard,
-      display: 'flex', flexDirection: 'column',
-      opacity: vis ? 1 : 0,
-      transform: vis ? 'translateY(0)' : 'translateY(12px)',
-      transition: 'opacity 0.38s ease, transform 0.38s ease',
-      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
-      WebkitFontSmoothing: 'antialiased',
-    }}>
-
-      {/* Shared app header with progress bar pinned to its bottom */}
-      <div style={{ position: 'relative', flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', height: 60, padding: '0 8px 0 4px', backgroundColor: C.bgCard, borderBottom: `1px solid ${C.border}` }}>
-          {showBack ? (
-            <button onClick={goBack} style={{ width: 38, height: 38, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}>
-              <Ico.back/>
-            </button>
-          ) : <div style={{ width: 38, flexShrink: 0 }}/>}
-          <div style={{ flex: 1, textAlign: 'center', pointerEvents: 'none' }}>
-          </div>
-          <div style={{ width: 38, flexShrink: 0 }}/>
+    <div style={{ position: 'fixed', inset: 0, zIndex: 90, backgroundColor: C.bgCard, display: 'flex', flexDirection: 'column', opacity: vis ? 1 : 0, transform: vis ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 0.36s ease, transform 0.36s ease', fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", WebkitFontSmoothing: 'antialiased' }}>
+      <div style={{ position: 'relative', flexShrink: 0, paddingTop: 'env(safe-area-inset-top, 0px)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', height: 60, padding: '0 8px 0 4px' }}>
+          <button onClick={back} aria-label="Back" style={{ width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff', borderRadius: 22, boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', border: 'none', cursor: 'pointer', flexShrink: 0 }}>
+            <Ico.back/>
+          </button>
         </div>
-        {/* Progress bar — fixed to bottom edge of header, only shown on clinical steps */}
         {showProgress && (
-          <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, backgroundColor: C.border }}>
-            <div style={{ height: '100%', backgroundColor: '#22c55e', width: `${progress * 100}%`, transition: 'width 0.3s ease' }}/>
+          <div style={{ position: 'absolute', bottom: 0, left: 24, right: 24, height: 4, borderRadius: 2, backgroundColor: C.bgApp, overflow: 'hidden' }}>
+            <div style={{ height: '100%', borderRadius: 2, backgroundColor: C.primary, width: `${progress * 100}%`, transition: 'width 0.3s ease' }}/>
           </div>
         )}
       </div>
-      <div key={stepKey} style={{
-        flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden',
-        animation: `stepEnter${stepDir > 0 ? 'Fwd' : 'Bwd'} 0.22s ease-out forwards`,
-      }}>
-        {STEPS[step] || STEPS['summary']}
+      <div key={stepKey} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: `stepEnter${dir > 0 ? 'Fwd' : 'Bwd'} 0.22s ease-out forwards` }}>
+        {body}
       </div>
     </div>
   )
 }
+
+// One-tap gap answering — the anti-maze. Opens exactly one question, in context, with a
+// reason; saving closes the gap everywhere (gaps are derived from the answers).
+// `questions` may be one key or a short sequence (the diagnosis card's Edit uses one).
+const AnswerQuestionSheet = ({ questions, answers = {}, onSave, onClose }) => {
+  const keys = Array.isArray(questions) ? questions : [questions]
+  const [local, setLocal] = useState({ ...answers })
+  return (
+    <FlowShell onClose={onClose} zIndex={300}>
+      {(dismiss, setNav) => {
+        const [i, setI] = useState(0)
+        useEffect(() => { setNav({ title: keys.length > 1 ? 'Clinical details' : '', subtitle: null, onBack: i > 0 ? () => setI(n => n - 1) : null }) }, [i])
+        const k = keys[i]
+        const pick = (v) => {
+          const next = { ...local, [k]: v }
+          setLocal(next)
+          if (i < keys.length - 1) setI(n => n + 1)
+          else onSave(next)
+        }
+        return (
+          <div key={k} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'stepEnterFwd 0.22s ease-out forwards' }}>
+            {k === 'cancer_type'
+              ? <OnbCancerType value={local.cancer_type} onPick={pick}/>
+              : <OnbQuestion {...ONB_QUESTIONS[k]} value={local[k]} onPick={pick}/>}
+          </div>
+        )
+      }}
+    </FlowShell>
+  )
+}
+
 
 
 // ─── POST DETAIL VIEW ────────────────────────────────────────────
@@ -5097,40 +6207,52 @@ const CommunityDetailView = ({ community, onClose }) => {
 
 // ─── BOTTOM NAV ──────────────────────────────────────────────────
 const NAV_TABS = [
-  { id: 'careplan',  label: 'Home',       icon: 'home' },
-  { id: 'treatment', label: 'Treatment',  icon: 'medical_services' },
+  { id: 'careplan',  label: 'Today',      icon: 'today' },
+  { id: 'plan',      label: 'Care plan',  icon: 'route' },
   { id: 'track',     label: 'Tracker',    icon: 'monitor_heart' },
-  { id: 'chat',      label: 'Chat',       icon: 'auto_awesome' },
   { id: 'community', label: 'Community',  icon: 'group' },
   { id: 'resources', label: 'Resources',  icon: 'menu_book', flag: 'resourcesTab' },
 ]
 
+// Liquid-glass footer: a floating rounded capsule (translucent + blur, specular
+// inset highlight) with a lens-style active tab. The parent positions it absolutely
+// over the content; scroll regions reserve bottom clearance (paddingBottom ~96–110).
 const BottomNav = ({ activeTab, onTabChange }) => (
-  <div style={{
-    display: 'flex', height: 72, backgroundColor: C.bgCard,
-    borderTop: `1px solid ${C.border}`, flexShrink: 0, paddingBottom: 10,
-  }}>
-    {NAV_TABS.filter(tab => !tab.flag || exp(tab.flag) === 'on').map(tab => {
-      const active = activeTab === tab.id
-      return (
-        <button key={tab.id} onClick={() => onTabChange(tab.id)} style={{
-          flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
-          justifyContent: 'center', gap: 3, background: 'none', border: 'none',
-          cursor: 'pointer', WebkitTapHighlightColor: 'transparent', padding: 0,
-        }}>
-          <span className="material-symbols-rounded" style={{
-            fontSize: 24, color: active ? C.primary : C.textTertiary,
-            fontVariationSettings: `'FILL' ${active ? 1 : 0}, 'wght' 400`,
-            transition: 'color 0.15s',
-          }}>{tab.icon}</span>
-          <span style={{
-            fontSize: 10, fontWeight: active ? 600 : 400,
-            color: active ? C.primary : C.textTertiary,
-            transition: 'color 0.15s', letterSpacing: '0.01em',
-          }}>{tab.label}</span>
-        </button>
-      )
-    })}
+  <div style={{ flexShrink: 0, padding: '6px 12px calc(10px + env(safe-area-inset-bottom, 0px))', backgroundColor: 'transparent' }}>
+    <div style={{
+      display: 'flex', height: 60, borderRadius: 30, padding: '0 6px',
+      backgroundColor: 'rgba(252,250,249,0.68)',
+      backdropFilter: 'blur(24px) saturate(185%)', WebkitBackdropFilter: 'blur(24px) saturate(185%)',
+      border: '1px solid rgba(255,255,255,0.55)',
+      boxShadow: 'inset 0 1px 1px rgba(255,255,255,0.65), 0 8px 26px rgba(0,0,0,0.12)',
+    }}>
+      {NAV_TABS.filter(tab => !tab.flag || exp(tab.flag) === 'on').map(tab => {
+        const active = activeTab === tab.id
+        return (
+          <button key={tab.id} onClick={() => onTabChange(tab.id)} style={{
+            flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
+            justifyContent: 'center', gap: 2, border: 'none',
+            cursor: 'pointer', WebkitTapHighlightColor: 'transparent',
+            margin: '6px 3px', borderRadius: 20,
+            backgroundColor: active ? 'rgba(255,255,255,0.72)' : 'transparent',
+            boxShadow: active ? 'inset 0 1px 1px rgba(255,255,255,0.8), 0 2px 6px rgba(0,0,0,0.08)' : 'none',
+            transition: 'background-color 0.18s, box-shadow 0.18s',
+            fontFamily: 'Inter,sans-serif',
+          }}>
+            <span className="material-symbols-rounded" style={{
+              fontSize: 23, color: active ? C.primary : C.textTertiary,
+              fontVariationSettings: `'FILL' ${active ? 1 : 0}, 'wght' 400`,
+              transition: 'color 0.15s',
+            }}>{tab.icon}</span>
+            <span style={{
+              fontSize: 9.5, fontWeight: active ? 600 : 500,
+              color: active ? C.primary : C.textTertiary,
+              transition: 'color 0.15s', letterSpacing: '0.01em',
+            }}>{tab.label}</span>
+          </button>
+        )
+      })}
+    </div>
   </div>
 )
 
@@ -5138,8 +6260,8 @@ const BottomNav = ({ activeTab, onTabChange }) => (
 // Resources tab (feature-flagged, resourcesTab) — placeholder for now.
 const ResourcesScreen = () => (
   <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', backgroundColor: C.bgApp, padding: '0 40px', textAlign: 'center' }}>
-    <div style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: C.primaryLight, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
-      <span className="material-symbols-rounded" style={{ fontSize: 34, color: C.primary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>menu_book</span>
+    <div style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
+      <span className="material-symbols-rounded" style={{ fontSize: 34, color: C.textIcon, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>menu_book</span>
     </div>
     <div style={{ fontSize: 19, fontWeight: 700, color: C.textPrimary, marginBottom: 6, letterSpacing: '-0.3px' }}>Resources</div>
     <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>Curated cancer guidance, articles, and support — coming soon.</div>
@@ -5213,7 +6335,7 @@ const MedicationInfoView = ({ item, onClose, onAdd }) => {
       <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', paddingBottom: 100 }}>
         <div style={{ padding: '24px 20px 0' }}>
           <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.4px', color: C.textPrimary, lineHeight: 1.2, marginBottom: 6 }}>{item.name}</div>
-          {item.subtitle && <div style={{ fontSize: 13, fontWeight: 500, color: C.primary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 16 }}>{item.subtitle}</div>}
+          {item.subtitle && <div style={{ fontSize: 13, fontWeight: 500, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 16 }}>{item.subtitle}</div>}
           <p style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.65, marginBottom: 0 }}>{drugInfo.overview}</p>
         </div>
 
@@ -5409,7 +6531,7 @@ const TrackerAddSteps = ({ item, onClose, onSave }) => {
     ),
     // Step 3: Review
     (
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '28px 20px 32px', overflowY: 'auto' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '88px 20px 110px', overflowY: 'auto' }}>
         <div style={{ flex: 1 }}>
           {[
             { icon: 'diamond', label: 'Dosage', value: dosage || 'Not specified' },
@@ -5505,12 +6627,12 @@ const MedicationsTab = ({ medications, patientState, onAddTapped, medInfoView, s
   const isEmpty = medications.length === 0
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflowY: 'auto', position: 'relative', backgroundColor: C.bgCard }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflowY: 'auto', paddingTop: 60, paddingBottom: 100, position: 'relative', backgroundColor: C.bgCard }}>
       {isEmpty ? (
         // ── Empty state ─────────────────────────────────────────
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 32px', textAlign: 'center', gap: 16 }}>
-          <div style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: C.primaryLight, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <span className="material-symbols-rounded" style={{ fontSize: 38, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>medication</span>
+          <div style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <span className="material-symbols-rounded" style={{ fontSize: 38, color: C.textIcon, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>medication</span>
           </div>
           <div style={{ fontSize: 20, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px' }}>Track your medications</div>
           <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.65, maxWidth: 260 }}>
@@ -5570,7 +6692,7 @@ const SymptomsTab = () => (
 )
 
 // ─── TRACK SCREEN ─────────────────────────────────────────────────
-const TrackScreen = ({ medications, patientState, onSaveMedication }) => {
+const TrackScreen = ({ medications, patientState, onSaveMedication, symptoms = [], journal = [], onOpenSymptomFlow, onOpenJournalFlow, onOpenDoseLog }) => {
   const [trackTab, setTrackTab] = useState('medications')
   const [medInfoView, setMedInfoView] = useState(null)
 
@@ -5581,374 +6703,33 @@ const TrackScreen = ({ medications, patientState, onSaveMedication }) => {
   const TRACK_TABS = [
     { id: 'medications', label: 'Medications' },
     { id: 'symptoms',    label: 'Symptoms' },
+    { id: 'journal',     label: 'Journal' },
   ]
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: C.bgCard }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: C.bgCard, paddingTop: 60 }}>
       <SegmentedControl tabs={TRACK_TABS} active={trackTab} onChange={setTrackTab}/>
       {trackTab === 'medications' && (
-        <MedicationsTab
-          medications={medications}
-          patientState={patientState}
-          onAddTapped={openSearch}
-          medInfoView={medInfoView}
-          setMedInfoView={setMedInfoView}
-          onSaveMedication={onSaveMedication}
-        />
-      )}
-      {trackTab === 'symptoms' && <SymptomsTab/>}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// CLINICAL TRIALS — rebuilt to match the existing production UX (from reference video).
-// List (Recent/Relevant/Nearest) + Filters + score-badged cards (bookmark/share/hide,
-// PHASE, mileage on Nearest) → trial detail: title/desc + 5 chained views
-// (About · Locations · Questions to Ask · Eligibility · My notes), ClinicalTrials.gov data.
-// Matching/data are seeded (all cancer types in the prototype); real matching is server-side.
-// ═══════════════════════════════════════════════════════════════════════════
-const TRIAL_QUESTIONS = [
-  'What phase is this trial — is it phase 1 (is the drug safe?) or phase 2, 3 or 4 (is the drug effective)?',
-  'How does the drug of this trial work, and why is it a good choice for my cancer?',
-  'Are there any known results of this trial in regards to my cancer?',
-  'Does this trial treat my type of cancer only, or all cancers?',
-  'What did patients who received this drug on the trial experience as side effects, and how did they feel in general?',
-  'How much of the costs are covered by my insurance or the sponsor of the study?',
-]
-const _INCL = ['Adults ≥ 18 years of age', 'Patients undergoing axillary lymph node dissection', 'Written informed consent obtained from the subject', 'Subjects agree to comply with all study-related procedures', 'Subjects of childbearing potential must use an adequate method of contraception prior to and during study participation']
-const _EXCL = ['Patients with a history of ipsilateral breast cancer (invasive or ductal carcinoma in situ)', 'Patients with a history of prior ipsilateral axillary surgery', 'Patients with planned contralateral axillary surgery', 'Patients who are pregnant or breastfeeding', 'Prisoners or subjects who are involuntarily incarcerated']
-const CT_CANCER_LABEL = { RCC: 'kidney cancer', BREAST: 'breast cancer', CRC: 'colorectal cancer', LUNG: 'lung cancer', PROS: 'prostate cancer', BLAD: 'bladder cancer', OV: 'ovarian cancer' }
-const TRIAL_SEED = [
-  // Kidney (RCC)
-  { id: 'NCT03937219', cancer: 'RCC', stages: ['III', 'IV'], phase: 'PHASE3', dist: 42, title: 'Pembrolizumab Plus Axitinib for Advanced Renal Cell Carcinoma', desc: 'A study of immunotherapy combined with a targeted therapy as first-line treatment for advanced clear cell kidney cancer.', chips: ['Stages III, IV', 'Clear cell'], sponsor: 'Memorial Sloan Kettering', contacts: [{ name: 'Trial Coordinator', email: 'kidneytrials@mskcc.org' }], investigators: ['Robert Motzer, MD'], location: { name: 'Memorial Sloan Kettering Cancer Center', city: 'New York, New York, 10065', country: 'United States' } },
-  { id: 'NCT04195750', cancer: 'RCC', stages: ['IV'], phase: 'PHASE3', dist: 210, title: 'Cabozantinib Versus Sunitinib in Metastatic Kidney Cancer', desc: 'Comparing two targeted therapies for previously untreated metastatic renal cell carcinoma to see which better controls the disease.', chips: ['Stage IV', 'Metastatic'], sponsor: 'Dana-Farber Cancer Institute', contacts: [{ name: 'Study Team', email: 'rcc@dfci.harvard.edu' }], investigators: ['Toni Choueiri, MD'], location: { name: 'Dana-Farber Cancer Institute', city: 'Boston, Massachusetts, 02215', country: 'United States' } },
-  { id: 'NCT03141177', cancer: 'RCC', stages: ['IV'], phase: 'PHASE3', dist: 880, title: 'Nivolumab Plus Ipilimumab for Intermediate/Poor-Risk Advanced Kidney Cancer', desc: 'Dual immunotherapy for patients with intermediate- or poor-risk advanced renal cell carcinoma who have not had prior systemic therapy.', chips: ['Stage IV', 'Intermediate/poor risk'], sponsor: 'MD Anderson Cancer Center', contacts: [{ name: 'Clinical Trials Office', email: 'rcc@mdanderson.org' }], investigators: ['Nizar Tannir, MD'], location: { name: 'MD Anderson Cancer Center', city: 'Houston, Texas, 77030', country: 'United States' } },
-  { id: 'NCT04586231', cancer: 'RCC', stages: ['IV'], phase: 'PHASE2', dist: 16, title: 'Belzutifan (HIF-2α Inhibitor) in Advanced Clear Cell Kidney Cancer', desc: 'A study of an oral HIF-2α inhibitor for advanced clear cell renal cell carcinoma that has progressed after prior therapy.', chips: ['Stage IV', 'Clear cell', 'Previously treated'], sponsor: 'University of Pennsylvania', contacts: [{ name: 'Research Nurse', email: 'kidney@pennmedicine.upenn.edu' }], investigators: ['A. Investigator, MD'], location: { name: 'Penn Medicine', city: 'Philadelphia, Pennsylvania, 19104', country: 'United States' } },
-  { id: 'NCT03024996', cancer: 'RCC', stages: ['I', 'II', 'III'], phase: 'PHASE3', dist: 340, title: 'Adjuvant Pembrolizumab After Nephrectomy for High-Risk Kidney Cancer', desc: 'Testing whether immunotherapy after surgery lowers the chance of kidney cancer returning in patients at higher risk of recurrence.', chips: ['Stages I, II, III', 'Post-surgery', 'Adjuvant'], sponsor: 'Cleveland Clinic', contacts: [{ name: 'Study Team', email: 'rcc@ccf.org' }], investigators: ['B. Investigator, MD'], location: { name: 'Cleveland Clinic', city: 'Cleveland, Ohio, 44195', country: 'United States' } },
-  { id: 'NCT05327686', cancer: 'RCC', stages: ['IV'], phase: 'PHASE2', dist: 1096, title: 'Stereotactic Radiation Plus Immunotherapy for Oligometastatic Kidney Cancer', desc: 'Combining focused radiation with immunotherapy for kidney cancer that has spread to a limited number of sites.', chips: ['Stage IV', 'Oligometastatic'], sponsor: 'University of Florida', contacts: [{ name: 'Madeline Campellone', email: 'mcampellone@ufl.edu' }], investigators: ['Lisa Spiguel, MD'], location: { name: 'University of Florida', city: 'Gainesville, Florida, 32610', country: 'United States' } },
-  // Breast
-  { id: 'NCT06327490', cancer: 'BREAST', stages: ['0', 'I', 'II', 'III'], phase: 'PHASE2', dist: 1096, title: 'A Study Evaluating the Feasibility and Compliance of Manual Lymphatic Drainage Comparing Indocyanine-Green (ICG) Guided Traditional in Patients Undergoing Axillary Node Dissection', desc: 'Breast cancer is estimated to affect approximately 300,000 women in the US in 2023. Studies demonstrate that 1 in 5 will develop breast-cancer-related lymphedema.', chips: ['Stages 0, I, II, III', 'Postmenopause'], menopause: 'post', sponsor: 'University of Florida', contacts: [{ name: 'Madeline Campellone', email: 'mcampellone@ufl.edu' }, { name: 'Laura J Mallinson', email: 'coppola@ufl.edu' }], investigators: ['Lisa Spiguel, MD'], location: { name: 'University of Florida', city: 'Gainesville, Florida, 32610', country: 'United States' } },
-  { id: 'NCT05432900', cancer: 'BREAST', stages: ['I', 'II', 'III'], markers: ['HER2-'], phase: 'PHASE2', dist: 340, title: 'Study to Evaluate Biomarkers and Safety of Dapagliflozin Concomitant With Neoadjuvant Therapy', desc: 'The primary objective of the study is to assess metabolic plasma markers of insulin resistance in patients receiving neoadjuvant therapy.', chips: ['Stages I, II, III', 'Postmenopause', 'HER2-'], menopause: 'post', sponsor: 'Memorial Sloan Kettering', contacts: [{ name: 'Trial Coordinator', email: 'trials@mskcc.org' }], investigators: ['Neil Iyengar, MD'], location: { name: 'Memorial Sloan Kettering Cancer Center', city: 'New York, New York, 10065', country: 'United States' } },
-  { id: 'NCT05990920', cancer: 'BREAST', stages: ['III', 'IV'], markers: ['HER2-', 'HR+'], phase: 'PHASE3', dist: 16, title: 'Palbociclib in Combination With Ribociclib for the First-line Treatment of ER+/HER2- Advanced Breast Cancer', desc: 'This phase 3 clinical trial compares the efficacy and safety of palbociclib with ribociclib in the first-line treatment of advanced breast cancer.', chips: ['Stages III, IV', 'Postmenopause', 'Recurrent', 'HER2-', 'HR+'], menopause: 'post', sponsor: 'Dana-Farber Cancer Institute', contacts: [{ name: 'Study Team', email: 'dfci_trials@dfci.harvard.edu' }], investigators: ['Sara Tolaney, MD'], location: { name: 'Dana-Farber Cancer Institute', city: 'Boston, Massachusetts, 02215', country: 'United States' } },
-  { id: 'NCT04883700', cancer: 'BREAST', stages: ['I'], markers: ['HER2+'], phase: 'PHASE2', dist: 5, title: 'ATEMPT 2.0: Adjuvant T-DM1 vs TH', desc: 'This research study is studying how well newly diagnosed breast cancer that has tested positive for HER2 responds to treatment.', chips: ['Stage I', 'HER2+'], sponsor: 'Dana-Farber Cancer Institute', contacts: [{ name: 'Study Team', email: 'atempt@dfci.harvard.edu' }], investigators: ['Sara Tolaney, MD'], location: { name: 'Dana-Farber Cancer Institute', city: 'Boston, Massachusetts, 02215', country: 'United States' } },
-  { id: 'NCT05500900', cancer: 'BREAST', stages: ['I', 'II', 'III'], phase: 'PHASE1', dist: 210, title: 'CBD for Breast Cancer Primary Tumors', desc: 'This is a randomized placebo-controlled partially blinded window-of-opportunity trial evaluating CBD in primary breast tumors.', chips: ['Stages I, II, III', 'Postmenopause'], menopause: 'post', sponsor: 'Thomas Jefferson University', contacts: [{ name: 'Research Nurse', email: 'trials@jefferson.edu' }], investigators: ['A. Investigator, MD'], location: { name: 'Thomas Jefferson University', city: 'Philadelphia, Pennsylvania, 19107', country: 'United States' } },
-]
-// Deterministic prototype scorer: filter to the patient's cancer type, score by stage/marker overlap.
-const scoreTrial = (trial, ps) => {
-  let s = 0
-  const stage = ps && ps.stage
-  if (stage && trial.stages && trial.stages.includes(stage)) s += 2
-  const markers = (ps && Array.isArray(ps.biomarkers) ? ps.biomarkers : []).map(x => String(x).toLowerCase())
-  if (trial.markers) trial.markers.forEach(m => { if (markers.includes(String(m).toLowerCase())) s += 1 })
-  if (trial.menopause && ps && ps.menopause && trial.menopause === ps.menopause) s += 1
-  return s
-}
-const patientTrials = (ps) => {
-  const code = (ps && ps.diagnosisCode) || 'RCC'
-  return TRIAL_SEED.filter(t => t.cancer === code).map(t => ({ ...t, score: scoreTrial(t, ps) }))
-}
-
-const _ctLoad = (k, fb) => { try { const r = localStorage.getItem(k); return r ? JSON.parse(r) : fb } catch (e) { return fb } }
-const _ctSave = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)) } catch (e) {} }
-
-// Drill push: slides in from the right on mount; back() slides out then unmounts (via onBack).
-// fixed=true portals it to the root and covers the whole screen (its own header, no shared app bar).
-const PushLayer = ({ onBack, zIndex = 65, fixed = false, children }) => {
-  const [vis, setVis] = useState(false)
-  useEffect(() => { const r = requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))); return () => cancelAnimationFrame(r) }, [])
-  const back = () => { setVis(false); setTimeout(() => onBack && onBack(), 320) }
-  const node = (
-    <div style={{ position: fixed ? 'fixed' : 'absolute', inset: 0, zIndex, transform: vis ? 'translateX(0)' : 'translateX(100%)', transition: 'transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)', display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard, boxShadow: '-8px 0 24px rgba(0,0,0,0.08)' }}>
-      {children(back)}
-    </div>
-  )
-  return fixed ? ReactDOM.createPortal(node, document.body) : node
-}
-
-const TrialChip = ({ children }) => (
-  <span style={{ fontSize: 11.5, fontWeight: 600, color: C.textSecondary, backgroundColor: C.bgApp, borderRadius: 6, padding: '3px 8px', whiteSpace: 'nowrap' }}>{children}</span>
-)
-const _ctIconBtn = (icon, onClick, active, label) => (
-  <button onClick={onClick} aria-label={label} style={{ width: 34, height: 34, borderRadius: 17, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-    <span className="material-symbols-rounded" style={{ fontSize: 20, color: active ? C.primary : C.textSecondary, fontVariationSettings: active ? "'FILL' 1, 'wght' 500" : "'FILL' 0, 'wght' 400" }}>{icon}</span>
-  </button>
-)
-
-const TrialCard = ({ trial, folder, bookmarked, onOpen, onBookmark, onShare, onHide }) => (
-  <div style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '14px 16px', margin: '0 16px 12px' }}>
-    <button onClick={onOpen} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: C.primary, marginBottom: 5 }}>Score: {trial.score}</div>
-      <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, lineHeight: 1.35, marginBottom: 5, letterSpacing: '-0.2px' }}>{trial.title}</div>
-      <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.5, marginBottom: 10, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, overflow: 'hidden' }}>{trial.desc}</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>{trial.chips.map((c, i) => <TrialChip key={i}>{c}</TrialChip>)}</div>
-    </button>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-      {_ctIconBtn(bookmarked ? 'bookmark' : 'bookmark_border', onBookmark, bookmarked, 'Bookmark')}
-      {_ctIconBtn('ios_share', onShare, false, 'Share')}
-      {onHide && _ctIconBtn('cancel', onHide, false, 'Hide')}
-      <div style={{ flex: 1 }}/>
-      {folder === 'nearest' && <span style={{ fontSize: 12, color: C.textTertiary, marginRight: 10 }}>{trial.dist} mi</span>}
-      <span style={{ fontSize: 11, fontWeight: 700, color: C.textSecondary, letterSpacing: '0.03em' }}>{trial.phase}</span>
-    </div>
-  </div>
-)
-
-const TrialFilterSheet = ({ filters, onClose, onSave }) => {
-  const [f, setF] = useState(filters)
-  const [vis, setVis] = useState(false)
-  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
-  const close = (cb) => { setVis(false); setTimeout(() => cb && cb(), 260) }
-  const rows = [['interventional', 'Interventional'], ['nonInterventional', 'Non-interventional'], ['exclSurgery', 'Exclude Surgery'], ['exclRadiation', 'Exclude Radiation'], ['p1', 'Phase 1'], ['p2', 'Phase 2'], ['p3', 'Phase 3'], ['p4', 'Phase 4'], ['showHidden', 'Show Hidden']]
-  return ReactDOM.createPortal(
-    <div style={{ position: 'fixed', inset: 0, zIndex: 430 }}>
-      <div onClick={() => close(onClose)} style={{ position: 'absolute', inset: 0, backgroundColor: vis ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0)', transition: 'background-color 0.26s ease' }}/>
-      <div style={{ position: 'absolute', top: 0, right: 0, width: 'min(340px, 86%)', height: '100%', backgroundColor: C.bgCard, boxShadow: '-6px 0 28px rgba(0,0,0,0.16)', transform: vis ? 'translateX(0)' : 'translateX(100%)', transition: 'transform 0.3s cubic-bezier(0.32,0.72,0,1)', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '14px 16px', display: 'flex', alignItems: 'center', borderBottom: `1px solid ${C.border}` }}>
-          <button onClick={() => close(onClose)} aria-label="Close" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.primary }}>close</span></button>
-          <div style={{ fontSize: 16, fontWeight: 700, color: C.textPrimary, marginLeft: 6 }}>Filters</div>
-        </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 16px' }}>
-          {rows.map(([k, label]) => (
-            <button key={k} onClick={() => setF(p => ({ ...p, [k]: !p[k] }))} style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '12px 0', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
-              <span style={{ width: 22, height: 22, borderRadius: 5, border: `2px solid ${f[k] ? C.primary : C.border}`, backgroundColor: f[k] ? C.primary : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                {f[k] && <span className="material-symbols-rounded" style={{ fontSize: 16, color: '#fff', fontVariationSettings: "'FILL' 1, 'wght' 700" }}>check</span>}
-              </span>
-              <span style={{ fontSize: 15, color: C.textPrimary }}>{label}</span>
-            </button>
-          ))}
-        </div>
-        <div style={{ padding: '12px 16px 28px', borderTop: `1px solid ${C.border}` }}>
-          <button onClick={() => close(() => onSave(f))} style={{ width: '100%', height: 48, borderRadius: 9999, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 700, color: '#fff', fontFamily: 'Inter,sans-serif' }}>Save</button>
-        </div>
-      </div>
-    </div>,
-    document.body
-  )
-}
-
-// ── Trial detail sub-views ──
-const _DetailHeader = ({ title, onBack, right }) => (
-  <div style={{ display: 'flex', alignItems: 'center', padding: '12px 8px', borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
-    <button onClick={onBack} aria-label="Back" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 8 }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textIcon }}>arrow_back</span></button>
-    <div style={{ flex: 1, fontSize: 16, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.2px' }}>{title}</div>
-    {right}
-  </div>
-)
-const _NextLink = ({ label, onClick }) => (
-  <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '4px 0 20px' }}>
-    <button onClick={onClick} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'none', border: `1px solid ${C.border}`, borderRadius: 9999, padding: '8px 14px', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary, fontFamily: 'Inter,sans-serif' }}>{label}<span className="material-symbols-rounded" style={{ fontSize: 17 }}>chevron_right</span></button>
-  </div>
-)
-const _MapBlock = ({ loc }) => (
-  <div style={{ position: 'relative', borderRadius: 14, overflow: 'hidden', border: `1px solid ${C.border}`, marginBottom: 12 }}>
-    <div style={{ height: 150, background: 'linear-gradient(135deg,#e8efe6 0%,#dfeaf0 100%)', position: 'relative' }}>
-      <div style={{ position: 'absolute', top: '42%', left: '50%', transform: 'translate(-50%,-50%)' }}>
-        <span className="material-symbols-rounded" style={{ fontSize: 34, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>location_on</span>
-      </div>
-    </div>
-    <div style={{ padding: '14px 16px', backgroundColor: C.bgCard }}>
-      <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary }}>{loc.name}</div>
-      <div style={{ fontSize: 13, color: C.textTertiary, marginTop: 2 }}>{loc.city}<br/>{loc.country}</div>
-      <button style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary, fontFamily: 'Inter,sans-serif' }}>Open in maps</button>
-    </div>
-  </div>
-)
-const TrialNoteEditor = ({ onClose, onSubmit }) => {
-  const [vis, setVis] = useState(false)
-  const [title, setTitle] = useState(''); const [text, setText] = useState('')
-  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
-  const close = (cb) => { setVis(false); setTimeout(() => cb && cb(), 260) }
-  const now = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' at ' + new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-  const valid = title.trim() && text.trim()
-  return ReactDOM.createPortal(
-    <div style={{ position: 'fixed', inset: 0, zIndex: 440, backgroundColor: C.bgCard, transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.3s cubic-bezier(0.32,0.72,0,1)', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ padding: '12px 12px 8px' }}><button onClick={() => close(onClose)} aria-label="Close" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6 }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: C.textIcon }}>close</span></button></div>
-      <div style={{ flex: 1, overflowY: 'auto', padding: '0 18px 24px' }}>
-        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: C.textTertiary, backgroundColor: C.bgApp, borderRadius: 8, padding: '6px 10px', marginBottom: 16 }}><span className="material-symbols-rounded" style={{ fontSize: 15 }}>calendar_today</span>{now}</div>
-        <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Enter a title" style={{ width: '100%', border: `1px solid ${title.trim() ? C.primary : 'rgba(0,0,0,0.18)'}`, borderRadius: 10, padding: '13px 14px', fontSize: 16, color: C.textPrimary, backgroundColor: C.bgCard, outline: 'none', marginBottom: 12, fontFamily: 'Inter,sans-serif' }}/>
-        <textarea value={text} onChange={e => setText(e.target.value)} placeholder="Enter some notes" rows={5} style={{ width: '100%', border: `1px solid ${text.trim() ? C.primary : 'rgba(0,0,0,0.18)'}`, borderRadius: 10, padding: '13px 14px', fontSize: 15, color: C.textPrimary, backgroundColor: C.bgCard, outline: 'none', resize: 'none', fontFamily: 'Inter,sans-serif', lineHeight: 1.5 }}/>
-        <button onClick={() => valid && close(() => onSubmit({ title: title.trim(), text: text.trim(), date: now }))} disabled={!valid} style={{ marginTop: 16, float: 'right', padding: '10px 22px', borderRadius: 9999, backgroundColor: valid ? C.primary : C.bgApp, border: 'none', cursor: valid ? 'pointer' : 'default', fontSize: 15, fontWeight: 700, color: valid ? '#fff' : C.textTertiary, fontFamily: 'Inter,sans-serif' }}>Submit</button>
-      </div>
-    </div>,
-    document.body
-  )
-}
-
-const TrialDetail = ({ trial, bookmarked, notes, onBookmark, onShare, onBack, onAddNote }) => {
-  const [view, setView] = useState('list')
-  const [inclOpen, setInclOpen] = useState(true); const [exclOpen, setExclOpen] = useState(false)
-  const [editing, setEditing] = useState(false)
-  const scroll = { flex: 1, overflowY: 'auto', padding: '16px 18px 32px' }
-  const section = { fontSize: 18, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 10 }
-
-  const renderSub = (v, back) => {
-    if (v === 'about') return (<>
-      <_DetailHeader title="About" onBack={back}/>
-      <div style={scroll}>
-        <div style={section}>Lead Sponsor</div>
-        <div style={{ fontSize: 15, color: C.textPrimary, marginBottom: 20 }}>{trial.sponsor}</div>
-        <div style={section}>Contacts</div>
-        {trial.contacts.map((c, i) => (<div key={i} style={{ marginBottom: 12 }}><div style={{ fontSize: 14.5, fontWeight: 600, color: C.textPrimary }}>{c.name}</div><div style={{ fontSize: 13, color: C.primary }}>{c.email}</div></div>))}
-        <div style={{ ...section, marginTop: 8 }}>Clinical Investigators</div>
-        {trial.investigators.map((n, i) => <div key={i} style={{ fontSize: 14, color: C.textPrimary, marginBottom: 6 }}>• {n}</div>)}
-        <div style={{ marginTop: 12 }}><_NextLink label="Locations" onClick={() => setView('locations')}/></div>
-      </div>
-    </>)
-    if (v === 'locations') return (<>
-      <_DetailHeader title="Locations" onBack={back}/>
-      <div style={scroll}><_MapBlock loc={trial.location}/><_NextLink label="Questions to Ask" onClick={() => setView('questions')}/></div>
-    </>)
-    if (v === 'questions') return (<>
-      <_DetailHeader title="Questions to ask" onBack={back}/>
-      <div style={scroll}>
-        {TRIAL_QUESTIONS.map((q, i) => (<div key={i} style={{ display: 'flex', gap: 8, marginBottom: 14 }}><span style={{ color: C.textTertiary }}>•</span><span style={{ fontSize: 14, color: C.textPrimary, lineHeight: 1.5 }}>{q}</span></div>))}
-        <_NextLink label="Eligibility" onClick={() => setView('eligibility')}/>
-      </div>
-    </>)
-    if (v === 'eligibility') return (<>
-      <_DetailHeader title="Eligibility" onBack={back}/>
-      <div style={scroll}>
-        <div style={{ fontSize: 12.5, color: C.textTertiary, marginBottom: 16 }}>ID: {trial.id}</div>
-        <button onClick={() => setInclOpen(o => !o)} style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '4px 0', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textSecondary }}>{inclOpen ? 'expand_more' : 'chevron_right'}</span><span style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary }}>Inclusion Criteria</span></button>
-        {inclOpen && <div style={{ padding: '6px 0 14px' }}>{_INCL.map((x, i) => <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}><span style={{ color: C.textTertiary }}>•</span><span style={{ fontSize: 13.5, color: C.textPrimary, lineHeight: 1.5 }}>{x}</span></div>)}</div>}
-        <button onClick={() => setExclOpen(o => !o)} style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '4px 0', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textSecondary }}>{exclOpen ? 'expand_more' : 'chevron_right'}</span><span style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary }}>Exclusion Criteria</span></button>
-        {exclOpen && <div style={{ padding: '6px 0 14px' }}>{_EXCL.map((x, i) => <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}><span style={{ color: C.textTertiary }}>•</span><span style={{ fontSize: 13.5, color: C.textPrimary, lineHeight: 1.5 }}>{x}</span></div>)}</div>}
-        <_NextLink label="My Notes" onClick={() => setView('notes')}/>
-      </div>
-    </>)
-    if (v === 'notes') { const list = notes[trial.id] || []; return (<>
-      <_DetailHeader title="My Notes" onBack={back}/>
-      <div style={{ ...scroll, position: 'relative' }}>
-        {list.length === 0 && <div style={{ fontSize: 14, color: C.textTertiary, textAlign: 'center', marginTop: 40 }}>No notes yet.</div>}
-        {list.map((n, i) => (<div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: '13px 14px', marginBottom: 10 }}><div style={{ flex: 1 }}><div style={{ fontSize: 15, fontWeight: 600, color: C.textPrimary }}>{n.title}</div><div style={{ fontSize: 12, color: C.textTertiary, marginTop: 2 }}>{n.date}</div></div><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary }}>chevron_right</span></div>))}
-      </div>
-      <button onClick={() => setEditing(true)} aria-label="Add note" style={{ position: 'absolute', bottom: 20, right: 20, width: 52, height: 52, borderRadius: 26, backgroundColor: C.primary, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(0,0,0,0.22)' }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: '#fff', fontVariationSettings: "'FILL' 1, 'wght' 500" }}>edit</span></button>
-      {editing && <TrialNoteEditor onClose={() => setEditing(false)} onSubmit={(n) => { onAddNote(trial.id, n); setEditing(false) }}/>}
-    </>) }
-    return null
-  }
-
-  const rows = [['About', 'about'], ['Locations', 'locations'], ['Questions to Ask', 'questions'], ['Eligibility', 'eligibility'], ['My notes', 'notes']]
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: C.bgCard, position: 'relative' }}>
-      <_DetailHeader title={trial.id} onBack={onBack} right={<button onClick={onBookmark} aria-label="Bookmark" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 8 }}><span className="material-symbols-rounded" style={{ fontSize: 22, color: bookmarked ? C.primary : C.textIcon, fontVariationSettings: bookmarked ? "'FILL' 1, 'wght' 500" : "'FILL' 0, 'wght' 400" }}>{bookmarked ? 'bookmark' : 'bookmark_border'}</span></button>}/>
-      <div style={scroll}>
-        <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.35, letterSpacing: '-0.3px', marginBottom: 8 }}>{trial.title}</div>
-        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.55, marginBottom: 18 }}>{trial.desc}</div>
-        {rows.map(([label, v]) => (
-          <button key={v} onClick={() => setView(v)} style={{ display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderTop: `1px solid ${C.border}`, padding: '16px 2px', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
-            <span style={{ flex: 1, fontSize: 15, fontWeight: 600, color: C.textPrimary }}>{label}</span>
-            <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary }}>chevron_right</span>
-          </button>
-        ))}
-        <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 8, paddingTop: 16 }}>
-          <div style={section}>Source</div>
-          <div style={{ fontSize: 12.5, color: C.textTertiary, lineHeight: 1.5 }}>Data provided by the National Library of Medicine and ClinicalTrials.gov.</div>
-        </div>
-      </div>
-      {view !== 'list' && <PushLayer key={view} zIndex={70} onBack={() => setView('list')}>{(back) => renderSub(view, back)}</PushLayer>}
-    </div>
-  )
-}
-
-const ClinicalTrialsPanel = ({ patientState }) => {
-  const [folder, setFolder] = useState('relevant')
-  const [filters, setFilters] = useState({ interventional: false, nonInterventional: false, exclSurgery: false, exclRadiation: false, p1: false, p2: false, p3: false, p4: false, showHidden: false })
-  const [bookmarks, setBookmarks] = useState(() => _ctLoad('o4m_ct_bookmarks', []))
-  const [hidden, setHidden] = useState(() => _ctLoad('o4m_ct_hidden', []))
-  const [notes, setNotes] = useState(() => _ctLoad('o4m_ct_notes', {}))
-  const [showFilters, setShowFilters] = useState(false)
-  const [selected, setSelected] = useState(null)
-  const [hideConfirm, setHideConfirm] = useState(null)
-  const [toast, setToast] = useState(null)
-  useEffect(() => { _ctSave('o4m_ct_bookmarks', bookmarks) }, [bookmarks])
-  useEffect(() => { _ctSave('o4m_ct_hidden', hidden) }, [hidden])
-  useEffect(() => { _ctSave('o4m_ct_notes', notes) }, [notes])
-  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t) }, [toast])
-
-  const anyPhase = filters.p1 || filters.p2 || filters.p3 || filters.p4
-  const list = patientTrials(patientState)
-    .filter(t => filters.showHidden ? true : !hidden.includes(t.id))
-    .filter(t => !anyPhase || ((filters.p1 && t.phase === 'PHASE1') || (filters.p2 && t.phase === 'PHASE2') || (filters.p3 && t.phase === 'PHASE3') || (filters.p4 && t.phase === 'PHASE4')))
-    .slice()
-    .sort((a, b) => folder === 'nearest' ? a.dist - b.dist : folder === 'relevant' ? b.score - a.score : 0)
-
-  const toggleBookmark = (t) => { const on = bookmarks.includes(t.id); setBookmarks(p => on ? p.filter(x => x !== t.id) : [...p, t.id]); setToast(on ? 'Removed from your Bookmarks.' : 'Clinical Trial added to your Bookmarks.') }
-  const share = (t) => { const text = `Here's a clinical trial I found on Outcomes4Me: ${t.title} (${t.id})`; if (navigator.share) navigator.share({ title: t.title, text }).catch(() => {}); else { try { navigator.clipboard.writeText(text); setToast('Copied to clipboard.') } catch (e) {} } }
-  const doHide = (id) => { setHidden(p => p.includes(id) ? p : [...p, id]); setHideConfirm(null); setToast('Trial hidden.') }
-  const addNote = (id, note) => setNotes(p => ({ ...p, [id]: [note, ...(p[id] || [])] }))
-
-  const tabs = [['recent', 'Recent'], ['relevant', 'Relevant'], ['nearest', 'Nearest']]
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: C.bgApp, position: 'relative' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 16, padding: '10px 16px 6px', flexShrink: 0 }}>
-        <button onClick={() => setShowFilters(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: C.textSecondary, fontFamily: 'Inter,sans-serif' }}><span className="material-symbols-rounded" style={{ fontSize: 18 }}>tune</span>Filters</button>
-      </div>
-      <div style={{ display: 'flex', gap: 8, padding: '2px 16px 10px', flexShrink: 0 }}>
-        {tabs.map(([id, label]) => (
-          <button key={id} onClick={() => setFolder(id)} style={{ padding: '7px 16px', borderRadius: 9999, border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, backgroundColor: folder === id ? C.primary : C.bgCard, color: folder === id ? '#fff' : C.textSecondary, fontFamily: 'Inter,sans-serif' }}>{label}</button>
-        ))}
-      </div>
-      <div style={{ flex: 1, overflowY: 'auto', paddingTop: 4, paddingBottom: 24 }}>
-        <div style={{ fontSize: 12.5, color: C.textTertiary, padding: '0 16px 10px' }}>{list.length} results</div>
-        <div style={{ margin: '0 16px 12px', backgroundColor: C.bgApp, border: `1px solid ${C.border}`, borderRadius: 12, padding: '13px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textSecondary }}>folder_shared</span>
-          <span style={{ flex: 1, fontSize: 13, color: C.textPrimary, lineHeight: 1.4 }}>Connect your medical records to get more accurate trial matches</span>
-          <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textTertiary }}>chevron_right</span>
-        </div>
-        {list.map(t => (
-          <TrialCard key={t.id} trial={t} folder={folder} bookmarked={bookmarks.includes(t.id)} onOpen={() => setSelected(t)} onBookmark={() => toggleBookmark(t)} onShare={() => share(t)} onHide={() => setHideConfirm(t)}/>
-        ))}
-        {list.length === 0 && (
-          <div style={{ padding: '32px 24px', textAlign: 'center' }}>
-            <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6 }}>No clinical trials matched to your profile yet.</div>
-            <div style={{ fontSize: 12.5, color: C.textTertiary, lineHeight: 1.5, marginTop: 6 }}>In this prototype, kidney and breast cancer have seeded trials — matching for more cancer types is coming.</div>
-          </div>
-        )}
-      </div>
-
-      {selected && (
-        <PushLayer fixed zIndex={120} onBack={() => setSelected(null)}>
-          {(back) => <TrialDetail trial={selected} bookmarked={bookmarks.includes(selected.id)} notes={notes} onBookmark={() => toggleBookmark(selected)} onShare={() => share(selected)} onBack={back} onAddNote={addNote}/>}
-        </PushLayer>
-      )}
-
-      {showFilters && <TrialFilterSheet filters={filters} onClose={() => setShowFilters(false)} onSave={(f) => { setFilters(f); setShowFilters(false) }}/>}
-      {hideConfirm && ReactDOM.createPortal(
-        <div style={{ position: 'fixed', inset: 0, zIndex: 450, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 28, backgroundColor: 'rgba(0,0,0,0.4)' }} onClick={() => setHideConfirm(null)}>
-          <div onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 320, backgroundColor: C.bgCard, borderRadius: 16, padding: '20px', boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: C.textPrimary, marginBottom: 6 }}>Hide this trial?</div>
-            <div style={{ fontSize: 13.5, color: C.textSecondary, lineHeight: 1.5, marginBottom: 18 }}>Trials that have been hidden can still be seen by using the "Show Hidden" option in Filters.</div>
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-              <button onClick={() => setHideConfirm(null)} style={{ padding: '9px 18px', borderRadius: 9999, background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 700, color: C.textSecondary, fontFamily: 'Inter,sans-serif' }}>Cancel</button>
-              <button onClick={() => doHide(hideConfirm.id)} style={{ padding: '9px 20px', borderRadius: 9999, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 700, color: '#fff', fontFamily: 'Inter,sans-serif' }}>Yes</button>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {medications.length > 0 && (
+            <div style={{ padding: '10px 16px 0' }}>
+              <button onClick={onOpenDoseLog} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }}>
+                <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.primary }}>add_task</span>Log a dose
+              </button>
             </div>
-          </div>
-        </div>, document.body)}
-      {toast && (
-        <div style={{ position: 'absolute', bottom: 16, left: 16, right: 16, backgroundColor: '#273E4E', color: '#fff', borderRadius: 12, padding: '13px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 6px 20px rgba(0,0,0,0.2)', zIndex: 5 }}>
-          <span style={{ fontSize: 13.5, fontWeight: 500 }}>{toast}</span>
-          <button onClick={() => setToast(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary, fontFamily: 'Inter,sans-serif' }}>OK</button>
+          )}
+          <MedicationsTab
+            medications={medications}
+            patientState={patientState}
+            onAddTapped={openSearch}
+            medInfoView={medInfoView}
+            setMedInfoView={setMedInfoView}
+            onSaveMedication={onSaveMedication}
+          />
         </div>
       )}
-    </div>
-  )
-}
-
-const TreatmentScreen = ({ patientState, onLaunchRecordsFlow, tab, onTabChange }) => {
-  const [localTab, setLocalTab] = useState('records')
-  const active = tab != null ? tab : localTab
-  const setActive = onTabChange || setLocalTab
-  const TREATMENT_TABS = [
-    { id: 'records', label: 'Medical Records' },
-    { id: 'trials', label: 'Clinical Trials' },
-  ]
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: C.bgCard }}>
-      <SegmentedControl tabs={TREATMENT_TABS} active={active} onChange={setActive}/>
-      {active === 'records' && <MedicalRecordsConnectFlow onLaunch={onLaunchRecordsFlow}/>}
-      {active === 'trials' && <ClinicalTrialsPanel patientState={patientState}/>}
+      {trackTab === 'symptoms' && <SymptomsPanel symptoms={symptoms} onAdd={onOpenSymptomFlow}/>}
+      {trackTab === 'journal' && <JournalPanel journal={journal} onAdd={onOpenJournalFlow}/>}
     </div>
   )
 }
@@ -5962,7 +6743,7 @@ const HomeScreen = () => (
 )
 
 const CommunityScreen = ({ onSelectCommunity, autoJoinedId }) => (
-  <div style={{ flex: 1, overflowY: 'auto', backgroundColor: C.bgCard }}>
+  <div style={{ flex: 1, overflowY: 'auto', backgroundColor: C.bgCard, paddingTop: 60 }}>
     {COMMUNITIES.map(section => (
       <div key={section.category}>
         <div style={{ padding: '16px 16px 8px', fontSize: 13, fontWeight: 600, color: C.textSecondary }}>
@@ -6042,37 +6823,35 @@ const routeChat = (raw, ctx) => {
   // Medical emergency
   if (has(/can'?t breathe|chest pain|crushing (chest )?pain|having a (heart attack|stroke)|face (is )?drooping|slurred speech|passing out|about to pass out|severe bleeding|bleeding (a lot|that won'?t stop)|took too many pills|overdose/)) {
     return { kind:'crisis', tier:'emergency',
-      text:`This could be a medical emergency. Please call 911 or your local emergency number right now — getting help quickly matters, and this is beyond what I can do here.`,
-      resources:[{ icon:'call', label:'Call 911', sub:'Emergency services' }] }
+      text:`This could be a medical emergency. Please call 911 or your local emergency number right now. Getting help quickly matters, and this is beyond what I can do here.`,
+      resources:[{ name:'Emergency services', icon:'health_and_safety', iconColor:'#B00020', sub:'For immediate medical emergencies', rows:[[{ label:'Call 911', kind:'primary', does:'call 911' }]], foot:'If you’re outside the US, call your local emergency number.' }] }
   }
   // Emotional crisis (self-harm risk)
   if (has(/(don'?t|do not) want to (be here|live|wake up)|want to die|wish i (were|was) dead|kill (myself|my self)|end (it all|my life|things)|take my (own )?life|hurt(ing)? myself|harm(ing)? myself|self.?harm|suicid|no reason to (live|go on)|can'?t go on|nothing to live for|better off (dead|without me)/)) {
     return { kind:'crisis', tier:'crisis',
-      text:`I'm really sorry you're feeling this way, and I'm glad you told me. You deserve to talk to someone who can help right now — please reach out to one of these. They're free and available 24/7.`,
+      text:`I'm glad you told me. You don't have to face this alone. Call or text 988, or text HOME to 741741, to connect with a trained crisis counselor for free, 24/7 support. If you're in immediate danger, call 911.`,
       resources:[
-        { icon:'call', label:'Call or text 988', sub:'Suicide & Crisis Lifeline' },
-        { icon:'chat', label:'Text HOME to 741741', sub:'Crisis Text Line' },
-        { icon:'stethoscope', label:'Chat with an oncology nurse', sub:'In the app', target:'nurse' },
+        { name:'Crisis support', icon:'volunteer_activism', iconColor:'#26A699', sub:'Talk with a trained crisis counselor by phone or text.', rows:[[{ label:'Call 988', kind:'primary', does:'call 988' }, { label:'Text 988', kind:'secondary', does:'text 988' }], [{ label:'Text HOME to 741741', kind:'secondary', does:'text HOME to 741741' }]], foot:'Free crisis support, available 24/7. Standard message and data rates may apply.' },
       ] }
   }
 
   // ── HARD-STOPS (safety) — evaluated first ──
   if (has(/recur|come ?back|coming back|spread|surviv|prognos|my odds|life expectanc|how long (do|have) i|going to die|will i die|am i going to be (ok|okay|alright)|be cured|is it terminal/)) {
-    return { kind:'hardstop', cluster:'prognosis', nurse:true, text:`Wondering whether it might come back is one of the most common things people carry, especially during surveillance — it makes complete sense that it's on your mind.\n\nHere I have to be straight with you: I can't predict what will happen for any one person, and honestly no tool should. What I can tell you is that your scan schedule is built to catch any change early, and for ${ctx.stageLabel} ${ctx.cancerName} it follows NCCN surveillance guidelines.\n\nFor what your own history means for your outlook, ${prov} has your full picture — or you can talk it through with an oncology nurse right now.` }
+    return { kind:'hardstop', cluster:'prognosis', nurse:true, text:`Wondering whether it might come back is one of the most common things people carry, especially during surveillance — it makes complete sense that it's on your mind.\n\nHere I have to be straight with you: I can't predict what will happen for any one person, and honestly no tool should. What I can tell you is that your scan schedule is built to catch any change early, and for ${ctx.stageLabel} ${ctx.cancerName} it follows NCCN surveillance guidelines.\n\nFor what your own history means for your outlook, ${prov} has your full picture, or you can send your question to our clinical team.` }
   }
   if (has(/should i (stop|start|switch|change|lower|quit|pause|come off|do|take|choose|go on|be on)|stop (taking|my)|come off|change my (dose|treatment|medication|meds)|reduce my dose|skip (a|my) (dose|treatment)|which (treatment|option|drug|med)\b.*(should i|for me|is best|better)|do i qualify|keynote|am i eligible|eligible for|adjuvant.*or.*surveillance/)) {
-    return { kind:'hardstop', cluster:'treatment', nurse:true, text:`That's a real decision, and it's yours to make with the people who know your case — I don't want to nudge you one way or the other on something this important.\n\nIf side effects are what's behind the question, that's worth raising sooner rather than later — dose changes or a short break are things your team weighs all the time, and they'd rather hear from you early.\n\nI can explain generally what a treatment is for and the side effects on its label, but whether it's right for you is a conversation for ${prov} or an oncology nurse.` }
+    return { kind:'hardstop', cluster:'treatment', nurse:true, text:`That's a real decision, and it's yours to make with the people who know your case — I don't want to nudge you one way or the other on something this important.\n\nIf side effects are what's behind the question, that's worth raising sooner rather than later — dose changes or a short break are things your team weighs all the time, and they'd rather hear from you early.\n\nI can explain generally what a treatment is for and the side effects on its label, but whether it's right for you is a conversation for ${prov}, or you can send your question to our clinical team.` }
   }
   if (has(/what does my (scan|path|result|report|lab|blood)|my (scan|pathology|results?|labs?|egfr|bloodwork)\b.*(mean|show|say|look)|is my (egfr|scan|result|lab|number|reading|count)\b.*(normal|okay|ok|bad|good|fine|high|low)|egfr of \d|interpret (my|these|this)|what do my .* (mean|show)/)) {
-    return { kind:'hardstop', cluster:'results', nurse:true, text:`Wanting to actually understand what's in your report — instead of just being handed a result — is completely reasonable.\n\nI can explain what the terms generally mean, but I can't tell you what your specific numbers mean for you. Reading your results in the context of your whole case is your care team's job, and that's not a call worth getting wrong.\n\n${prov} can walk you through your results, or an oncology nurse can help right now.` }
+    return { kind:'hardstop', cluster:'results', nurse:true, text:`Wanting to actually understand what's in your report — instead of just being handed a result — is completely reasonable.\n\nI can explain what the terms generally mean, but I can't tell you what your specific numbers mean for you. Reading your results in the context of your whole case is your care team's job, and that's not a call worth getting wrong.\n\n${prov} can walk you through your results, or you can send your question to our clinical team.` }
   }
   if (has(/second opinion|another (doctor|oncologist|opinion)|different (doctor|oncologist)|right doctor|see someone else|switch doctors/)) {
-    return { kind:'hardstop', cluster:'secondopinion', nurse:true, text:`Wanting another perspective doesn't mean anything is wrong — it's a common, completely reasonable thing to consider, and good care teams expect it.\n\nWhether to seek one in your situation depends on details of your case I shouldn't weigh in on. But I can say plainly that a second opinion is a normal part of cancer care, not something you need to feel awkward about.\n\nIf you'd like to think it through, an oncology nurse can talk with you about what the process looks like.` }
+    return { kind:'hardstop', cluster:'secondopinion', nurse:true, text:`Wanting another perspective doesn't mean anything is wrong — it's a common, completely reasonable thing to consider, and good care teams expect it.\n\nWhether to seek one in your situation depends on details of your case I shouldn't weigh in on. But I can say plainly that a second opinion is a normal part of cancer care, not something you need to feel awkward about.\n\nIf you'd like to think it through, our clinical team can tell you what the process looks like.` }
   }
 
   // ── DIRECT NURSE REQUEST — surface the handoff CTA inline (not a hard stop) ──
   if (has(/\bnurse\b|chat with (a )?(nurse|someone|human)|(talk|speak) (to|with) (a )?(nurse|someone|human|real person|person)|human (agent|support)|real person/)) {
-    return { kind:'answer', text:`Sure — you can talk with an oncology nurse right now. They can help with anything I'm not able to.`, nurse:true }
+    return { kind:'answer', text:`You can send your question to our clinical team, and they'll get back to you.`, nurse:true, askPrefill:false }
   }
 
   // ── CAPTURE (first-person statements) — offer to save before answering ──
@@ -6100,7 +6879,9 @@ const routeChat = (raw, ctx) => {
     return { kind:'answer', text:`Noted — I can keep that in mind for future chats if you add it to your plan.`, capture:{ log:'care plan' } }
   }
   if (!has(/side ?effect|should i/) && has(/\bi(?:'ve| have| ve)?\b.*(headache|nausea|vomit|rash|dizz|fever|diarrh|constipat|\bpain\b|ache|bleeding|swelling|numb|tingl|short(ness)? of breath|cough)/)) {
-    return { kind:'answer', text:`That sounds uncomfortable — worth keeping an eye on, and telling your care team if it persists or worsens.`, capture:{ log:'symptom log' } }
+    const symMap = [[/headache/, 'Headache'], [/nausea/, 'Nausea'], [/vomit/, 'Vomiting'], [/rash/, 'Rash'], [/dizz/, 'Dizziness'], [/fever/, 'Fever'], [/diarrh/, 'Diarrhea'], [/constipat/, 'Constipation'], [/short(ness)? of breath/, 'Shortness of breath'], [/cough/, 'Cough'], [/swelling/, 'Swelling'], [/numb|tingl/, 'Numbness or tingling'], [/back pain/, 'Back pain'], [/chest pain/, 'Chest pain'], [/\bpain\b|ache/, 'Pain']]
+    const hit = symMap.find(([re]) => has(re))
+    return { kind:'answer', text:`That sounds uncomfortable. It's worth keeping an eye on, and telling your care team if it persists or worsens.`, capture:{ type:'symptom', log:'symptom log', prefill:{ name: hit ? hit[1] : null, note: (raw || '').trim() } } }
   }
   if (has(/\bher2\b|\bbrca\b|my (biomarker|mutation|marker) (is|was)|i also have (diabet|hypertens|high blood|copd|asthma|kidney disease|heart)|i'?m (also )?diabetic/)) {
     return { kind:'answer', text:`Thanks — details like that help complete your profile so answers are more specific to you.`, capture:{ log:'profile' } }
@@ -6143,19 +6924,20 @@ const routeChat = (raw, ctx) => {
   if (has(/nephrectomy|laparoscopic|robotic|open surgery|surgery (recovery|approach)|recovery (after|from) surgery|partial (vs|versus) radical/)) {
     return { kind:'answer', text:`In general terms: a partial nephrectomy removes just the tumor and spares the rest of the kidney; a radical removes the whole kidney. Robotic and laparoscopic approaches are both minimally invasive — usually smaller incisions and a shorter recovery than open surgery. Which is appropriate depends on the tumor and your anatomy, so that call is your surgeon's.`, source:'NCCN Guidelines — Kidney Cancer' }
   }
-  if (has(/what does nccn|nccn (say|recommend|guideline)|what are (my|the) (options|guidelines)|options for (my )?(treatment|stage|rcc|kidney)|surveillance (vs|versus) adjuvant/)) {
+  if (has(/what does nccn|nccn (say|recommend|guideline)|what are (my|the) (options|guidelines)|guidelines? say|options for (my )?(treatment|stage|rcc|kidney)|surveillance (vs|versus) adjuvant/)) {
     return { kind:'answer', text:`For ${ctx.stageLabel} clear cell kidney cancer, NCCN generally describes surgery followed by either active surveillance or, for higher-risk cases, adjuvant therapy. I'm describing the guideline in general — which path fits you is your oncologist's call with your full pathology.`, source:'NCCN Guidelines — Kidney Cancer' }
   }
   if (has(/clear cell|what is rcc|what('?s| is) (kidney cancer|rcc)|what does (clear cell|my diagnosis|rcc|pt1b|pt1|grade) mean|what('?s| is) (a |my )?(grade|stage)\b|stage mean|pt1b/)) {
     return { kind:'answer', text:`In general terms: "clear cell" is the most common type of kidney cancer cell under the microscope, "stage" describes how far it has spread, and a code like "pT1b" describes the tumor's size and how localized it was. ${ctx.stageLabel} means it was found early and localized. I'm describing these generally — for what they mean in your specific case, your care team is the best source.`, source:'NCCN Guidelines — Kidney Cancer' }
   }
-  if (has(/other (patients|people)|anyone else|what did (others|people)|hair loss|peer|community|support group|others going through/)) {
-    return { kind:'answer', text:`That's the kind of thing other patients often have real, lived-experience answers for — people who've been through similar treatment tend to share what actually helped. Worth hearing those alongside anything clinical.` }
+  if (has(/other (patients|people)|anyone else|what did (others|people)|hair loss|peer|community|support group|others going through|have others|others (found|do|did)/)) {
+    return { kind:'answer', text:`That's the kind of thing other patients often have real, lived-experience answers for — people who've been through similar treatment tend to share what actually helped. Worth hearing those alongside anything clinical.` , connect:{ label:'Go to Community', target:'community' }}
   }
 
-  // Emotional difficulty (not a crisis) — warm support, normal flow, nurse offered
+  // Emotional difficulty (not a crisis): warm support, normal flow. Ask O4M is a last resort (a hard stop,
+  // or a request for a person), so it isn't offered here.
   if (has(/this is (so|really) hard|i'?m (so )?scared|i'?m (so )?(overwhelmed|exhausted|frightened|anxious|terrified)|i can'?t cope|struggling emotionally|feel(ing)? (so )?alone/)) {
-    return { kind:'answer', text:`That sounds really heavy — it's completely understandable to feel this way going through treatment, and you don't have to carry it alone. If it would help to talk it through, you can reach an oncology nurse, and a lot of people find support from others going through the same thing in the community.`, nurse:true }
+    return { kind:'answer', text:`That sounds really heavy. It's completely understandable to feel this way going through treatment, and you don't have to carry it alone. A lot of people find support from others going through the same thing.`, connect:{ label:'Go to Community', target:'community' } }
   }
 
   // FALLBACK
@@ -6193,73 +6975,100 @@ const chatTopic = (raw) => {
 const ChatSource = ({ label }) => (
   <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 8 }}>
     <span className="material-symbols-rounded" style={{ fontSize: 13, color: C.textTertiary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>verified</span>
-    <span style={{ fontSize: 11.5, color: C.textTertiary, fontWeight: 500 }}>{label}</span>
+    <span style={{ fontSize: 12, lineHeight: '16px', color: C.textTertiary, fontWeight: 400 }}>{label}</span>
   </div>
 )
 
 // Tappable deep link — neutral gray outline, dark text (keeps orange for the chat itself)
+// History row date: when the conversation's last message was sent or received (opening or reading
+// doesn't change it). "Today", "Yesterday", "Oct 22" this year, "Oct 22, 2025" in earlier years.
+const chatRowDate = (d) => {
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  const now = new Date(); const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const diff = Math.round((today - day) / 86400000)
+  if (diff === 0) return 'Today'
+  if (diff === 1) return 'Yesterday'
+  return d.toLocaleDateString('en-US', d.getFullYear() === now.getFullYear() ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' })
+}
 const ChatDeepLink = ({ label, target, onDeepLink }) => (
-  <button onClick={() => onDeepLink(target)} style={{ display: 'flex', alignItems: 'center', gap: 8, width: 'fit-content', maxWidth: '100%', padding: '10px 13px', backgroundColor: 'transparent', color: C.textPrimary, border: `1px solid ${C.borderMid}`, borderRadius: 10, fontSize: 13.5, fontWeight: 600, cursor: 'pointer', textAlign: 'left' }}>
+  // A link into the app from an answer: chat's secondary (gray fill, dark blue label and arrow), 36,
+  // pill (it's sized to its label). In chat, light orange belongs to your bubbles only.
+  <button onClick={() => onDeepLink(target)} style={{ display: 'flex', alignItems: 'center', gap: 8, width: 'fit-content', maxWidth: '100%', padding: '10px 16px', boxSizing: 'border-box', minHeight: 36, backgroundColor: C.bgApp, color: C.primary, border: 'none', borderRadius: 9999, fontSize: 14, lineHeight: '16px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
     <span>{label}</span>
-    <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textSecondary, fontVariationSettings: "'wght' 500" }}>arrow_forward</span>
+    <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.primary, fontVariationSettings: "'wght' 500" }}>arrow_forward</span>
   </button>
 )
 
 // Priority handoff — same bordered-block CTA shape as capture, but emphasized (light-orange
 // background, orange border, orange button) since it's the highest-stakes action in chat.
-const ChatNurseCTA = ({ onDeepLink }) => (
-  <div style={{ border: `1px solid ${C.primary}`, borderRadius: 12, padding: '12px 14px' }}>
-    <div style={{ fontSize: 14.5, color: C.textPrimary, marginBottom: 10, lineHeight: 1.45 }}>Talk it through with an oncology nurse — they can help right now.</div>
-    <button onClick={() => onDeepLink('nurse')} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '8px 14px', borderRadius: 9, border: 'none', backgroundColor: C.primary, color: 'white', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-      <span className="material-symbols-rounded" style={{ fontSize: 18, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>stethoscope</span>
-      Chat with a nurse
-    </button>
-  </div>
-)
 
 // Crisis / emergency treatment — its own serious register, deliberately NOT the CTA palette
 // (no brand orange, no red). Calm, resources-first, non-dismissible. (CHAT-13)
-const ChatCrisis = ({ resp, onDeepLink }) => {
-  const emergency = resp.tier === 'emergency'
+// Crisis and emergency response. Calm look (no brand orange, no red): chat's actions are dark blue
+// (primary: dark blue fill; secondary: gray fill, dark blue label). Safety actions are never small:
+// 44, Label medium. The prototype can't call or text, so a tap explains what happens in the app.
+const CHAT_DARK = '#162937'
+const ChatCrisis = ({ resp }) => {
+  // Emergency and crisis responses: chat's message in plain text, then one outlined card: a small icon and
+  // the title, a one-line description, the buttons (44, Label medium, labels only; the first is the dark
+  // blue primary, the rest gray secondaries), then a footnote. No brand orange. The prototype can't call
+  // or text, so a tap explains what happens in the app.
+  const [tapped, setTapped] = useState(null)
   return (
-    <div style={{ borderRadius: 12, padding: '14px 16px', backgroundColor: C.bgApp }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textPrimary, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>{emergency ? 'emergency' : 'volunteer_activism'}</span>
-        <div style={{ fontSize: 12.5, fontWeight: 700, color: C.textPrimary, letterSpacing: '0.03em', textTransform: 'uppercase' }}>{emergency ? 'Get help now' : 'You’re not alone'}</div>
-      </div>
-      <div style={{ fontSize: 14.5, color: C.textPrimary, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{resp.text}</div>
-      {!resp._streaming && resp.resources && (
-        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {resp.resources.map((r, i) => {
-            const inner = (
-              <>
-                <span className="material-symbols-rounded" style={{ fontSize: 20, color: C.textPrimary }}>{r.icon}</span>
-                <div style={{ flex: 1, textAlign: 'left' }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary }}>{r.label}</div>
-                  <div style={{ fontSize: 12, color: C.textSecondary }}>{r.sub}</div>
-                </div>
-                {r.target && <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textSecondary }}>chevron_right</span>}
-              </>
-            )
-            const style = { display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '11px 13px', backgroundColor: C.bgCard, border: 'none', borderRadius: 10 }
-            return r.target
-              ? <button key={i} onClick={() => onDeepLink(r.target)} style={{ ...style, cursor: 'pointer' }}>{inner}</button>
-              : <div key={i} style={style}>{inner}</div>
-          })}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ fontSize: 16, color: C.textPrimary, lineHeight: '24px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{resp.text}</div>
+      {!resp._streaming && (resp.resources || []).map((r, i) => (
+        <div key={i} style={{ borderRadius: 12, padding: 15, border: '1px solid rgba(0,0,0,0.12)', backgroundColor: C.bgCard }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span className="material-symbols-rounded" style={{ fontSize: 22, color: r.iconColor, fontVariationSettings: "'FILL' 0, 'wght' 500" }}>{r.icon}</span>
+            <div style={{ fontSize: 16, lineHeight: '24px', fontWeight: 600, color: C.textPrimary }}>{r.name}</div>
+          </div>
+          <div style={{ fontSize: 14, lineHeight: '20px', color: C.textSecondary, marginTop: 4 }}>{r.sub}</div>
+          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {(r.rows || []).map((row, ri) => (
+              <div key={ri} style={{ display: 'flex', gap: 8 }}>
+                {row.map((a, k) => {
+                  const primary = a.kind === 'primary'
+                  return (
+                    <button key={k} onClick={() => setTapped(i + '|' + a.does)} style={{ flex: 1, height: 44, boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 16px', borderRadius: 9999, border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 16, lineHeight: '20px', fontWeight: 600, backgroundColor: primary ? CHAT_DARK : C.bgApp, color: primary ? '#fff' : CHAT_DARK }}>{a.label}</button>
+                  )
+                })}
+              </div>
+            ))}
+          </div>
+          {r.foot && <div style={{ marginTop: 8, fontSize: 12, lineHeight: '16px', color: C.textSecondary }}>{r.foot}</div>}
+          {tapped && tapped.startsWith(i + '|') && <div style={{ marginTop: 8, fontSize: 12, lineHeight: '16px', color: C.textSecondary }}>In the app, this opens your phone to {tapped.split('|')[1]}. Nothing is sent or dialed in this prototype.</div>}
         </div>
-      )}
+      ))}
     </div>
   )
 }
 
-// Persistent, subtle care-team prompt on clinically adjacent answers
-const ChatCareTeam = ({ providerName, onDeepLink }) => (
-  <button onClick={() => onDeepLink('profile')} style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '10px 12px', backgroundColor: 'transparent', border: `1px dashed ${C.borderMid}`, borderRadius: 10, cursor: 'pointer', textAlign: 'left' }}>
-    <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.textSecondary, fontVariationSettings: "'wght' 400" }}>groups</span>
-    <span style={{ fontSize: 12.5, color: C.textSecondary, flex: 1 }}>Have a question for your care team? Reach {shortProvider(providerName)}.</span>
-    <span style={{ color: C.textTertiary }}><Ico.chevRight/></span>
-  </button>
-)
+// Care team prompt on clinically related answers (the ones with a source). We don't have the care
+// team's contact details, so it uses the phone's share sheet, like the app's AI agents: the doctor's
+// name and their question are filled in, and the person picks how to send it (or copies it).
+const ChatCareTeam = ({ providerName, question }) => {
+  // A short follow-up message from chat that says why, then the button (the same pattern as "Go to Community").
+  // Shown once per conversation, after the first clinically related answer, so it stays available without repeating.
+  const [copied, setCopied] = useState(false)
+  const doc = providerName ? shortProvider(providerName) : ''
+  const text = `${doc ? `Hi ${doc}, I` : 'I'} have a question${question ? `: "${question}"` : '.'}`
+  const share = async () => {
+    try { if (navigator.share) { await navigator.share({ title: 'A question for my care team', text }); return } } catch (e) { return }
+    try { await navigator.clipboard.writeText(text) } catch (e) {}
+    setCopied(true)
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ fontSize: 16, lineHeight: '24px', color: C.textPrimary }}>{doc ? `If you'd like to ask ${doc} about this, you can share your question with them.` : `If you'd like to ask your care team about this, you can share your question with them.`}</div>
+      <button onClick={share} style={{ display: 'flex', alignItems: 'center', gap: 8, width: 'fit-content', padding: '10px 16px', minHeight: 36, boxSizing: 'border-box', backgroundColor: C.bgApp, color: C.primary, border: 'none', borderRadius: 9999, fontSize: 14, lineHeight: '16px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+        <span>Share with your care team</span>
+        <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.primary, fontVariationSettings: "'wght' 500" }}>ios_share</span>
+      </button>
+      {copied && <div style={{ fontSize: 12, lineHeight: '16px', color: C.textSecondary }}>Copied{doc ? `. Paste it into a message to ${doc}` : '. Paste it into a message to your care team'}. (On a phone, this opens the share sheet.)</div>}
+    </div>
+  )
+}
 
 // Inline capture prompt — lightweight in-chat save (P0 stand-in; P1 is slide-up-and-return)
 // In-chat offer block: question + single positive button. Nothing changes until the
@@ -6290,78 +7099,111 @@ const ChatCapture = ({ capture, onCapture, msgIndex }) => {
   )
 }
 
-const ChatUserBubble = ({ text }) => (
-  <div style={{ alignSelf: 'flex-end', maxWidth: '82%', backgroundColor: C.primaryLight, color: C.textPrimary, padding: '10px 14px', borderRadius: '16px 16px 4px 16px', fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{text}</div>
+// Day separator when the date changes (and above the first message of an older chat); time
+// separator after a pause of more than an hour. No per-message timestamps.
+const chatSeparator = (prev, m) => {
+  if (!m || !m.ts) return null
+  const d = new Date(m.ts), sameDay = (x, y) => x.toDateString() === y.toDateString()
+  const dayLabel = (x) => {
+    const today = new Date(), y = new Date(); y.setDate(today.getDate() - 1)
+    if (sameDay(x, today)) return 'Today'
+    if (sameDay(x, y)) return 'Yesterday'
+    return x.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  }
+  if (!prev || !prev.ts) return sameDay(d, new Date()) ? null : dayLabel(d)
+  const pd = new Date(prev.ts)
+  if (!sameDay(pd, d)) return dayLabel(d)
+  if (m.ts - prev.ts > 60 * 60 * 1000) return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  return null
+}
+
+// Your messages: ORANGE_25, dark text, 12/16 padding, 16 corners; only the last bubble in a run
+// of your messages gets the 4 "tail" corner. Max 82% of the conversation column.
+const ChatUserBubble = ({ text, last = true }) => (
+  <div style={{ alignSelf: 'flex-end', maxWidth: '82%', backgroundColor: C.primaryLight, color: C.textPrimary, padding: '12px 16px', borderRadius: last ? '16px 16px 4px 16px' : 16, fontSize: 16, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{text}</div>
 )
 
 // Thinking indicator — the 3-star sparkle, pulsing, before a reply lands
 const ChatTyping = () => (
   <div style={{ alignSelf: 'flex-start', padding: '2px 2px' }}>
-    <span className="material-symbols-rounded" style={{ display: 'inline-block', fontSize: 22, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400", transformOrigin: 'center', animation: 'chatSpark 1.1s ease-in-out infinite' }}>auto_awesome</span>
+    <span className="material-symbols-rounded" style={{ display: 'inline-block', fontSize: 22, ...AI_ICON, fontVariationSettings: "'FILL' 1, 'wght' 400", transformOrigin: 'center', animation: 'chatSpark 1.1s ease-in-out infinite' }}>auto_awesome</span>
   </div>
 )
 
 // Same pulse, but labelled — shown while a question is pending in the dock and the composer is locked.
 const ChatWaiting = () => (
   <div style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 8, padding: '2px 2px' }}>
-    <span className="material-symbols-rounded" style={{ display: 'inline-block', fontSize: 22, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400", transformOrigin: 'center', animation: 'chatSpark 1.1s ease-in-out infinite' }}>auto_awesome</span>
+    <span className="material-symbols-rounded" style={{ display: 'inline-block', fontSize: 22, ...AI_ICON, fontVariationSettings: "'FILL' 1, 'wght' 400", transformOrigin: 'center', animation: 'chatSpark 1.1s ease-in-out infinite' }}>auto_awesome</span>
     <span style={{ fontSize: 13.5, color: C.textSecondary }}>Waiting for your response</span>
   </div>
 )
 
 // Question dock — pinned above the composer. The user must resolve it (pick an option or Skip) before
 // the composer re-enables; consecutive questions step through a pager. Replaces inline offer blocks.
-const ChatQuestionDock = ({ q, onAnswer, onSkip }) => (
-  <div style={{ border: `1px solid ${C.borderMid}`, borderRadius: 16, backgroundColor: C.bgCard, boxShadow: '0 1px 3px rgba(0,0,0,0.06), 0 6px 16px rgba(0,0,0,0.07)', padding: '14px 8px 8px', marginBottom: 8 }}>
-    <div style={{ padding: '0 10px', marginBottom: 10 }}>
-      <div style={{ fontSize: 14.5, fontWeight: 600, color: C.textPrimary, lineHeight: 1.4 }}>{q.prompt}</div>
-    </div>
-    {q.options.map((opt, i) => (
-      <button key={i} className="chatRow" onClick={() => onAnswer(opt)} style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 12, padding: '11px 10px', border: 'none', borderRadius: 12, cursor: 'pointer' }}>
-        <span style={{ width: 22, height: 22, borderRadius: 6, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: C.textSecondary, flexShrink: 0 }}>{i + 1}</span>
-        <span style={{ flex: 1, fontSize: 14.5, color: C.textPrimary, fontWeight: 500 }}>{opt.label}</span>
-      </button>
-    ))}
-    {q.skip && (
-      <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 4, paddingTop: 6, display: 'flex', justifyContent: 'flex-end' }}>
-        <button onClick={onSkip} style={{ padding: '8px 16px', border: `1px solid ${C.border}`, borderRadius: 10, backgroundColor: 'transparent', fontSize: 13.5, fontWeight: 600, color: C.textSecondary, cursor: 'pointer' }}>Skip</button>
+// Question box: chat asks, the person answers. The answers are the option card's compact variant
+// (numbered instead of a radio): white with a BLACK_12 border at rest; when chosen, ORANGE_25 with an
+// orange border (the option card's selected state), then it sends. One choice at a time, like
+// onboarding. Skip / Not now is the tertiary button. Only the docked container is chat's own.
+const ChatQuestionDock = ({ q, onAnswer, onSkip }) => {
+  const [chosen, setChosen] = useState(null)
+  const choose = (opt, i) => {
+    if (chosen !== null) return
+    setChosen(i)
+    setTimeout(() => (opt._decline ? onSkip() : onAnswer(opt)), 180)
+  }
+  return (
+    <div style={{ border: '1px solid rgba(0,0,0,0.12)', borderRadius: 16, backgroundColor: C.bgCard, boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', padding: 15, marginBottom: 12 }}>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 16, fontWeight: 600, color: C.textPrimary, lineHeight: '24px' }}>{q.prompt}</div>
       </div>
-    )}
-  </div>
-)
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {[...q.options, ...(q.skip ? [{ label: q.skipLabel || 'Not now', _decline: true }] : [])].map((opt, i) => {
+          const on = chosen === i
+          return (
+            <button key={i} onClick={() => choose(opt, i)} aria-pressed={on} style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 12, padding: on ? '10.5px 11.5px' : '11px 12px', boxSizing: 'border-box', minHeight: 48, border: on ? `1.5px solid ${C.primary}` : '1px solid rgba(0,0,0,0.12)', borderRadius: 12, backgroundColor: on ? C.primaryLight : C.bgCard, cursor: chosen === null ? 'pointer' : 'default', fontFamily: 'inherit', transition: 'background-color 0.12s ease' }}>
+              <span style={{ width: 24, height: 24, borderRadius: 4, backgroundColor: on ? C.primary : C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 600, color: on ? '#fff' : C.textSecondary, flexShrink: 0, transition: 'background-color 0.12s ease' }}>{i + 1}</span>
+              <span style={{ flex: 1, fontSize: 16, lineHeight: '24px', color: C.textPrimary, fontWeight: 400 }}>{opt.label}</span>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
-const ChatAiBubble = ({ resp, providerName, onDeepLink, onCapture, msgIndex }) => {
+const ChatAiBubble = ({ resp, providerName, onDeepLink, onCapture, msgIndex, question, careTeam }) => {
   const isHardstop = resp.kind === 'hardstop'
   if (resp.kind === 'crisis') {
     return <div style={{ alignSelf: 'stretch' }}><ChatCrisis resp={resp} onDeepLink={onDeepLink}/></div>
   }
   return (
-    <div style={{ alignSelf: 'stretch', display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ fontSize: 14.5, color: C.textPrimary, lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-        {resp.text}
+    <div style={{ alignSelf: 'stretch', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ fontSize: 16, color: C.textPrimary, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+        {String(resp.text || '').split(/\n\n+/).map((para, pi) => <div key={pi} style={{ marginTop: pi ? 12 : 0 }}>{para}</div>)}
         {resp.source && !resp._streaming && <ChatSource label={resp.source}/>}
       </div>
-      {!resp._streaming && (resp.connect || resp.nurse) && (
+      {!resp._streaming && resp.connect && resp.kind !== 'insufficient' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {resp.connect && <ChatDeepLink {...resp.connect} onDeepLink={onDeepLink}/>}
-          {resp.nurse && <ChatNurseCTA onDeepLink={onDeepLink}/>}
         </div>
       )}
+      {!resp._streaming && careTeam && <div style={{ marginTop: 4 }}><ChatCareTeam providerName={providerName} question={question}/></div>}
     </div>
   )
 }
 
 // Starter-view legal footer — sourcing language per PRD §8 / Overview
 const ChatLegal = ({ compact }) => (
-  <div style={{ fontSize: 11.5, color: C.textTertiary, lineHeight: 1.5, textAlign: 'center', padding: compact ? '8px 8px 2px' : '18px 8px 6px' }}>
+  <div style={{ fontSize: 12, color: C.textTertiary, lineHeight: '16px', textAlign: 'left', padding: compact ? '0' : '18px 0 6px' }}>
     Chat is AI and can make mistakes. Always confirm care decisions with your care team.
   </div>
 )
 
 // Composer — send button inside the field, taller than a prompt chip
-const ChatComposer = ({ value, onChange, onSend, generating, disabled, disabledText }) => {
+const ChatComposer = ({ value, onChange, onSend, generating, disabled, disabledText, onFocusChange }) => {
   const canSend = value.trim() && !generating && !disabled
   const taRef = useRef(null)
+  const [focused, setFocused] = useState(false)
   const MAX_H = 150
   // Grow the field to fit its content up to MAX_H, then scroll inside. Runs on every value
   // change so it grows as you type and shrinks back when text is cleared/sent.
@@ -6369,14 +7211,16 @@ const ChatComposer = ({ value, onChange, onSend, generating, disabled, disabledT
     const el = taRef.current
     if (!el) return
     el.style.height = 'auto'
-    const h = Math.min(el.scrollHeight, MAX_H)
+    // Grow in whole 24-pt lines (15 + 24 per line + 15), so one line is exactly 54 (+2 border = 56).
+    const lines = Math.max(1, Math.round((el.scrollHeight - 30) / 24))
+    const h = Math.min(30 + lines * 24, MAX_H)
     el.style.height = h + 'px'
     el.style.overflowY = el.scrollHeight > MAX_H ? 'auto' : 'hidden'
   }, [value])
   return (
-    <div style={{ position: 'relative', backgroundColor: C.bgCard, border: `1px solid ${C.borderMid}`, borderRadius: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.05)', opacity: disabled ? 0.55 : 1 }}>
-      <textarea ref={taRef} value={value} onChange={e => onChange(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (canSend) onSend() } }} rows={1} disabled={disabled} placeholder={disabled ? (disabledText || 'Start a new chat to continue') : 'How can I help you today?'} style={{ width: '100%', boxSizing: 'border-box', minHeight: 58, maxHeight: MAX_H, resize: 'none', border: 'none', outline: 'none', background: 'transparent', padding: '16px 54px 16px 16px', fontSize: 15, lineHeight: 1.45, fontFamily: 'inherit', color: C.textPrimary, overflowY: 'hidden', cursor: disabled ? 'default' : 'text' }}/>
-      <button onClick={() => canSend && onSend()} disabled={!canSend} aria-label="Send" style={{ position: 'absolute', right: 9, bottom: 9, width: 38, height: 38, borderRadius: 19, border: 'none', backgroundColor: canSend ? C.primary : C.border, cursor: canSend ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background-color 0.15s' }}>
+    <div style={{ position: 'relative', backgroundColor: C.bgCard, border: '1px solid rgba(0,0,0,0.12)', borderRadius: 28, boxShadow: focused && !disabled ? '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)' : 'none', transition: 'box-shadow 0.18s ease', opacity: disabled ? 0.38 : 1 }}>
+      <textarea ref={taRef} value={value} onFocus={() => { setFocused(true); onFocusChange && onFocusChange(true) }} onBlur={() => { setFocused(false); onFocusChange && onFocusChange(false) }} onChange={e => onChange(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (canSend) onSend() } }} rows={1} disabled={disabled} placeholder={disabled ? (disabledText || 'Start a new chat to continue') : 'Write a message…'} style={{ display: 'block', width: '100%', boxSizing: 'border-box', minHeight: 54, maxHeight: MAX_H, resize: 'none', border: 'none', outline: 'none', background: 'transparent', padding: '15px 54px 15px 16px', fontSize: 16, lineHeight: '24px', fontFamily: 'inherit', color: C.textPrimary, overflowY: 'hidden', cursor: disabled ? 'default' : 'text' }}/>
+      <button onClick={() => canSend && onSend()} disabled={!canSend} aria-label="Send" style={{ position: 'absolute', right: 9, bottom: 9, width: 36, height: 36, borderRadius: 18, border: 'none', backgroundColor: canSend ? C.primary : '#E4E4E4', cursor: canSend ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background-color 0.15s' }}>
         <span className="material-symbols-rounded" style={{ fontSize: 20, color: 'white', fontVariationSettings: "'FILL' 1, 'wght' 500" }}>arrow_upward</span>
       </button>
     </div>
@@ -6386,7 +7230,7 @@ const ChatComposer = ({ value, onChange, onSend, generating, disabled, disabledT
 const ChatPrompts = ({ suggestions, onPick }) => (
   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
     {suggestions.map((q, i) => (
-      <button key={i} onClick={() => onPick(q)} style={{ width: '100%', textAlign: 'left', padding: '13px 14px', backgroundColor: C.bgApp, border: 'none', borderRadius: 12, fontSize: 13.5, color: C.textPrimary, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+      <button key={i} onClick={() => onPick(q)} style={{ width: '100%', textAlign: 'left', padding: '12px 16px', backgroundColor: C.bgApp, border: 'none', borderRadius: 8, fontSize: 14, lineHeight: '20px', color: C.textPrimary, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
         <span>{q}</span>
         <span style={{ flexShrink: 0 }}><Ico.chevRight/></span>
       </button>
@@ -6397,7 +7241,8 @@ const ChatPrompts = ({ suggestions, onPick }) => (
 // A single conversation. Shows greeting + composer + prompts when empty; message
 // thread + composer once it has messages. Used inside the new-chat modal and the
 // in-tab drilled session. Persists via onMessagesChange.
-const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, suggestions, onDeepLink, onMessagesChange, threadId, onCapture, inject, onInjected, onNewChat }) => {
+const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, suggestions, onDeepLink, onMessagesChange, threadId, onCapture, inject, onInjected, onNewChat, onAskClinical }) => {
+  const [landingFocused, setLandingFocused] = useState(false)   // landing: prompts hide while the composer is focused
   const [messages, setMessages] = useState(initialMessages || [])
   const [input, setInput] = useState(() => getChatDraft(threadId))  // restore unsent draft for this chat
   useEffect(() => { saveChatDraft(threadId, input) }, [input, threadId])  // persist per conversation; cleared on send (input → '')
@@ -6420,7 +7265,7 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
   const stepChain = () => {
     const next = pendingCaptures.current[0]
     if (!next) return
-    setActiveQ({ id: 'q' + (qSeq.current++), prompt: `Next — want me to add ${next.prefill.name}?`, options: [{ label: `Add ${next.prefill.name}`, kind: 'chain', caps: [next] }], skip: true, chain: true })
+    setActiveQ({ id: 'q' + (qSeq.current++), prompt: `Next, want me to add ${next.prefill.name}?`, options: [{ label: `Add ${next.prefill.name}`, kind: 'chain', caps: [next] }], skip: true, chain: true })
   }
   const enqueueCapture = (cap) => {
     let q = null
@@ -6436,20 +7281,59 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
         : `Keeping your medication list current helps me give better answers. Want me to add ${cap.meds[0]} to your medications?`
       q = { id: 'q' + (qSeq.current++), prompt, options, skip: true }
     } else if (cap.log) {
-      q = { id: 'q' + (qSeq.current++), prompt: `Want me to add this to your ${cap.log}?`, options: [{ label: 'Add it', kind: 'note' }], skip: true }
+      q = cap.type === 'symptom'
+        ? { id: 'q' + (qSeq.current++), prompt: `Want me to add this to your ${cap.log}?`, options: [{ label: 'Add it', kind: 'capture', caps: [{ type: 'symptom', prefill: cap.prefill }] }], skip: true }
+        : { id: 'q' + (qSeq.current++), prompt: `Want me to add this to your ${cap.log}?`, options: [{ label: 'Add it', kind: 'note' }], skip: true }
     }
     if (q) setActiveQ(q)
   }
+  // Clinical team handoff: chat asks, and "Yes, send it" opens the existing Ask O4M form with the
+  // question filled in. Chat does nothing more (it doesn't send, track or show replies).
+  const enqueueAsk = (resp) => {
+    const question = resp.askPrefill === false ? '' : (resp._q || '')
+    setActiveQ({ id: 'q' + (qSeq.current++), prompt: 'Would you like to send this question to our clinical team?', options: [{ label: 'Yes, send it', kind: 'ask', question }], skip: true, skipLabel: 'Not now', ask: true })
+  }
+  // Not enough data: a required question (no skip). The composer stays locked until they choose.
+  // Without the information, chat holds back that answer; asking again brings the question back.
+  const enqueueNeed = (resp) => {
+    // Every answer, including the "no", reads as a direct reply to the question.
+    const a = resp.scenario === 'A'
+    setActiveQ({ id: 'q' + (qSeq.current++),
+      prompt: a ? 'To answer this, I need your health records. Want to connect them?' : "I need a detail your records don't have. Can you tell me, or connect where it's held?",
+      options: a ? [{ label: 'Connect my records', kind: 'need', act: 'connect' }, { label: "I'd rather not", kind: 'need', act: 'decline' }]
+                 : [{ label: 'Tell you myself', kind: 'need', act: 'self' }, { label: 'Connect another portal', kind: 'need', act: 'portal' }, { label: "I don't know", kind: 'need', act: 'decline' }, { label: "I'd rather not", kind: 'need', act: 'decline' }],
+      skip: false })
+  }
   const openCap = (c, label) => { if (c && onCapture) onCapture({ type: c.type, prefill: c.prefill, threadId, answer: label }) }
   const answerQ = (opt) => {
-    setMessages(prev => [...prev, { role: 'user', text: opt.label }])
+    setMessages(prev => [...prev, { role: 'user', text: opt.label, ts: Date.now() }])
     setActiveQ(null)
+    if (opt.kind === 'ask') { if (onAskClinical) onAskClinical(opt.question || ''); return }
+    if (opt.kind === 'reanswer') { generateReply(opt.question); return }   // records are in: answer the original question
+    if (opt.kind === 'need') {
+      if (opt.act === 'connect') {
+        onDeepLink('connect-records')
+        // When records are ready, chat offers to answer the original question with one tap (never automatically).
+        // The prototype simulates retrieval and processing with a short wait.
+        const origQ = (messages.slice().reverse().find(m => m.role === 'user') || {}).text || ''
+        if (origQ) setTimeout(() => setActiveQ(cur => cur ? cur : { id: 'q' + (qSeq.current++), prompt: `Your records are in. Want me to answer “${origQ}” now?`, options: [{ label: 'Yes, answer it', kind: 'reanswer', question: origQ }], skip: true, notNowText: `No problem. Just ask whenever you're ready.` }), 7000)
+      }
+      if (opt.act === 'portal') onDeepLink('add-portal')
+      const text = opt.act === 'connect' ? `Thanks. Your records are on their way. Once they're in, I'll offer to answer this.`
+        : opt.act === 'portal' ? `Thanks. Once those records are in, ask me again and I'll take another look.`
+        : opt.act === 'self' ? `Okay, tell me in your own words. I'll save it as something you told me, not something from your records.`
+        : `That's okay. I can't answer this one well without it, so I'll hold off. I'm happy to help with anything else.`
+      setGenerating(true)
+      if (timerRef.current) clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => { setGenerating(false); deliver({ kind: 'answer', text }) }, 650 + Math.random() * 300)
+      return
+    }
     if (opt.kind === 'capture') {
       // From the initial question. Launch the first med's flow right away (a single "Add X", or the first of
       // "Add all" — they just committed). Any remaining meds are confirmed one at a time via the chain.
       pendingCaptures.current = (opt.caps || []).slice()
       const first = pendingCaptures.current.shift()
-      openCap(first, first ? `Add ${first.prefill.name}` : opt.label)
+      openCap(first, first && first.prefill && first.prefill.name && first.type !== 'symptom' ? `Add ${first.prefill.name}` : opt.label)
     } else if (opt.kind === 'chain') {
       // A step in the "Add both" walk-through: consume this med and open its flow. The next step fires after its save ack.
       pendingCaptures.current.shift()
@@ -6462,12 +7346,13 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
   }
   const skipQ = () => {
     const q = activeQ
-    // Skip is a soft "not now," not a permanent decline — tell them how to add it later: re-state "I started X".
+    // "Not now" is a soft no, not a permanent decline — tell them how to add it later: re-state "I started X".
     const meds = q ? [...new Set((q.options || []).flatMap(o => (o.caps || []).map(c => c.prefill && c.prefill.name).filter(Boolean)))] : []
-    const text = meds.length === 1 ? `No problem. If you'd like to add it later, just tell me you started ${meds[0]}.`
+    const text = (q && q.notNowText) ? q.notNowText : (q && q.ask) ? `No problem. You can always send it later.` : meds.length === 1 ? `No problem. If you'd like to add it later, just tell me you started ${meds[0]}.`
       : meds.length > 1 ? `No problem. If you'd like to add any of them later, just let me know you started it.`
       : `No problem.`
-    setActiveQ(null)   // no "Not now" user bubble — a skip is a tap, not a typed message
+    setMessages(prev => [...prev, { role: 'user', text: (q && q.skipLabel) || 'Not now', ts: Date.now() }])   // declining is an answer
+    setActiveQ(null)
     const chained = q && q.chain
     if (chained) pendingCaptures.current.shift()   // skip this step; the next med still gets asked below
     setGenerating(true)
@@ -6486,7 +7371,7 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
     if (!(resp.text || '').trim() && resp.capture) { enqueueCapture(resp.capture); return }
     const tokens = (resp.text || '').split(/(\s+)/)  // words + whitespace preserved
     streamingRef.current = true
-    setMessages(prev => [...prev, { role: 'ai', resp: { ...resp, text: '', _streaming: true } }])
+    setMessages(prev => [...prev, { role: 'ai', ts: Date.now(), resp: { ...resp, text: '', _streaming: true } }])
     let i = 0
     if (streamTimerRef.current) clearInterval(streamTimerRef.current)
     streamTimerRef.current = setInterval(() => {
@@ -6500,7 +7385,7 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
         return prev.slice(0, -1).concat({ ...last, resp: { ...last.resp, text: shown, _streaming: !done } })
       })
       // On completion, surface any capture as a dock question (after the answer text has landed).
-      if (done) { clearInterval(streamTimerRef.current); streamTimerRef.current = null; streamingRef.current = false; if (resp.capture) enqueueCapture(resp.capture) }
+      if (done) { clearInterval(streamTimerRef.current); streamTimerRef.current = null; streamingRef.current = false; if (resp.capture) enqueueCapture(resp.capture); else if (resp.nurse) enqueueAsk(resp); else if (resp.kind === 'insufficient') enqueueNeed(resp) }
     }, 42)
   }
 
@@ -6508,7 +7393,7 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
     setGenerating(true)
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => {
-      const resp = routeChat(text, ctx)
+      const resp = { ...routeChat(text, ctx), _q: text }
       // A re-offer is suppressed only when the med is actually on record (the on-record check inside routeChat).
       // Skip and cancel are never permanent declines — re-stating "I started X" offers it again (that's the how-to
       // the skip reply gives). So the only thing that stops a re-offer is the med genuinely being saved.
@@ -6522,7 +7407,7 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
     if (!text || generating || activeQ) return
     if (messages.length >= MSG_HARD_LIMIT) return  // session message cap reached (PRD §11)
     setInput('')
-    setMessages(prev => [...prev, { role: 'user', text }])
+    setMessages(prev => [...prev, { role: 'user', text, ts: Date.now() }])
     generateReply(text)
   }
   const send = (raw) => runSend((raw != null ? raw : input).trim())
@@ -6566,52 +7451,65 @@ const ChatThread = ({ initialMessages, seed, ctx, providerName, greeting, sugges
   }, [inject])
 
   if (messages.length === 0) {
+    // Landing: the greeting fills the space above and stays centered vertically; the prompts,
+    // composer and fine print are docked at the bottom. Focusing the composer hides the prompts
+    // (they've chosen to type), and they come back when it's empty and unfocused.
     return (
-      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '24px 18px 0' }}>
-          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
-            <span className="material-symbols-rounded" style={{ fontSize: 34, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span>
-          </div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: C.textPrimary, textAlign: 'center', lineHeight: 1.3, marginBottom: 22 }}>{greeting}</div>
-          <div style={{ marginBottom: 18 }}><ChatComposer value={input} onChange={setInput} onSend={() => send()} generating={generating}/></div>
-          <ChatPrompts suggestions={suggestions} onPick={q => send(q)}/>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '24px 18px' }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 34, ...AI_ICON, marginBottom: 12, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>auto_awesome</span>
+          <div style={{ fontSize: 22, fontWeight: 600, color: C.textPrimary, textAlign: 'center', lineHeight: 1.27 }}>{greeting}</div>
         </div>
-        <ChatLegal/>
+        <div style={{ flexShrink: 0, backgroundColor: C.bgCard, padding: '0 16px 8px' }}>
+          {!landingFocused && !input.trim() && <div style={{ marginBottom: 12, animation: 'hdrFade 0.2s ease' }}><ChatPrompts suggestions={suggestions} onPick={q => send(q)}/></div>}
+          <ChatComposer value={input} onChange={setInput} onSend={() => send()} generating={generating} onFocusChange={setLandingFocused}/>
+        </div>
       </div>
     )
   }
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 18, minHeight: 0 }}>
-        {messages.map((m, i) => m.role === 'user'
-          ? <ChatUserBubble key={i} text={m.text}/>
-          : <ChatAiBubble key={i} resp={m.resp} providerName={providerName} onDeepLink={onDeepLink} onCapture={handleCapture} msgIndex={i}/>
-        )}
-        {generating ? <ChatTyping/> : activeQ ? <ChatWaiting/> : null}
-      </div>
-      <div style={{ flexShrink: 0, backgroundColor: C.bgCard, padding: '0 12px 8px' }}>
-        {messages.length >= MSG_HARD_LIMIT ? (
-          // Hard stop — message + New chat above, composer kept but disabled (PRD §11: "input is disabled").
-          <>
-            <div style={{ backgroundColor: C.bgApp, borderRadius: 12, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 8 }}>
-              <div style={{ fontSize: 13.5, color: C.textPrimary, lineHeight: 1.45 }}>You've reached the maximum length for this conversation. Start a new chat to keep going.</div>
-              <button onClick={() => onNewChat && onNewChat()} style={{ alignSelf: 'flex-start', padding: '9px 16px', borderRadius: 9, border: 'none', backgroundColor: C.primary, color: 'white', fontSize: 13.5, fontWeight: 600, cursor: 'pointer' }}>New chat</button>
-            </div>
-            <ChatComposer value={input} onChange={setInput} onSend={() => send()} generating={generating} disabled/>
-          </>
-        ) : (
-          <>
-            {messages.length >= MSG_SOFT_LIMIT && (
-              // Soft nudge — persistent line above the composer; composer stays usable.
-              <div style={{ fontSize: 12.5, color: C.textSecondary, backgroundColor: C.bgApp, borderRadius: 10, padding: '8px 12px', margin: '0 0 8px', lineHeight: 1.4 }}>
-                You're approaching the conversation limit — consider starting a new chat soon.
+      <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        {messages.map((m, i) => {
+          const lastAiIndex = messages.reduce((acc, x, k) => x.role !== 'user' ? k : acc, -1)
+          const firstClinicalIndex = messages.findIndex(x => x.role !== 'user' && x.resp && x.resp.source && x.resp.kind === 'answer')
+          const prev = messages[i - 1], next = messages[i + 1]
+          const sep = chatSeparator(prev, m)
+          const nextSep = next ? chatSeparator(m, next) : null
+          const gapAbove = i === 0 || sep ? 0 : (prev.role === m.role ? 8 : 24)
+          return (
+            <Fragment key={i}>
+              {sep && <div style={{ textAlign: 'center', fontSize: 12, lineHeight: '16px', color: C.textTertiary, fontWeight: 400, margin: (i === 0 ? '0' : '24px') + ' 0 16px' }}>{sep}</div>}
+              <div style={{ marginTop: gapAbove, display: 'flex', flexDirection: 'column' }}>
+                {m.role === 'user'
+                  ? <ChatUserBubble text={m.text} last={!(next && next.role === 'user' && !nextSep)}/>
+                  : <ChatAiBubble resp={m.resp} providerName={providerName} onDeepLink={onDeepLink} onCapture={handleCapture} msgIndex={i} question={prev && prev.role === 'user' ? prev.text : ''} careTeam={i === firstClinicalIndex}/>}
               </div>
-            )}
-            {activeQ && <ChatQuestionDock q={activeQ} onAnswer={answerQ} onSkip={skipQ}/>}
-            <ChatComposer value={input} onChange={setInput} onSend={() => send()} generating={generating} disabled={!!activeQ} disabledText="Answer above to continue"/>
-          </>
+              {/* The legal line sits right below chat's latest answer (16 apart). Not on the landing. */}
+              {i === lastAiIndex && <div style={{ marginTop: 16 }}><ChatLegal compact/></div>}
+            </Fragment>
+          )
+        })}
+        {(generating || activeQ) && <div style={{ marginTop: messages.length ? 24 : 0 }}>{generating ? <ChatTyping/> : <ChatWaiting/>}</div>}
+      </div>
+      <div style={{ flexShrink: 0, backgroundColor: C.bgCard, padding: '0 16px 8px' }}>
+        {/* Capturing information beats the length limit: at the limit, an open question still shows and
+            can be answered (and whatever it starts runs, including follow-up questions); the limit notice
+            shows above it, and the composer stays locked. */}
+        {messages.length >= MSG_HARD_LIMIT && (
+            <div style={{ backgroundColor: C.bgApp, borderRadius: 12, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+              <div style={{ fontSize: 14, color: C.textPrimary, lineHeight: '20px' }}>You've reached the maximum length for this conversation. Start a new chat to keep going.</div>
+              <button onClick={() => onNewChat && onNewChat()} style={{ alignSelf: 'flex-start', height: 36, boxSizing: 'border-box', padding: '0 16px', borderRadius: 9999, border: 'none', backgroundColor: C.primary, color: 'white', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>New chat</button>
+            </div>
         )}
-        <ChatLegal compact/>
+        {messages.length < MSG_HARD_LIMIT && messages.length >= MSG_SOFT_LIMIT && (
+          // Soft nudge — persistent line above the composer; composer stays usable.
+          <div style={{ fontSize: 14, color: C.textSecondary, backgroundColor: C.bgApp, borderRadius: 12, padding: '8px 16px', margin: '0 0 12px', lineHeight: '20px' }}>
+            You're approaching the conversation limit. Consider starting a new chat soon.
+          </div>
+        )}
+        {activeQ && <ChatQuestionDock key={activeQ.id} q={activeQ} onAnswer={answerQ} onSkip={skipQ}/>}
+        <ChatComposer value={input} onChange={setInput} onSend={() => send()} generating={generating} disabled={!!activeQ || messages.length >= MSG_HARD_LIMIT} disabledText={activeQ ? 'Answer above to continue' : 'Start a new chat to continue'}/>
       </div>
     </div>
   )
@@ -6623,7 +7521,7 @@ const ChatModalBody = ({ setNav, seed, threadId, ctx, providerName, greeting, su
   return <ChatThread key={threadId} threadId={threadId} initialMessages={[]} seed={seed} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={onDeepLink} onMessagesChange={m => onPersist(threadId, m)} onCapture={onCapture} inject={captureAck && captureAck.threadId === threadId ? captureAck : null} onInjected={onInjected} onNewChat={onNewChat}/>
 }
 
-const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink, onDrilledChange, onDrillModeChange, onMenuOpenChange, onTabChange, kbOpen, backSignal, deleteSignal, menuSignal, newSignal, onOverflow, onCaptureFlow, captureAck, onAckConsumed }) => {
+const ChatScreen = ({ onAskClinical, patientState, timeline, medications, userName, onDeepLink, onDrilledChange, onDrillModeChange, onMenuOpenChange, onTabChange, kbOpen, backSignal, deleteSignal, menuSignal, newSignal, onOverflow, onCaptureFlow, captureAck, onAckConsumed, sheetMode = false, onClose = null, context = null }) => {
   const [sessions, setSessions] = useState([])
   const seqRef = useRef(0)
   const firstId = `c${Date.now()}-${seqRef.current++}`
@@ -6665,12 +7563,26 @@ const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink,
     onDeepLink(target)
   }
 
-  const suggestions = [
-    'What should I watch for between scans?',
-    'How can I manage fatigue during treatment?',
-    `What does clear cell ${cancerName} mean?`,
-    'When is my next appointment?',
-  ]
+  const suggestions = (() => {
+    // Contextual (by the surface chat was opened from) first, evergreen as the floor.
+    // Object-level context (a specific treatment/trial/symptom) would slot ahead of these later.
+    const CHAT_PROMPTS = {
+      // Only questions chat answers directly (Question map "Chip" rows): never a hard stop,
+      // a crisis response or a request for information.
+      today:     ["When's my next appointment?", 'What should I watch for between scans?'],
+      careplan:  ['What does my diagnosis mean?', 'What do the guidelines say for my stage?'],
+      track:     ['How can I manage fatigue during treatment?', 'What side effects should I watch for?'],
+      community: ['What have others found helpful?'],
+    }
+    const evergreen = [
+      'What should I watch for between scans?',
+      'How can I manage fatigue during treatment?',
+      `What does clear cell ${cancerName} mean?`,
+    ]
+    const seen = new Set(); const out = []
+    ;[...(CHAT_PROMPTS[context] || []), ...evergreen].forEach(q => { if (!seen.has(q)) { seen.add(q); out.push(q) } })
+    return out.slice(0, 4)
+  })()
 
   const newChatId = () => `c${Date.now()}-${seqRef.current++}`
   const upsert = (id, messages) => {
@@ -6720,20 +7632,24 @@ const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink,
   // App-bar state. During a back-pop, treat as home from the start of the slide so the bar transitions with the view.
   const headerDrilled = anim === 'pop' ? false : (currentId !== homeId)
   const headerTitle = current2 ? current2.title : null
-  const abBtn = { width: 44, height: 44, flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }
+  const abBtn = { width: 44, height: 44, flexShrink: 0, background: '#fff', borderRadius: 22, boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }
   // App bar that belongs to a view (home or chat), so it slides in/out with its screen — consistent both ways.
   const renderAppBar = (mode) => (
-    <div style={{ flexShrink: 0, height: 60, display: 'flex', alignItems: 'center', padding: '0 8px 0 12px', borderBottom: `1px solid ${C.border}`, backgroundColor: C.bgCard, position: 'relative' }}>
+    <div style={{ flexShrink: 0, height: 60, display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px', backgroundColor: C.bgCard, position: 'relative' }}>
       {mode === 'chat'
-        ? <button onClick={goHome} aria-label="Back" style={{ ...abBtn, justifyContent: 'flex-start' }}><span className="material-symbols-rounded msr-600" style={{ fontSize: 26, color: C.textIcon }}>arrow_back</span></button>
-        : <button onClick={() => setMenuOpen(o => !o)} aria-label="Chats menu" style={{ ...abBtn, justifyContent: 'flex-start' }}><span className="material-symbols-rounded msr-600" style={{ fontSize: 25, color: C.textIcon, transform: 'scaleX(-1)' }}>segment</span></button>}
-      <div style={{ flex: 1 }}/>
-      {mode === 'chat' && <button onClick={startNewChat} aria-label="New chat" style={{ ...abBtn, width: 40, height: 40 }}><span className="material-symbols-rounded msr-600" style={{ fontSize: 23, color: C.textIcon }}>edit_square</span></button>}
-      {mode === 'chat' && <button onClick={onOverflow} aria-label="More options" style={{ ...abBtn, width: 40, height: 40 }}><span className="material-symbols-rounded msr-600" style={{ fontSize: 22, color: C.textIcon }}>more_vert</span></button>}
+        ? <button onClick={goHome} aria-label="Back" style={abBtn}><span className="material-symbols-rounded msr-600" style={{ fontSize: 26, color: C.textIcon }}>arrow_back</span></button>
+        : <button onClick={() => setMenuOpen(o => !o)} aria-label="Chats menu" style={abBtn}><span className="material-symbols-rounded msr-600" style={{ fontSize: 25, color: C.textIcon, transform: 'scaleX(-1)' }}>segment</span></button>}
+      {mode === 'chat' && headerTitle
+        ? <div style={{ flex: 1, minWidth: 0, fontSize: 16, fontWeight: 600, color: C.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: '0 4px' }}>{headerTitle}</div>
+        : <div style={{ flex: 1 }}/>}
+      {mode === 'chat' && <button onClick={startNewChat} aria-label="New chat" style={abBtn}><span className="material-symbols-rounded msr-600" style={{ fontSize: 23, color: C.textIcon }}>edit_square</span></button>}
+      {mode === 'chat' && <button onClick={onOverflow} aria-label="More options" style={abBtn}><span className="material-symbols-rounded msr-600" style={{ fontSize: 22, color: C.textIcon }}>more_vert</span></button>}
+      {/* Close only on the landing: inside a conversation the header is back, title, new chat and overflow. */}
+      {sheetMode && mode !== 'chat' && <button onClick={() => onClose && onClose()} aria-label="Close" style={abBtn}><span className="material-symbols-rounded msr-600" style={{ fontSize: 24, color: C.textIcon }}>close</span></button>}
     </div>
   )
   // Footer nav lives inside the home layer so it slides with the home and the menu can run full-height beneath it.
-  const renderFooter = () => kbOpen ? null : (
+  const renderFooter = () => (kbOpen || sheetMode) ? null : (
     <div style={{ flexShrink: 0 }}><BottomNav activeTab="chat" onTabChange={onTabChange}/></div>
   )
 
@@ -6755,16 +7671,16 @@ const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink,
           {sessions.length === 0 ? (
             <div style={{ padding: '18px 20px', color: C.textTertiary, fontSize: 13.5, lineHeight: 1.5 }}>No chats yet. Ask something to start one.</div>
           ) : sessions.map(s => (
-            <button key={s.id} className={`chatRow${s.id === currentId ? ' sel' : ''}`} onClick={(e) => { e.stopPropagation(); openChat(s.id) }} style={{ width: '86%', textAlign: 'left', padding: '13px 20px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button key={s.id} className={`chatRow${s.id === currentId ? ' sel' : ''}`} onClick={(e) => { e.stopPropagation(); openChat(s.id) }} style={{ width: '74%', textAlign: 'left', padding: '12px 16px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title}</div>
-                <div style={{ fontSize: 12, color: C.textTertiary, marginTop: 3 }}>{s.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} &middot; {s.count} messages</div>
+                <div style={{ fontSize: 14, lineHeight: '20px', fontWeight: 600, color: C.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title}</div>
+                <div style={{ fontSize: 12, lineHeight: '16px', color: C.textTertiary, marginTop: 4 }}>{chatRowDate(s.date)}</div>
               </div>
               <span style={{ flexShrink: 0 }}><Ico.chevRight/></span>
             </button>
           ))}
         </div>
-        <button onClick={(e) => { e.stopPropagation(); startNewChat() }} style={{ position: 'absolute', bottom: 20, left: 16, display: 'flex', alignItems: 'center', gap: 6, padding: '12px 18px', backgroundColor: C.primary, color: 'white', border: 'none', borderRadius: 26, cursor: 'pointer', boxShadow: '0 4px 14px rgba(0,0,0,0.22)', fontSize: 14, fontWeight: 600 }}>
+        <button onClick={(e) => { e.stopPropagation(); startNewChat() }} style={{ position: 'absolute', bottom: 20, left: 16, display: 'flex', alignItems: 'center', gap: 6, height: 44, boxSizing: 'border-box', padding: '0 20px', backgroundColor: C.primary, color: 'white', border: 'none', borderRadius: 9999, cursor: 'pointer', boxShadow: '0 4px 14px rgba(0,0,0,0.22)', fontSize: 16, fontWeight: 600 }}>
           <span className="material-symbols-rounded" style={{ fontSize: 18, fontVariationSettings: "'wght' 500" }}>add</span>
           New chat
         </button>
@@ -6772,13 +7688,13 @@ const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink,
 
       {/* APP STACK — each layer (home / drilled chat) carries its OWN app bar, so the bar travels with its
           view: it slides in with the chat on drill-in and slides back out with it on back — consistent both ways. */}
-      <div style={{ position: 'absolute', inset: 0, zIndex: 2, backgroundColor: C.bgCard, transform: menuOpen ? 'translateX(86%)' : 'translateX(0)', transition: 'transform 0.42s cubic-bezier(0.32,0.72,0,1)', boxShadow: menuOpen ? '-10px 0 30px rgba(0,0,0,0.18)' : 'none' }}>
+      <div style={{ position: 'absolute', inset: 0, zIndex: 2, backgroundColor: C.bgCard, transform: menuOpen ? 'translateX(74%)' : 'translateX(0)', transition: 'transform 0.42s cubic-bezier(0.32,0.72,0,1)', boxShadow: menuOpen ? '-10px 0 30px rgba(0,0,0,0.18)' : 'none' }}>
         {/* home peek — behind the drilled chat, its own hamburger bar, parallax recede */}
         {currentId !== homeId && (
           <div key={'peek-' + homeId} style={{ position: 'absolute', inset: 0, zIndex: 1, display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard, pointerEvents: 'none', ...(anim === 'push' ? { animation: 'chatPeekBack 0.42s cubic-bezier(0.32,0.72,0,1) forwards' } : anim === 'pop' ? { animation: 'chatPeekFwd 0.42s cubic-bezier(0.32,0.72,0,1) forwards' } : { transform: 'translateX(-22%)', opacity: 0.55 }) }}>
             {renderAppBar('home')}
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-              <ChatThread key={homeId} threadId={homeId} initialMessages={[]} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onMessagesChange={m => upsert(homeId, m)} onCapture={onCaptureFlow} inject={null} onInjected={onAckConsumed} onNewChat={startNewChat}/>
+              <ChatThread key={homeId} threadId={homeId} initialMessages={[]} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onMessagesChange={m => upsert(homeId, m)} onCapture={onCaptureFlow} inject={null} onInjected={onAckConsumed} onNewChat={startNewChat} onAskClinical={onAskClinical}/>
             </div>
             {renderFooter()}
           </div>
@@ -6789,7 +7705,7 @@ const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink,
           style={{ position: 'absolute', inset: 0, zIndex: 2, display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard, boxShadow: (currentId !== homeId || anim) ? '-8px 0 24px rgba(0,0,0,0.12)' : 'none', ...(anim === 'push' ? { animation: 'chatViewIn 0.42s cubic-bezier(0.32,0.72,0,1) forwards' } : anim === 'pop' ? { animation: 'chatViewOut 0.42s cubic-bezier(0.32,0.72,0,1) forwards' } : null) }}>
           {renderAppBar(currentId === homeId ? 'home' : 'chat')}
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <ChatThread key={currentId} threadId={currentId} initialMessages={currentMessages} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onMessagesChange={m => upsert(currentId, m)} onCapture={onCaptureFlow} inject={captureAck && captureAck.threadId === currentId ? captureAck : null} onInjected={onAckConsumed} onNewChat={startNewChat}/>
+            <ChatThread key={currentId} threadId={currentId} initialMessages={currentMessages} ctx={ctx} providerName={providerName} greeting={greeting} suggestions={suggestions} onDeepLink={handleLink} onMessagesChange={m => upsert(currentId, m)} onCapture={onCaptureFlow} inject={captureAck && captureAck.threadId === currentId ? captureAck : null} onInjected={onAckConsumed} onNewChat={startNewChat} onAskClinical={onAskClinical}/>
           </div>
           {currentId === homeId && renderFooter()}
         </div>
@@ -6801,7 +7717,7 @@ const ChatScreen = ({ patientState, timeline, medications, userName, onDeepLink,
 }
 
 
-const YouOverlay = ({ show, onClose, currentUser, onLogout }) => {
+const YouOverlay = ({ show, onClose, currentUser, onLogout, onAddPending, todOverride, onSetTod, fullView = false }) => {  // fullView: opened from chat
   const [vis, setVis] = useState(false)
 
   useEffect(() => {
@@ -6817,7 +7733,7 @@ const YouOverlay = ({ show, onClose, currentUser, onLogout }) => {
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 85, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+    <div style={{ position: 'fixed', inset: 0, zIndex: 140, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
       {/* Dim backdrop */}
       <div onClick={dismiss} style={{
         position: 'absolute', inset: 0,
@@ -6828,19 +7744,20 @@ const YouOverlay = ({ show, onClose, currentUser, onLogout }) => {
       {/* Sheet */}
       <div style={{
         position: 'relative',
-        height: '92%',
+        height: fullView ? '100%' : '92%',
         backgroundColor: C.bgApp,
-        borderRadius: '20px 20px 0 0',
+        borderRadius: fullView ? 0 : '20px 20px 0 0',
+        paddingTop: fullView ? 'env(safe-area-inset-top, 0px)' : 0,
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
         transform: vis ? 'translateY(0)' : 'translateY(100%)',
         transition: 'transform 0.38s cubic-bezier(0.32, 0.72, 0, 1)',
         boxShadow: '0 -4px 32px rgba(0,0,0,0.14)',
       }}>
-        {/* Drag handle */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '12px 0 4px', flexShrink: 0 }}>
+        {/* Drag handle (not on a full view) */}
+        {!fullView && <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '12px 0 4px', flexShrink: 0 }}>
           <div style={{ width: 36, height: 4, borderRadius: 2, backgroundColor: C.border }}/>
-        </div>
+        </div>}
         {/* Header row */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 20px 12px', flexShrink: 0 }}>
           <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary }}>Account</div>
@@ -6850,19 +7767,19 @@ const YouOverlay = ({ show, onClose, currentUser, onLogout }) => {
         </div>
         {/* Content */}
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          <YouScreen currentUser={currentUser} onLogout={onLogout}/>
+          <YouScreen currentUser={currentUser} onLogout={onLogout} onAddPending={onAddPending} todOverride={todOverride} onSetTod={onSetTod}/>
         </div>
       </div>
     </div>
   )
 }
 
-const YouScreen = ({ currentUser, onLogout }) => (
-  <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard }}>
+const YouScreen = ({ currentUser, onLogout, onAddPending, todOverride, onSetTod }) => (
+  <div style={{ flex: 1, overflowY: 'auto', paddingTop: 60, paddingBottom: 100, display: 'flex', flexDirection: 'column', backgroundColor: C.bgCard }}>
     {/* Profile header */}
     <div style={{ backgroundColor: C.bgCard, borderBottom: `1px solid ${C.border}`, padding: '28px 20px 24px', display: 'flex', alignItems: 'center', gap: 16 }}>
-      <div style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: C.primaryLight, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-        <span style={{ fontSize: 22, fontWeight: 700, color: C.primary }}>{currentUser?.name?.charAt(0).toUpperCase() || '?'}</span>
+      <div style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <span style={{ fontSize: 22, fontWeight: 700, color: C.textIcon }}>{currentUser?.name?.charAt(0).toUpperCase() || '?'}</span>
       </div>
       <div>
         <div style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary }}>{currentUser?.name || 'Guest'}</div>
@@ -6892,7 +7809,7 @@ const YouScreen = ({ currentUser, onLogout }) => (
     {/* Experiments panel — prototype variant switches */}
     <div style={{ padding: '20px 20px 8px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-        <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>clinical_notes</span>
+        <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>science</span>
         <div style={{ fontSize: 13, fontWeight: 700, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Experiments</div>
       </div>
       <div style={{ fontSize: 12, color: C.textTertiary, marginBottom: 14 }}>Prototype variant switches. Changing one reloads the app.</div>
@@ -6923,19 +7840,43 @@ const YouScreen = ({ currentUser, onLogout }) => (
       <button onClick={resetExperiments} style={{ marginTop: 10, background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: C.textSecondary, padding: '4px 0' }}>
         Reset to defaults
       </button>
-      <div style={{ marginTop: 14, borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
-        <div style={{ fontSize: 12, color: C.textTertiary, marginBottom: 8 }}>Re-arm the connect-records modal (clears the nudge's shown-count / cooldown) so you can test the trigger again — then do 2 plan actions (manual add, add from recommended treatments, or abandon either).</div>
-        <button onClick={() => { try { localStorage.removeItem('o4m_engagement_v1'); localStorage.removeItem('o4m_records_connected') } catch (e) {} window.location.reload() }} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }}>
-          <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.primary }}>restart_alt</span>
-          Reset records nudge
-        </button>
-      </div>
-      <div style={{ marginTop: 14, borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
-        <div style={{ fontSize: 12, color: C.textTertiary, marginBottom: 8 }}>Wipe all demo data (records, timeline, session, trials) and start fresh — then sign up as a new user with a supported cancer to see the treatment plan.</div>
-        <button onClick={() => { try { localStorage.clear() } catch (e) {} try { sessionStorage.clear() } catch (e) {} window.location.reload() }} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', backgroundColor: '#fdecea', border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: '#ef4444' }}>
-          <span className="material-symbols-rounded" style={{ fontSize: 18, color: '#ef4444' }}>delete_sweep</span>
-          Clear all demo data
-        </button>
+      {onAddPending && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 12, color: C.textTertiary, marginBottom: 8 }}>Testing triggers — stand-ins for actions that will fire upstream in production (a saved trial, a records request, etc.).</div>
+          <button onClick={onAddPending} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }}>
+            <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.primary }}>add</span>
+            Track a pending item
+          </button>
+          <div style={{ marginTop: 14, borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
+            <div style={{ fontSize: 12, color: C.textTertiary, marginBottom: 8 }}>
+              Simulate the day rolling over — today's check-in settles into a past "Daily log" and the hub resets fresh.
+              {(() => { let o = 0; try { o = parseInt(localStorage.getItem('o4m_dev_day_offset') || '0', 10) || 0 } catch (e) {} return o ? <span style={{ color: C.primary, fontWeight: 700 }}> Currently +{o} day{o > 1 ? 's' : ''} ahead.</span> : null })()}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => { let o = 0; try { o = parseInt(localStorage.getItem('o4m_dev_day_offset') || '0', 10) || 0 } catch (e) {} try { localStorage.setItem('o4m_dev_day_offset', String(o + 1)) } catch (e) {} window.location.reload() }} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', backgroundColor: C.bgApp, border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.primary }}>
+                <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.primary }}>skip_next</span>
+                Advance a day
+              </button>
+              <button onClick={() => { try { localStorage.setItem('o4m_dev_day_offset', '0') } catch (e) {} window.location.reload() }} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: C.textSecondary }}>
+                Reset to real date
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+
+    {/* Dev: preview the Today time-of-day atmosphere (persisted as o4m_dev_tod) */}
+    <div style={{ padding: '8px 20px 0' }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: C.textPrimary, marginBottom: 2 }}>Time of day (atmosphere)</div>
+      <div style={{ fontSize: 12, color: C.textTertiary, lineHeight: 1.45, marginBottom: 9 }}>Preview the Today mood mark. Reset to Auto for the real time.</div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        {[['auto', 'Auto'], ['morning', 'Morning'], ['afternoon', 'Afternoon'], ['evening', 'Evening']].map(([key, label]) => {
+          const on = (todOverride || 'auto') === key
+          return (
+            <button key={key} onClick={() => onSetTod && onSetTod(key === 'auto' ? null : key)} style={{ flex: 1, padding: '9px 0', borderRadius: 9, border: on ? 'none' : `1px solid ${C.border}`, backgroundColor: on ? C.primary : C.bgCard, fontSize: 12, fontWeight: 700, color: on ? '#fff' : C.textSecondary, cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>{label}</button>
+          )
+        })}
       </div>
     </div>
 
@@ -6945,6 +7886,11 @@ const YouScreen = ({ currentUser, onLogout }) => (
         <span className="material-symbols-rounded" style={{ fontSize: 20, color: '#ef4444', fontVariationSettings: "'FILL' 0, 'wght' 400" }}>logout</span>
         Sign out
       </button>
+      <div style={{ fontSize: 12, color: C.textTertiary, lineHeight: 1.45, margin: '16px 2px 8px' }}>Wipe all demo data (records, timeline, session, check-ins) and start fresh.</div>
+      <button onClick={() => { try { localStorage.clear() } catch (e) {} try { sessionStorage.clear() } catch (e) {} window.location.reload() }} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', backgroundColor: '#fdecea', border: 'none', borderRadius: 9999, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: '#ef4444' }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 18, color: '#ef4444' }}>delete_sweep</span>
+        Clear all demo data
+      </button>
     </div>
   </div>
 )
@@ -6952,22 +7898,31 @@ const YouScreen = ({ currentUser, onLogout }) => (
 // ─── APP HEADER ───────────────────────────────────────────────────
 // ─── APP HEADER ───────────────────────────────────────────────────
 // ─── APP HEADER ───────────────────────────────────────────────────
-const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap, onBack, onMenu, hideTitle, onOverflow, onNewChat, title }) => {
+// Floating header (v3.02): no bar. Every control is a white floating button with a Level 1
+// shadow. Icon buttons are 44 circles; the Chat pill is 36 (Label small), tap area 44. A short fade in the page color keeps scrolling text clear of them.
+const FLOAT_SHADOW = '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)'
+const FADE_RGB = { careplan: '251,246,244', plan: '245,244,246', track: '255,255,255', community: '255,255,255', resources: '255,255,255' }
+// v3.22: when a day is scrolled to the top (Jump to Today), leave its first card 16 below the
+// floating header (60 + 16 = 76). The day's sentinel sits 48 above that card, so it lands at 28.
+const DAY_TOP_OFFSET = 28
+const AppHeader = ({ dayFade, activeTab = 'careplan', onProfileTap, onBack, onMenu, hideTitle, onOverflow, onNewChat, title, onAsk }) => {
   const r = 19, circ = 2 * Math.PI * r, dash = 0.62 * circ
   return (
-    <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: 60, padding: '0 20px', backgroundColor: C.bgCard, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+    // Today (careplan): transparent, no bar — controls float as glass chips. Every
+    // other tab: a translucent glass bar (collapse/reveal is handled by the parent).
+    <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: 60, padding: '0 16px', background: `linear-gradient(180deg, rgba(${FADE_RGB[activeTab] || '255,255,255'},0.96) 0%, rgba(${FADE_RGB[activeTab] || '255,255,255'},0.82) 62%, rgba(${FADE_RGB[activeTab] || '255,255,255'},0) 100%)`, flexShrink: 0 }}>
       <style>{`@keyframes hdrFade{from{opacity:0}to{opacity:1}}`}</style>
       {onBack ? (
-        <button key="back" onClick={onBack} aria-label="Back" style={{ width: 46, height: 46, marginRight: 12, flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-start', animation: 'hdrFade 0.24s ease' }}>
+        <button key="back" onClick={onBack} aria-label="Back" style={{ width: 44, height: 44, borderRadius: 22, marginRight: 12, flexShrink: 0, cursor: 'pointer', border: 'none', backgroundColor: '#fff', boxShadow: FLOAT_SHADOW, display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'hdrFade 0.24s ease' }}>
           <Ico.back/>
         </button>
       ) : onMenu ? (
-        <button key="menu" onClick={onMenu} aria-label="Chats menu" style={{ width: 46, height: 46, marginRight: 12, flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-start', animation: 'hdrFade 0.24s ease' }}>
+        <button key="menu" onClick={onMenu} aria-label="Chats menu" style={{ width: 44, height: 44, borderRadius: 22, marginRight: 12, flexShrink: 0, cursor: 'pointer', border: 'none', backgroundColor: '#fff', boxShadow: FLOAT_SHADOW, display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'hdrFade 0.24s ease' }}>
           <span className="material-symbols-rounded" style={{ fontSize: 25, color: C.textPrimary, transform: 'scaleX(-1)' }}>segment</span>
         </button>
       ) : (
-      <div key="avatar" onClick={onProfileTap} style={{ position: 'relative', width: 46, height: 46, marginRight: 12, flexShrink: 0, cursor: 'pointer' }}>
-        <svg width="46" height="46" viewBox="0 0 46 46">
+      <div key="avatar" onClick={onProfileTap} role="button" aria-label="Profile" style={{ position: 'relative', width: 44, height: 44, marginRight: 12, flexShrink: 0, cursor: 'pointer', borderRadius: 22, backgroundColor: '#fff', boxShadow: FLOAT_SHADOW }}>
+        <svg width="44" height="44" viewBox="0 0 46 46">
           <circle cx="23" cy="23" r={r} fill="none" stroke="#e8e8e8" strokeWidth="3"/>
           <circle cx="23" cy="23" r={r} fill="none" stroke="#4ade80" strokeWidth="3" strokeDasharray={`${dash} ${circ}`} strokeLinecap="round" transform="rotate(-90 23 23)"/>
         </svg>
@@ -6980,6 +7935,12 @@ const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap, onBa
       </div>
       )}
       <div style={{ flex: 1 }}/>
+      {onAsk && ['careplan', 'plan', 'track', 'community', 'resources'].includes(activeTab) && (  /* every main section */
+        <button key="ask" onClick={onAsk} aria-label="O4M Chat" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, height: 36, padding: '0 14px', borderRadius: 9999, cursor: 'pointer', flexShrink: 0, position: 'relative', zIndex: 1, animation: 'hdrFade 0.24s ease', backgroundColor: '#fff', border: 'none', boxShadow: FLOAT_SHADOW }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 16, ...AI_ICON, fontVariationSettings: "'FILL' 1, 'wght' 500" }}>auto_awesome</span>
+          <span style={{ fontSize: 14, lineHeight: '16px', fontWeight: 600, color: C.primary }}>Chat</span>
+        </button>
+      )}
       {onNewChat && (
         <button key="compose" onClick={onNewChat} aria-label="New chat" style={{ width: 40, height: 40, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', animation: 'hdrFade 0.24s ease' }}>
           <span className="material-symbols-rounded" style={{ fontSize: 23, color: C.textIcon }}>edit_square</span>
@@ -6990,9 +7951,27 @@ const AppHeader = ({ currentDayLabel, activeTab = 'careplan', onProfileTap, onBa
           <span className="material-symbols-rounded" style={{ fontSize: 22, color: C.textIcon }}>more_vert</span>
         </button>
       )}
-      {!hideTitle && (
+      {activeTab === 'plan' && dayFade && (dayFade.current || dayFade.incoming) && (() => {
+        const label = (date) => {
+          const { prefix, shortDate } = dayLabel(date)
+          const lead = date === localDateStr() ? 'Today' : prefix
+          return lead
+            ? <><span style={{ fontSize: 16, fontWeight: 700, color: lead === 'Today' ? C.primary : C.textSecondary, letterSpacing: '-0.3px' }}>{lead}</span><span style={{ fontSize: 12, color: C.textTertiary }}>·</span><span style={{ fontSize: 16, fontWeight: 700, color: C.textSecondary, letterSpacing: '-0.3px' }}>{shortDate}</span></>
+            : <span style={{ fontSize: 16, fontWeight: 700, color: C.textSecondary, letterSpacing: '-0.3px' }}>{shortDate}</span>
+        }
+        const layer = (date, opacity) => (
+          <div key={date} style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', opacity }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>{label(date)}</div>
+          </div>
+        )
+        return <>
+          {dayFade.current && layer(dayFade.current, dayFade.incoming ? 1 - dayFade.p : 1)}
+          {dayFade.incoming && layer(dayFade.incoming, dayFade.p)}
+        </>
+      })()}
+      {!hideTitle && activeTab !== 'careplan' && activeTab !== 'plan' && (
         <div style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-          <div key={'t-' + (title || activeTab)} style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 8px', animation: 'hdrFade 0.24s ease' }}>{title || ({ careplan: 'Home', treatment: 'Treatment', track: 'Tracker', chat: 'Chats', resources: 'Resources', community: 'Community', you: 'You' }[activeTab] || 'Home')}</div>
+          <div key={'t-' + (title || activeTab)} style={{ fontSize: 17, fontWeight: 700, color: C.textPrimary, lineHeight: 1.2, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 8px', animation: 'hdrFade 0.24s ease' }}>{title || ({ careplan: 'Today', plan: 'Care plan', track: 'Tracker', chat: 'Chats', resources: 'Resources', community: 'Community', you: 'You' }[activeTab] || 'Today')}</div>
         </div>
       )}
     </div>
@@ -7181,7 +8160,11 @@ export default function App() {
     userDecisions: INITIAL_USER_DECISIONS,
   })
   const _hasSession = !!loadSession()
-  const _isOnboarded = _hydrated.timeline.flatMap(d => d.events || []).length > INITIAL_TIMELINE.flatMap(d => d.events || []).length
+  // Onboarded = the record carries an onboarding date (new flow), or — for records from the
+  // earlier onboarding — the timeline grew past the demo seed. (The event-count heuristic alone
+  // misses new users: a fresh record has 1 diagnosis event, fewer than the demo seed's 6.)
+  const _isOnboarded = !!(_hydrated.patientState && _hydrated.patientState.onboardedDate)
+    || _hydrated.timeline.flatMap(d => d.events || []).length > INITIAL_TIMELINE.flatMap(d => d.events || []).length
   const [onboarded, setOnboarded] = useState(_isOnboarded)
   const [authVisible, setAuthVisible] = useState(!_isOnboarded || !_hasSession)
   const [revealedCards, setRevealedCards] = useState(new Set())
@@ -7194,12 +8177,54 @@ export default function App() {
   const [genBlockId, setGenBlockId] = useState(null)              // which block is generating
   const [blockGenStates, setBlockGenStates] = useState({})       // idle | generating | generated
   const [summaryShown, setSummaryShown] = useState(false)        // false during the build; true inserts the Today summary card after the scroll-to-Today settles
-  const [timeline, setTimeline] = useState(_hydrated.timeline)
+  const [timeline, setTimeline] = useState(() => reconcileToday(_hydrated.timeline))
   const [userDecisions, setUserDecisions] = useState(_hydrated.userDecisions)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [flow, setFlow] = useState(null)
   const [toast, setToast] = useState(null)
-  const [currentDayLabel, setCurrentDayLabel] = useState(null)
+  // ── redesign-01 record stores (persisted, additive) ──
+  const [symptoms, setSymptoms] = useState(loadSymptoms)
+  const [doseLogs, setDoseLogs] = useState(loadDoseLogs)
+  const [journal, setJournal] = useState(loadJournal)
+  const [pending, setPending] = useState(() => _normalizePending(loadPending()))
+  const [questions, setQuestions] = useState(loadQuestions)
+  const [aiDismissed, setAiDismissed] = useState(loadAiDismissed)
+  const [mood, setMood] = useState(loadMood)
+  const [symptomNone, setSymptomNone] = useState(loadSymptomNone)
+  const [careSummaryOpen, setCareSummaryOpen] = useState(false)
+  // Header collapse: non-Today tabs hide the glass bar on scroll-down, reveal on scroll-up.
+  const [headerCollapsed, setHeaderCollapsed] = useState(false)
+  // Dev: time-of-day atmosphere override (null = auto), persisted.
+  const [todOverride, setTodOverrideState] = useState(() => { try { return localStorage.getItem('o4m_dev_tod') || null } catch { return null } })
+  const setTodOverride = (v) => {
+    try { v ? localStorage.setItem('o4m_dev_tod', v) : localStorage.removeItem('o4m_dev_tod') } catch {}
+    setTodOverrideState(v)
+  }
+  const lastScrollTopRef = useRef(0)
+  const [moodFlowOpen, setMoodFlowOpen] = useState(false)
+  const [justCheckedLine, setJustCheckedLine] = useState(null)
+  const [artifactAppt, setArtifactAppt] = useState(null)
+  const [symptomFlowOpen, setSymptomFlowOpen] = useState(false)
+  const [symptomFlowEntry, setSymptomFlowEntry] = useState(null)
+  const [journalFlowOpen, setJournalFlowOpen] = useState(false)
+  const [journalFlowEntry, setJournalFlowEntry] = useState(null)
+  const [pendingFlowOpen, setPendingFlowOpen] = useState(false)
+  const [doseLogOpen, setDoseLogOpen] = useState(false)
+  const [confirmOutcome, setConfirmOutcome] = useState(null)
+  const [teaserDetail, setTeaserDetail] = useState(null)
+  const [askOpen, setAskOpen] = useState(false)
+  const [askPrefill, setAskPrefill] = useState('')  // question carried over from chat
+  const [chatOpen, setChatOpen] = useState(false)  // redesign-04: chat as a slide-up sheet
+  const [chatContext, setChatContext] = useState(null)  // surface chat was opened from (seeds prompts)
+  useEffect(() => { saveSymptoms(symptoms) }, [symptoms])
+  useEffect(() => { saveDoseLogs(doseLogs) }, [doseLogs])
+  useEffect(() => { saveJournal(journal) }, [journal])
+  useEffect(() => { savePending(pending) }, [pending])
+  useEffect(() => { saveQuestions(questions) }, [questions])
+  useEffect(() => { saveAiDismissed(aiDismissed) }, [aiDismissed])
+  useEffect(() => { saveMood(mood) }, [mood])
+  useEffect(() => { saveSymptomNone(symptomNone) }, [symptomNone])
+  const [dayFade, setDayFade] = useState({ current: null, incoming: null, p: 0 })
   const [highlightId, setHighlightId] = useState(null)
   const [todayFlash, setTodayFlash] = useState(false)
   const [treatmentOpt, setTreatmentOpt] = useState(null)
@@ -7226,13 +8251,13 @@ export default function App() {
   const [engagementModalOpen, setEngagementModalOpen] = useState(false)
   const [recordsCardVisible, setRecordsCardVisible] = useState(shouldShowRecordsCard) // persistent timeline card
   const engagementShownThisSessionRef = useRef(false) // enforce once-per-session
-  const pendingEngageRef = useRef(false)              // a signal fired; wait for the current interaction to finish before showing
   const flowJustCompletedRef = useRef(false)          // set on a save so the trailing onClose isn't miscounted as an abandon
   const signalEngagement = () => {
     if (exp('engagementModal') !== 'on') return
     if (registerEngagementSignal({ sessionShown: engagementShownThisSessionRef.current })) {
       engagementShownThisSessionRef.current = true
-      pendingEngageRef.current = true // show once the current interaction/flow settles — never mid-action, no fixed delay
+      // Wait a beat so the modal lands after the user feels they finished — never mid-action.
+      setTimeout(() => setEngagementModalOpen(true), ENGAGEMENT_SHOW_DELAY_MS)
     }
   }
   // Dismissing the nudge without connecting drops a persistent "records not synced" card into the timeline.
@@ -7242,26 +8267,19 @@ export default function App() {
   }
   // Connect from the nudge (simulated): mark connected — terminal for the nudge + the records card.
   const connectRecordsFromNudge = () => {
+    markRecordsConnected()
     setEngagementModalOpen(false)
-    setShowConnectRecords(true)
+    setRecordsCardVisible(false)
+    setToast({ message: 'Health records connected' })
   }
   const handleDismissRecordsCard = () => { dismissRecordsCard(); setRecordsCardVisible(false) }
-  const recordsFlowCompletedRef = useRef(false)
   const [appReveal, setAppReveal] = useState(false)
-  const [showConnectRecords, setShowConnectRecords] = useState(false)
-  const [treatmentTab, setTreatmentTab] = useState('records')
   const [currentUser, setCurrentUser] = useState(loadSession)
   const [selectedCommunity, setSelectedCommunity] = useState(null)
   const [autoJoinedCommunity, setAutoJoinedCommunity] = useState(null)
-  const [onboardingMedFlow, setOnboardingMedFlow] = useState(false)
-  const [onboardingMedDiagnosis, setOnboardingMedDiagnosis] = useState('')
-  const onboardingMedCallbackRef = useRef(null)
+  const [answerSheet, setAnswerSheet] = useState(null) // question key(s) for the one-tap gap sheet
   const [flowPreload, setFlowPreload] = useState(null)
   const [medications, setMedications] = useState(loadMedications)
-  // Events with no date yet → the "Date unknown" section at the end of the timeline.
-  const [undatedEvents, setUndatedEvents] = useState(() => loadUndatedEvents() ?? INITIAL_UNDATED_EVENTS)
-  useEffect(() => { saveUndatedEvents(undatedEvents) }, [undatedEvents])
-  const [detailEvent, setDetailEvent] = useState(null) // { event, srcDate } for EventDetailsView
   const [patientState, setPatientState] = useState(_hydrated.patientState)
   const sentinelRefs = useRef({})
   const planUpdateMessagesRef = useRef(null) // set by visibleRecs effect for mid-session plan updates
@@ -7276,40 +8294,47 @@ export default function App() {
   useEffect(() => {
     const root = scrollRef.current
     if (!root) return
-    const observer = new IntersectionObserver(
-      (entries) => {
-        // Find the sentinel that just crossed the top edge (going from visible to invisible above)
-        // We want the last date whose sentinel has scrolled past the top = is not intersecting + above
-        const passing = entries.filter(e => !e.isIntersecting && e.boundingClientRect.top < e.rootBounds.top)
-        if (passing.length > 0) {
-          // Pick the one closest to the top (largest negative offset = most recently passed)
-          const latest = passing.sort((a, b) => b.boundingClientRect.top - a.boundingClientRect.top)[0]
-          const date = latest.target.dataset.date
-          const day = INITIAL_TIMELINE.find(d => d.date === date)
-          // Also check new timeline days
-          setCurrentDayLabel(latest.target.dataset.label || date)
-        } else {
-          // All sentinels visible = at top, no sticky label needed
-          const anyAbove = entries.some(e => !e.isIntersecting && e.boundingClientRect.top < 0)
-          if (!anyAbove) setCurrentDayLabel(null)
-        }
-      },
-      { root, threshold: 0, rootMargin: '0px 0px -98% 0px' }
-    )
-    Object.values(sentinelRefs.current).forEach(el => { if (el) observer.observe(el) })
-    return () => observer.disconnect()
-  }, [timeline, undatedEvents.length > 0])
+    // Scroll-driven cross-fade (v3.04). A date line starts fading the moment its top touches the
+    // bottom of the floating buttons (y = 52, not the bottom of the fade), and is fully gone once
+    // it's entirely behind them. The same progress fades that date in, centered, in the header,
+    // while the previous day's centered date fades out.
+    // v3.05: starts earlier. The fade begins while the date is still FADE_LEAD px below the
+    // buttons' bottom edge and is complete once the date's top has reached that edge, so the
+    // date is already gone as it slides behind the buttons.
+    // v3.23: back to the v3.05 timing (completes at the buttons' bottom edge, y 52); the space under
+    // the header is handled by DAY_TOP_OFFSET instead.
+    const LINE = 52, FADE_LEAD = 16
+    const recompute = () => {
+      const top = root.getBoundingClientRect().top
+      let current = null, incoming = null, p = 0
+      root.querySelectorAll('[data-dayline]').forEach(el => {
+        const r = el.getBoundingClientRect()
+        const t = r.top - top
+        const prog = Math.max(0, Math.min(1, (LINE + FADE_LEAD - t) / FADE_LEAD))
+        el.style.opacity = String(1 - prog)
+        if (prog >= 1) current = el.dataset.dayline
+        else if (prog > 0) { incoming = el.dataset.dayline; p = prog }
+      })
+      setDayFade(prev => (prev.current === current && prev.incoming === incoming && Math.abs(prev.p - p) < 0.02) ? prev : { current, incoming, p })
+    }
+    root.addEventListener('scroll', recompute, { passive: true })
+    const raf = requestAnimationFrame(recompute)
+    return () => { cancelAnimationFrame(raf); root.removeEventListener('scroll', recompute) }
+  }, [timeline])
 
   // New user — clear all state and run onboarding from blank slate
   const handleNewUser = () => {
     clearPersistedState()
+    clearEngagementState()
     setTimeline([])
     setPatientState({})
     setUserDecisions(INITIAL_USER_DECISIONS)
     setMedications([])
-    setUndatedEvents([])
     setOnboarded(false)
     setCurrentUser(null)
+    setRecordsCardVisible(false)
+    setPending([]); setMood([]); setSymptoms([]); setDoseLogs([]); setJournal([]); setSymptomNone([]); setQuestions([]); setAiDismissed([])
+    engagementShownThisSessionRef.current = false
     setAuthVisible(false)
   }
 
@@ -7323,10 +8348,9 @@ export default function App() {
       timeline: INITIAL_TIMELINE,
       userDecisions: INITIAL_USER_DECISIONS,
     })
-    setTimeline(hydrated.timeline)
+    setTimeline(reconcileToday(hydrated.timeline))
     setPatientState(hydrated.patientState)
     setUserDecisions(hydrated.userDecisions)
-    setUndatedEvents(loadUndatedEvents() ?? INITIAL_UNDATED_EVENTS)
     setOnboarded(true)
     prevTabRef.current = 'careplan'
     setActiveTab('careplan')
@@ -7335,6 +8359,7 @@ export default function App() {
   const handleLogout = () => {
     logout()
     clearPersistedState()
+    clearEngagementState()
     setCurrentUser(null)
     setAuthVisible(true)
     setOnboarded(false)
@@ -7342,12 +8367,13 @@ export default function App() {
     setPatientState(INITIAL_PATIENT_STATE)
     setUserDecisions(INITIAL_USER_DECISIONS)
     setMedications([])
+    setRecordsCardVisible(false)
+    setPending([]); setMood([]); setSymptoms([]); setDoseLogs([]); setJournal([]); setSymptomNone([]); setQuestions([]); setAiDismissed([])
+    engagementShownThisSessionRef.current = false
   }
 
-  const TAB_ORDER = ['careplan', 'treatment', 'track', 'chat', 'community'] // 'you' is an overlay, not a tab
-  const homeScrollRef = useRef(null) // Home timeline scroll, held for the session across tab switches
+  const TAB_ORDER = ['careplan', 'plan', 'track', 'community'] // 'chat' is reachable via Ask O4M (not a nav tab); 'you' is an overlay
   const switchTab = (next) => {
-    if (prevTabRef.current === 'careplan' && scrollRef.current) homeScrollRef.current = scrollRef.current.scrollTop
     const from = TAB_ORDER.indexOf(prevTabRef.current)
     const to   = TAB_ORDER.indexOf(next)
     setTabDir(to >= from ? 1 : -1)
@@ -7356,13 +8382,24 @@ export default function App() {
     setActiveTab(next)
     if (next === 'community') setAutoJoinedCommunity(null)
   }
+  // Open the chat sheet, seeding its prompts from the surface it was launched from.
+  const openChat = () => {
+    const map = { careplan: 'today', plan: 'careplan', track: 'track', community: 'community' }
+    setChatContext(map[activeTab] || null)
+    setChatOpen(true)
+  }
 
   // Chat deep links — navigate to real screens where they exist, toast-stub the rest.
+  // Chat steps back and dims while a flow it started (add flow, Ask O4M, the profile) is open over it.
+  const chatCovered = chatOpen && (askOpen || showYou || !!flowPreload)
   const handleChatDeepLink = (target) => {
-    if (target === 'careplan' || target === 'track' || target === 'community') { switchTab(target); return }
+    // Main sections can't open over chat: chat slides down and the app goes there. Chat keeps its place,
+    // so tapping Chat reopens the same conversation ("Where chat opens").
+    if (target === 'careplan' || target === 'track' || target === 'community') { setChatOpen(false); switchTab(target); return }
     if (target === 'profile') { setShowYou(true); return }
+    if (target === 'nurse') { setAskPrefill(''); setAskOpen(true); return }  // no live nurse chat: open Ask O4M
     const labels = {
-      nurse:  'Ask Outcomes4Me — connecting you with an oncology nurse…',
+      nurse:  'Opening Ask O4M…',
       trials: 'Opening the clinical trials finder…',
       mood:   'Opening the mood tracker…',
       'connect-records': 'Health records connected — I can use them in this chat now.',
@@ -7594,7 +8631,7 @@ export default function App() {
       if (!el) return
       const cTop = container.getBoundingClientRect().top
       const offset = el.getBoundingClientRect().top - cTop
-      setShowTodayPill(Math.abs(offset) > 2)
+      setShowTodayPill(Math.abs(offset - DAY_TOP_OFFSET) > 2)
     }
     container.addEventListener('scroll', onScroll, { passive: true })
     return () => container.removeEventListener('scroll', onScroll)
@@ -7624,7 +8661,7 @@ export default function App() {
     // the "Today · date" strip lands flush against the visible top on every device.
     const cRect = container.getBoundingClientRect()
     const elRect = el.getBoundingClientRect()
-    const target = container.scrollTop + (elRect.top - cRect.top)
+    const target = container.scrollTop + (elRect.top - cRect.top) - DAY_TOP_OFFSET
     container.scrollTo({ top: Math.max(0, target), behavior: 'smooth' })
     // Hide immediately — scroll event won't fire until movement starts
     setShowTodayPill(false)
@@ -7638,9 +8675,9 @@ export default function App() {
     if (!container || !el) return
     const cRect = container.getBoundingClientRect()
     const elRect = el.getBoundingClientRect()
-    const inView = elRect.top >= cRect.top && elRect.bottom <= cRect.bottom
+    const inView = elRect.top >= cRect.top + 76 && elRect.bottom <= cRect.bottom
     if (!inView) {
-      const target = container.scrollTop + (elRect.top - cRect.top) - 12
+      const target = container.scrollTop + (elRect.top - cRect.top) - 76  // clear of the floating header (v3.22)
       container.scrollTo({ top: Math.max(0, target), behavior: 'smooth' })
     }
     // Subtle gray wash behind the block's content (same idea as the new-event highlight, quieter and
@@ -7694,62 +8731,6 @@ export default function App() {
     setFlow(type)
   }
 
-  // ─── UNDATED EVENTS + EVENT DETAILS (date / notes) ──────────────
-  const UNDATED = 'undated'
-  const eventTypeWord = (ev) => ev?.type === 'appointment' ? 'Appointment' : ev?.type === 'scan' ? 'Scan' : ev?.type === 'procedure' ? 'Procedure' : ev?.type === 'medication' ? 'Medication' : 'Event'
-  const removeUndatedEvent = (eventId) => {
-    const idx = undatedEvents.findIndex(e => e.id === eventId)
-    const ev = undatedEvents[idx]
-    setUndatedEvents(prev => prev.filter(e => e.id !== eventId))
-    setToast({ message: `${eventTypeWord(ev)} removed`, action: ev ? { label: 'Undo', onAction: () => setUndatedEvents(cur => cur.some(e => e.id === ev.id) ? cur : [...cur.slice(0, idx), ev, ...cur.slice(idx)]) } : null })
-  }
-  const scrollToCardAndHighlight = (cardKey, id) => {
-    let tries = 0
-    const go = () => {
-      const c = scrollRef.current
-      if (c && c.querySelector(`[data-cardkey="${cardKey}"]`)) {
-        setTimeout(() => {
-          const el = c.querySelector(`[data-cardkey="${cardKey}"]`)
-          if (el) c.scrollTo({ top: Math.max(0, el.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop - 80), behavior: 'smooth' })
-          setHighlightId(id)
-          setTimeout(() => setHighlightId(null), 3600)
-        }, 380)
-      } else if (tries++ < 90) requestAnimationFrame(go)
-    }
-    requestAnimationFrame(go)
-  }
-  // Save from EventDetailsView. Dating an undated event moves it onto the timeline; clearing a
-  // dated event's date moves it to "Date unknown"; otherwise it's updated in place.
-  const saveEventDetails = ({ event: ev, srcDate }, { date, notes }) => {
-    const next = { ...ev }
-    if (notes) next.notes = notes; else delete next.notes
-    const isMed = ev.type === 'medication'
-    if (date) { next.date = date; if (isMed) next.startDate = date }
-    else { delete next.date; if (isMed) delete next.startDate }
-    const wasUndated = srcDate === UNDATED
-    if (!date) {
-      if (wasUndated) { setUndatedEvents(prev => prev.map(e => e.id === ev.id ? next : e)); return }
-      setTimeline(prev => prev.map(d => d.date === srcDate ? { ...d, events: d.events.filter(e => e.id !== ev.id) } : d).filter(d => d.events.length > 0 || d.summary || d.isToday))
-      setUndatedEvents(prev => [...prev, next])
-      setToast({ message: 'Moved to Date unknown' })
-      scrollToCardAndHighlight(`${UNDATED}-${ev.id}`, ev.id)
-      return
-    }
-    if (!wasUndated && srcDate === date) {
-      setTimeline(prev => prev.map(d => d.date === date ? { ...d, events: d.events.map(e => e.id === ev.id ? next : e) } : d))
-      return
-    }
-    if (wasUndated) setUndatedEvents(prev => prev.filter(e => e.id !== ev.id))
-    setTimeline(prev => {
-      let t = wasUndated ? prev : prev.map(d => d.date === srcDate ? { ...d, events: d.events.filter(e => e.id !== ev.id) } : d).filter(d => d.events.length > 0 || d.summary || d.isToday)
-      if (t.some(d => d.date === date)) return t.map(d => d.date === date ? { ...d, events: [...d.events, next] } : d)
-      const dd = new Date(date + 'T12:00:00')
-      return [...t, { date, label: dd.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }), isToday: date === localDateStr(), summary: null, events: [next], suggested: null }].sort((a, b) => a.date.localeCompare(b.date))
-    })
-    setToast({ message: wasUndated ? 'Date added' : 'Date updated', subtext: `Moved to ${fmtDate(date, { year: 'numeric' })}` })
-    scrollToCardAndHighlight(`${date}-${ev.id}`, ev.id)
-  }
-
   const removeEvent = (eventId, dayDate) => {
     // Convenience sync: deleting a medication event also removes its linked tracker entry
     // (captured meds share an id across timeline + tracker). No-op for non-med events.
@@ -7796,8 +8777,22 @@ export default function App() {
 
   const [clinicalEditEvent, setClinicalEditEvent] = useState(null)
 
+  // Answers from the one-tap gap sheet (or the diagnosis card's Edit): rebuild the patient
+  // state from the full answer set, keep the onboarding date, and update the diagnosis event
+  // in place. Gaps are derived from the answers, so the answered gap disappears everywhere.
+  const applyAnswers = (newAnswers) => {
+    const { patientState: newPs, seedEvents } = buildPatientStateFromAnswers(newAnswers, { ...recordFacts(patientState), addedDate: localDateStr() })
+    setPatientState(newPs)
+    const dx = seedEvents.find(se => se.event.id === 'seed_diag')
+    if (dx) {
+      setTimeline(prev => prev.map(day => ({ ...day, events: day.events.map(e => e.id === 'seed_diag' ? { ...e, name: dx.event.name, details: dx.event.details } : e) })))
+    }
+    setAnswerSheet(null)
+    setToast({ message: 'Your plan is updated', subtext: 'Thanks — that sharpens your next steps' })
+  }
+
   const applyClinicalEdit = (newAnswers) => {
-    const { patientState: newPs, seedEvents: newSeeds } = buildPatientStateFromAnswers(newAnswers)
+    const { patientState: newPs, seedEvents: newSeeds } = buildPatientStateFromAnswers(newAnswers, recordFacts(patientState))
     setPatientState(newPs)
     const todayStr = localDateStr()
     setTimeline(prev => {
@@ -7893,43 +8888,160 @@ export default function App() {
     if (!pendingCaptureRef.current) signalEngagement() // delay handled inside (ENGAGEMENT_SHOW_DELAY_MS)
   }
 
+  // ── redesign-01 handlers: writers → the record, action-item dispatch, artifact ──
+  const writeToTimeline = (event) => {
+    const dateKey = event.date || localDateStr()
+    setTimeline(prev => {
+      const existing = prev.find(d => d.date === dateKey)
+      if (existing) return prev.map(d => d.date === dateKey ? { ...d, events: [...d.events, event] } : d)
+      const d = new Date(dateKey + 'T12:00:00')
+      return [...prev, { date: dateKey, label: d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }), isToday: dateKey === localDateStr(), summary: null, events: [event], suggested: null }].sort((a, b) => a.date.localeCompare(b.date))
+    })
+  }
+  const _pop = (line) => { setJustCheckedLine(line); setTimeout(() => setJustCheckedLine(l => l === line ? null : l), 500) }
+  const logMood = (entry) => {
+    setMood(prev => [...prev, entry])
+    setMoodFlowOpen(false); _pop('mood'); setToast({ message: 'Mood logged' })
+  }
+  const symptomNoneToday = () => {
+    const t = localDateStr()
+    setSymptomNone(prev => prev.includes(t) ? prev : [...prev, t])
+    _pop('symptoms'); setToast({ message: 'Noted — nothing to report' })
+  }
+  const logSymptom = (entry) => {
+    setSymptoms(prev => { const i = prev.findIndex(e => e.id === entry.id); if (i >= 0) { const next = [...prev]; next[i] = entry; return next } return [...prev, entry] })
+    setSymptomFlowOpen(false); setSymptomFlowEntry(null); _pop('symptoms')
+    setToast({ message: 'Symptom logged', subtext: 'Added to your record' })
+  }
+  const logJournal = (entry) => {
+    setJournal(prev => { const i = prev.findIndex(e => e.id === entry.id); if (i >= 0) { const next = [...prev]; next[i] = entry; return next } return [...prev, entry] })
+    setJournalFlowOpen(false); setJournalFlowEntry(null); _pop('journal')
+    setToast({ message: 'Journal entry saved' })
+  }
+  const logDose = (entry) => {
+    setDoseLogs(prev => [...prev, entry])
+    if (entry.status === 'skipped') writeToTimeline({ id: entry.id, type: 'dose', name: `Skipped ${entry.medName}`, date: entry.date, notes: entry.reason })
+    setDoseLogOpen(false)
+    setToast({ message: entry.status === 'skipped' ? 'Skipped dose logged' : 'Dose logged' })
+  }
+  const addPending = (entry) => {
+    setPending(prev => [...prev, entry])
+    setPendingFlowOpen(false)
+    setToast({ message: 'Added to your next steps' })
+  }
+  const startNextStep = (id) => {
+    const p = pending.find(x => x.id === id)
+    setPending(prev => prev.map(x => x.id === id ? { ...x, state: 'awaiting', startedDate: localDateStr() } : x))
+    const msg = p?.kind === 'records' ? 'Connecting your records…' : p?.kind === 'trial' ? 'Added to your visit prep' : "Started — we'll update you when it's ready"
+    setToast({ message: msg })
+  }
+  const resolveNextStep = (id, note) => {
+    setPending(prev => prev.map(x => x.id === id ? { ...x, state: 'resolved', resolvedDate: localDateStr(), outcome: note || '' } : x))
+    setConfirmOutcome(null)
+    setToast({ message: 'Marked done' })
+  }
+  const upcomingAppt = useMemo(() => {
+    const t = localDateStr()
+    const appts = (timeline || []).flatMap(d => (d.events || []).filter(e => e.type === 'appointment' && (e.date || d.date) > t).map(e => ({ ...e, date: e.date || d.date })))
+    return appts.sort((a, b) => a.date.localeCompare(b.date))[0] || null
+  }, [timeline])
+  // ── redesign-02: daily check-in state + one-time to-dos ──
+  const checkinState = useMemo(() => {
+    const t = localDateStr()
+    return {
+      mood: mood.some(m => m.date === t),
+      symptoms: symptoms.some(s => s.date === t) ? 'logged' : (symptomNone.includes(t) ? 'none' : null),
+      journal: journal.some(j => j.date === t),
+    }
+  }, [mood, symptoms, symptomNone, journal])
+  const checkinSymptomEntry = useMemo(() => { const t = localDateStr(); return symptoms.filter(x => x.date === t).slice(-1)[0] || null }, [symptoms])
+  const checkinJournalEntry = useMemo(() => { const t = localDateStr(); return journal.filter(j => j.date === t).slice(-1)[0] || null }, [journal])
+  const checkinMoodLabel = useMemo(() => {
+    const t = localDateStr()
+    const m = [...mood].reverse().find(x => x.date === t)
+    return m?.label || null
+  }, [mood])
+  // Gentle accumulation count — distinct days with any check-in activity; never resets, no streak pressure
+  const checkinCount = useMemo(() => {
+    const s = new Set()
+    mood.forEach(m => m.date && s.add(m.date))
+    symptoms.forEach(x => x.date && s.add(x.date))
+    journal.forEach(j => j.date && s.add(j.date))
+    symptomNone.forEach(d => s.add(d))
+    return s.size
+  }, [mood, symptoms, journal, symptomNone])
+  const todos = useMemo(() => [...deriveTodos({ pending, upcomingAppt }), ...deriveQuestionGaps(patientState.onboardingAnswers)], [pending, upcomingAppt, patientState.onboardingAnswers])
+  const onTodoAction = (item) => {
+    if (item.state === 'question') { setAnswerSheet(item.question); return }
+    if (item.kind === 'prepare-visit') { setArtifactAppt(item.appt); return }
+    if (item.state === 'todo') { startNextStep(item.id); return }
+    if (item.state === 'awaiting') { setConfirmOutcome(item) } // only confirm-kind awaiting renders a button
+  }
+  // Authoritative-signal resolution: records/genomic awaiting for ≥1 day resolve on load
+  // (the dev day-rollover stands in for records syncing / results arriving).
+  useEffect(() => {
+    const t = localDateStr()
+    let changed = false
+    const next = pending.map(p => {
+      if (p.state === 'awaiting' && (p.kind === 'records' || p.kind === 'genomic') && p.startedDate && _daysBetweenStr(p.startedDate, t) >= 1) { changed = true; return { ...p, state: 'resolved', resolvedDate: t } }
+      return p
+    })
+    if (changed) { setPending(next); setTimeout(() => setToast({ message: 'A next step resolved', subtext: 'Records synced or results arrived' }), 500) }
+  }, []) // on load
+
   // Derive recommendations, addedIds, and allPlanItems from current state
   const { allPlanItems, visibleRecs, addedIds } = useRecommendations(patientState, timeline)
-  const homeDrillIn = activeTab === 'careplan' && !!(treatmentOpt || detailEvent)
-  const anyDrillInOpen = !!(homeDrillIn || selectedCommunity || showYou || summarizeBlock || flow || sheetOpen)
-  // The engagement nudge may appear on ANY top-level tab — it's gated only on blocking surfaces
-  // (add flows, sheets, pushed details, the records-connect flow, the clinical-edit sheet), never on
-  // which tab is showing, so it lands right after the triggering interaction settles.
-  const engageBlocked = anyDrillInOpen || showConnectRecords || !!clinicalEditEvent || engagementModalOpen
-  useEffect(() => {
-    if (!pendingEngageRef.current || engageBlocked) return
-    pendingEngageRef.current = false
-    const r = requestAnimationFrame(() => requestAnimationFrame(() => setEngagementModalOpen(true)))
-    return () => cancelAnimationFrame(r)
-  }, [engageBlocked])
+  const summaryTeasers = useMemo(() => buildTeasers({ symptoms, mood, doseLogs, pending, upcomingAppt, visibleRecs }), [symptoms, mood, doseLogs, pending, upcomingAppt, visibleRecs])
+  const onTeaserAction = (t) => {
+    if (t.type === 'ready-to-share' && upcomingAppt) { setArtifactAppt(upcomingAppt); return }
+    setTeaserDetail(t)
+  }
+  const _recsForSummary = visibleRecs && visibleRecs.length ? visibleRecs : null
+  const treatmentBasis = useMemo(() => buildTreatmentBasis(patientState, timeline), [patientState, timeline])
+  const todaySummary = { bullets: buildDailySummary(patientState, timeline, _recsForSummary), narrative: buildSummaryNarrative(patientState, timeline, _recsForSummary) }
+  const anyDrillInOpen = !!(treatmentOpt || selectedCommunity || showYou || summarizeBlock || flow || sheetOpen)
   // Drilled into a chat (back button showing) → treat like a drill-in: hide the fixed nav, go full-height.
   const hideNav = anyDrillInOpen || (activeTab === 'chat' && chatDrilled)   // hide the footer nav only when drilled into a chat from the side menu
 
-  // Inject visible recommendations into today's day — derived, not stored
-  const timelineWithRecs = timeline.map(day => {
-    if (!day.isToday) return day
-    // Persistent Clinical Trials step — always the FIRST suggested treatment on Today (stub for now).
-    // The treatment "step" is the parent; its "sets" are the option cards within.
-    const ctSuggestedStep = {
-      id: 'ct-suggested-step',
-      group: 'clinical-trials',
-      stepLabel: 'Clinical trials',
-      stepBody: 'Clinical trials may be an option worth exploring for your diagnosis.',
-      options: [
-        { id: 'ct-suggested-stub', kind: 'ct-suggested', phase: 'CLINICAL TRIALS', title: 'Explore clinical trials', subtitle: 'NCCN especially encourages participation in clinical trials. Explore trials that may be relevant to your diagnosis and treatment.' },
-      ],
-    }
-    const baseRecs = visibleRecs.length > 0 ? visibleRecs : null
-    // ctCard flag (Profile → Experiments): off removes the card and its node entirely.
-    const recs = [...(exp('ctCard') === 'off' ? [] : [ctSuggestedStep]), ...(visibleRecs || [])]
-    // v2.21: Daily summary removed from Today (DailySummaryCard + buildDailySummary kept for easy restore).
-    return { ...day, suggested: recs }
+  // Days that have check-in entries but no clinical event must still appear (so a day you only
+  // logged mood/journal on still exists on the timeline). Derived, not stored.
+  const _checkinDates = new Set()
+  mood.forEach(m => m.date && _checkinDates.add(m.date))
+  symptoms.forEach(x => x.date && _checkinDates.add(x.date))
+  journal.forEach(j => j.date && _checkinDates.add(j.date))
+  symptomNone.forEach(d => _checkinDates.add(d))
+  const _todayStr2 = localDateStr()
+  const _byDate = new Map(timeline.map(d => [d.date, d]))
+  _checkinDates.forEach(date => {
+    if (date === _todayStr2 || _byDate.has(date)) return
+    const dd = new Date(date + 'T12:00:00')
+    _byDate.set(date, { date, label: dd.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }), isToday: false, summary: null, events: [], suggested: null })
   })
+  const augmentedTimeline = Array.from(_byDate.values()).sort((a, b) => a.date.localeCompare(b.date))
+
+  // Inject visible recommendations into today's day — derived, not stored
+  const timelineWithRecs = augmentedTimeline.map(day => {
+    if (!day.isToday) return day
+    const recs = visibleRecs.length > 0 ? visibleRecs : null
+    return { ...day, suggested: recs, summary: { bullets: buildDailySummary(patientState, timeline, recs), narrative: buildSummaryNarrative(patientState, timeline, recs) } }
+  })
+
+  // redesign-04: when the care plan opens (view → timeline), anchor to today — the scroll
+  // container had no layout to anchor against while off-screen.
+  useEffect(() => {
+    if (activeTab !== 'plan') return
+    const r1 = requestAnimationFrame(() => requestAnimationFrame(() => {
+      const container = scrollRef.current
+      if (!container) return
+      const todayDay = timelineWithRecs.find(d => d.isToday)
+      const el = todayDay && sentinelRefs.current[todayDay.date]
+      if (!el) return
+      const cRect = container.getBoundingClientRect()
+      const elRect = el.getBoundingClientRect()
+      container.scrollTo({ top: Math.max(0, container.scrollTop + (elRect.top - cRect.top) - DAY_TOP_OFFSET), behavior: 'auto' })
+    }))
+    return () => cancelAnimationFrame(r1)
+  }, [activeTab])
 
   // When recommendation groups change mid-session, replay the generation animation
   // so the user sees their plan being "redesigned" with contextual status messages.
@@ -8018,7 +9130,7 @@ export default function App() {
           const c = scrollRef.current
           let offsetTop = 0; let node = el
           while (node && node !== c) { offsetTop += node.offsetTop; node = node.offsetParent }
-          c.scrollTo({ top: Math.max(0, offsetTop - 16), behavior: 'smooth' })
+          c.scrollTo({ top: Math.max(0, offsetTop - DAY_TOP_OFFSET), behavior: 'smooth' })
         }
       }
     }, 100)
@@ -8057,12 +9169,6 @@ export default function App() {
     if (open !== kbOpenRef.current) { kbOpenRef.current = open; setKbOpen(open) }
   }, [])
   useLayoutEffect(() => { applyShellHeight() })
-  // Returning to Home: put the timeline back where it was (browsers usually keep it through
-  // display:none, but don't rely on it).
-  useLayoutEffect(() => {
-    if (activeTab !== 'careplan' || homeScrollRef.current == null || !scrollRef.current) return
-    if (Math.abs(scrollRef.current.scrollTop - homeScrollRef.current) > 1) scrollRef.current.scrollTop = homeScrollRef.current
-  }, [activeTab])
   useEffect(() => {
     const vv = window.visualViewport
     if (vv) { vv.addEventListener('resize', applyShellHeight); vv.addEventListener('scroll', applyShellHeight) }
@@ -8074,45 +9180,92 @@ export default function App() {
     document.body.style.overflow = activeTab === 'chat' ? 'hidden' : ''
     return () => { document.body.style.overflow = '' }
   }, [activeTab])
+  // Capture-phase scroll handler on the content region: whichever screen is scrolling,
+  // collapse the header on scroll-down past 56px, reveal on scroll-up or near the top.
+  // Today (careplan) has a transparent floating header and never collapses.
+  const handleContentScroll = (e) => {
+    return  // floating header: never collapses (v3.02)
+    const el = e.target
+    if (!el || typeof el.scrollTop !== 'number') return
+    const y = el.scrollTop, last = lastScrollTopRef.current
+    if (y > last + 3 && y > 56) setHeaderCollapsed(true)
+    else if (y < last - 3 || y <= 4) setHeaderCollapsed(false)
+    lastScrollTopRef.current = y
+  }
+  useEffect(() => { setHeaderCollapsed(false); lastScrollTopRef.current = 0 }, [activeTab])
 
+  // One subject for all patient copy (services/patientCopy.js)
+  const patientCopySubject = useMemo(() => careSubject(patientState), [patientState.role, patientState.patientName, patientState.relationship])
   return (
+    <PatientCopyContext.Provider value={patientCopySubject}>
     <>
-    <style>{`@keyframes flyoutIn { from { opacity:0; transform:scale(0.88) translateY(-6px); } to { opacity:1; transform:scale(1) translateY(0); } }`}</style>
+    <style>{`@keyframes flyoutIn { from { opacity:0; transform:scale(0.88) translateY(-6px); } to { opacity:1; transform:scale(1) translateY(0); } } @keyframes o4mCheckPop { 0% { transform:scale(0.4); } 60% { transform:scale(1.15); } 100% { transform:scale(1); } } @keyframes o4mSpin { to { transform: rotate(360deg); } }`}</style>
     {/* CSS-owned app shell: root is a flex column pinned to the dynamic viewport. Header and
         nav are ordinary flex children (not position:fixed), and the active screen is the single
         flex:1 scroll owner. No per-panel height math; the browser divides 100dvh across the three. */}
     <div ref={rootRef} style={{ width: '100%', height: '100dvh', backgroundColor: C.bgApp, position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {onboarded && activeTab !== 'chat' && (
-          <div style={{ flexShrink: 0, opacity: anyDrillInOpen ? 0 : 1, pointerEvents: anyDrillInOpen ? 'none' : 'auto', transition: 'opacity 0.2s ease' }}>
-            <AppHeader currentDayLabel={activeTab === 'careplan' ? currentDayLabel : null} activeTab={activeTab} onProfileTap={() => setShowYou(true)}/>
+          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 36, transform: headerCollapsed && activeTab !== 'careplan' ? 'translateY(-100%)' : 'translateY(0)', opacity: anyDrillInOpen ? 0 : 1, pointerEvents: anyDrillInOpen ? 'none' : 'auto', transition: 'transform 0.28s cubic-bezier(0.32,0.72,0,1), opacity 0.2s ease' }}>
+            <AppHeader dayFade={activeTab === 'plan' ? dayFade : null} activeTab={activeTab} onProfileTap={() => setShowYou(true)} onAsk={openChat}/>
           </div>
         )}
         {/* Content region — single flex:1 area; the active screen fills it and scrolls internally */}
-        <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ display: activeTab === 'treatment' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
-          <TreatmentScreen patientState={patientState} onLaunchRecordsFlow={() => setShowConnectRecords(true)} tab={treatmentTab} onTabChange={setTreatmentTab}/>
-        </div>
+        <div onScrollCapture={handleContentScroll} style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: activeTab === 'track' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
-          <TrackScreen medications={medications} patientState={patientState} onSaveMedication={handleSaveMedication}/>
+          <TrackScreen medications={medications} patientState={patientState} onSaveMedication={handleSaveMedication} symptoms={symptoms} journal={journal} onOpenSymptomFlow={() => setSymptomFlowOpen(true)} onOpenJournalFlow={() => setJournalFlowOpen(true)} onOpenDoseLog={() => setDoseLogOpen(true)}/>
         </div>
         <div style={{ display: activeTab === 'resources' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
-          <ResourcesScreen/>
+          <ResourcesLibraryScreen/>
         </div>
         <div style={{ display: activeTab === 'community' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
           <CommunityScreen onSelectCommunity={setSelectedCommunity} autoJoinedId={autoJoinedCommunity?.id}/>
         </div>
-        <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
-          <ChatScreen patientState={patientState} timeline={timeline} medications={medications} userName={currentUser?.name} onDeepLink={handleChatDeepLink} onDrilledChange={setChatDrilledTitle} onDrillModeChange={setChatDrilled} backSignal={chatBackSignal} deleteSignal={chatDeleteSignal} menuSignal={chatMenuSignal} newSignal={chatNewSignal} onOverflow={() => setChatOverflowOpen(true)} onMenuOpenChange={setChatMenuOpen} onTabChange={switchTab} kbOpen={kbOpen} onCaptureFlow={openCaptureFlow} captureAck={captureAck} onAckConsumed={() => setCaptureAck(null)}/>
-        </div>
+        {/* Chat is no longer a tab — it opens as a slide-up sheet (rendered at root, below). */}
 
         {/* Parallax transform: MUST be `none` at rest, not translateX(0). On iOS Safari any
             transform (even identity) creates a composited layer that breaks position:sticky AND
             stops the scroll container from reflowing on content-height change (e.g. summary
             collapse leaves a gap). `none` avoids the layer; it still animates to translateX(-20%). */}
-        <div style={{ display: activeTab === 'careplan' ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0, opacity: onboarded ? (treatmentOpt ? 0.6 : 1) : 0, transform: treatmentOpt ? 'translateX(-20%)' : 'none', transition: 'opacity 0.3s, transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)', transformOrigin: 'center' }}>
+        <div style={{ display: (activeTab === 'careplan' || activeTab === 'plan') ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0, opacity: onboarded ? (treatmentOpt ? 0.6 : 1) : 0, transform: treatmentOpt ? 'translateX(-20%)' : 'none', transition: 'opacity 0.3s, transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)', transformOrigin: 'center' }}>
+        {activeTab === 'careplan' && (
+          <TodayScreen
+            userName={currentUser?.name}
+            summary={todaySummary}
+            narrative={todaySummary.narrative}
+            teasers={summaryTeasers}
+            onTeaserAction={onTeaserAction}
+            onAddEvent={() => setSheetOpen(true)}
+            checkin={checkinState}
+            checkinJustChecked={justCheckedLine}
+            checkinMoodLabel={checkinMoodLabel}
+            checkinCount={checkinCount}
+            onCheckinMood={() => setMoodFlowOpen(true)}
+            onCheckinMoodSelect={(v) => logMood({ id: 'mood_' + Date.now(), date: localDateStr(), value: v, label: (MOOD_SCALE.find(m => m.v === v) || {}).label })}
+            onCheckinSymptomsYes={() => { setSymptomFlowEntry(null); setSymptomFlowOpen(true) }}
+            onCheckinSymptomsEdit={() => { setSymptomFlowEntry(checkinSymptomEntry); setSymptomFlowOpen(true) }}
+            checkinSymptomEntry={checkinSymptomEntry}
+            onCheckinSymptomsNo={symptomNoneToday}
+            onCheckinJournal={() => { setJournalFlowEntry(null); setJournalFlowOpen(true) }}
+            onCheckinJournalEdit={() => { setJournalFlowEntry(checkinJournalEntry); setJournalFlowOpen(true) }}
+            checkinJournalEntry={checkinJournalEntry}
+            onCheckinJournalSave={(text) => logJournal({ id: 'jrn_' + Date.now(), date: localDateStr(), text })}
+            todos={todos}
+            onTodoAction={onTodoAction}
+            onViewTimeline={() => switchTab('plan')}
+            onViewTreatments={() => switchTab('plan')}
+            hasTreatments={!!(visibleRecs && visibleRecs.length)}
+            onAsk={openChat}
+            onViewCareSummary={() => setCareSummaryOpen(true)}
+            cancerLabel={CANCER_LABELS[patientState.diagnosisCode] || 'your cancer'}
+            onViewResources={() => switchTab('resources')}
+            todOverride={todOverride}
+            onAskClinical={() => setAskOpen(true)}
+            onOpenCommunity={() => switchTab('community')}
+          />
+        )}
         <div
           ref={scrollRef}
-          style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehaviorY: 'contain', position: 'relative' }}
+          style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehaviorY: 'contain', position: 'relative', display: activeTab === 'plan' ? 'block' : 'none' }}
           onTouchStart={e => { if (scrollRef.current?.scrollTop === 0) scrollRef.current._pullStart = e.touches[0].clientY }}
           onTouchMove={e => {
             const sc = scrollRef.current
@@ -8141,26 +9294,58 @@ export default function App() {
               <div style={{ width: 26, height: 26, borderRadius: 13, border: `2.5px solid ${pullDistance > 60 ? C.primary : C.border}`, borderTopColor: 'transparent', transform: `rotate(${pullDistance * 3}deg)`, transition: 'border-color 0.2s' }}/>
             </div>
           )}
+          {/* 60px top SPACER (not paddingTop) so sticky day headers anchor to the viewport top
+              when the glass bar collapses */}
+          <div style={{ height: 60 }}/>
           {(() => {
             let globalItemIdx = 0
             return timelineWithRecs.map((day, idx) => {
               const dayItemCount = (day.events?.length || 0) + (day.suggested?.length || 0) + (day.summary ? 1 : 0)
               const startIdx = globalItemIdx
               globalItemIdx += dayItemCount
+              const dl = {
+                mood: [...mood].reverse().find(m => m.date === day.date) || null,
+                symptoms: symptoms.filter(s => s.date === day.date),
+                journal: journal.filter(j => j.date === day.date),
+                none: symptomNone.includes(day.date),
+              }
               return (
+                <div key={day.date}>
                 <DaySection
-                  key={day.date}
                   day={day}
-                  isLastDay={idx === timeline.length - 1}
-                  connectAbove={idx > 0}
-                  connectBelow={idx < timelineWithRecs.length - 1}
+                  checkin={checkinState}
+                  checkinJustChecked={justCheckedLine}
+                  checkinMoodLabel={checkinMoodLabel}
+                  checkinCount={checkinCount}
+                  onCheckinMood={() => setMoodFlowOpen(true)}
+            onCheckinMoodSelect={(v) => logMood({ id: 'mood_' + Date.now(), date: localDateStr(), value: v, label: (MOOD_SCALE.find(m => m.v === v) || {}).label })}
+                  onCheckinSymptomsYes={() => { setSymptomFlowEntry(null); setSymptomFlowOpen(true) }}
+            onCheckinSymptomsEdit={() => { setSymptomFlowEntry(checkinSymptomEntry); setSymptomFlowOpen(true) }}
+            checkinSymptomEntry={checkinSymptomEntry}
+                  onCheckinSymptomsNo={symptomNoneToday}
+                  onCheckinJournal={() => { setJournalFlowEntry(null); setJournalFlowOpen(true) }}
+            onCheckinJournalEdit={() => { setJournalFlowEntry(checkinJournalEntry); setJournalFlowOpen(true) }}
+            checkinJournalEntry={checkinJournalEntry}
+            onCheckinJournalSave={(text) => logJournal({ id: 'jrn_' + Date.now(), date: localDateStr(), text })}
+                  todos={todos}
+                  onTodoAction={onTodoAction}
+                  dailyLog={dl}
+                  summaryTeasers={summaryTeasers}
+                  onTeaserAction={onTeaserAction}
+                  treatmentBasis={treatmentBasis}
+                  isLastDay={idx === timelineWithRecs.length - 1}
                   highlightId={highlightId}
                   todayFlash={todayFlash}
                   summaryShown={summaryShown}
                   onApproachSelect={setTreatmentOpt}
                   addedIds={addedIds}
                   onRemoveEvent={removeEvent}
-                  onEditClinical={ev => setClinicalEditEvent(ev)}
+                  onEditClinical={ev => {
+                    const ans = patientState.onboardingAnswers || {}
+                    if (ev.id === 'seed_diag' && (patientState.onboardedDate || ans.extent || ans.treatment_phase)) {
+                      setAnswerSheet([...(ans.cancer_type && ans.cancer_type !== 'unsure' ? [] : ['cancer_type']), 'extent', 'treatment_phase', 'drivers'])
+                    } else setClinicalEditEvent(ev)
+                  }}
                   visibleRecs={visibleRecs}
                   revealedCards={revealedCards}
                   blockGenStates={blockGenStates}
@@ -8172,42 +9357,38 @@ export default function App() {
                   cancerSupported={isCancerSupported(patientState)}
                   onReviewRecs={scrollToRecs}
                   showRecordsCard={recordsCardVisible && !areRecordsConnected()}
-                  onOpenSettings={() => switchTab('treatment')}
+                  onOpenSettings={() => setShowYou(true)}
                   onDismissRecordsCard={handleDismissRecordsCard}
                   sentinelRef={el => {
                     if (el) sentinelRefs.current[day.date] = el
                   }}
                 />
+                {day.isToday && <SponsoredSlot ad={{ icon: 'volunteer_activism', title: 'Patient assistance program', body: 'See if you qualify for help with treatment costs.' }}/>}
+                </div>
               )
             })
           })()}
-          {undatedEvents.length > 0 && (
-            <DaySection
-              key="undated"
-              day={{ date: 'undated', label: 'Date unknown', isUndated: true, isToday: false, summary: null, events: undatedEvents, suggested: null }}
-              highlightId={highlightId}
-              onRemoveEvent={(id) => removeUndatedEvent(id)}
-              onEditClinical={ev => setDetailEvent({ event: ev, srcDate: 'undated' })}
-              onAddDate={(ev, srcDate) => setDetailEvent({ event: ev, srcDate })}
-              visibleRecs={visibleRecs}
-              revealedCards={revealedCards}
-              generationDone={generationDone}
-              sentinelRef={el => { if (el) sentinelRefs.current['undated'] = el; else delete sentinelRefs.current['undated'] }}
-            />
-          )}
-          {/* Bottom clearance so the last card scrolls clear of the FAB + Today pill */}
-          <div style={{ height: 96 }}/>
+          <div style={{ height: 100 }}/>
         </div>
         </div>
       </div>
 
       {onboarded && !hideNav && !kbOpen && activeTab !== 'chat' && (
-        <div style={{ flexShrink: 0, position: 'relative', zIndex: 35 }}>
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 35 }}>
           <BottomNav activeTab={activeTab} onTabChange={switchTab}/>
         </div>
       )}
 
-      {onboarded && activeTab === 'careplan' && (
+      {/* Chat — a slide-up sheet over the whole app (primary nav is covered while it's up) */}
+      {onboarded && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 110, display: 'flex', flexDirection: 'column', backgroundColor: C.bgApp, transform: chatOpen ? (chatCovered ? 'translateY(0) scale(0.94)' : 'translateY(0)') : 'translateY(100%)', borderRadius: chatCovered ? 16 : 0, overflow: 'hidden', transition: 'transform 0.38s cubic-bezier(0.32,0.72,0,1)', pointerEvents: chatOpen ? 'auto' : 'none', boxShadow: chatOpen ? '0 -6px 28px rgba(0,0,0,0.16)' : 'none' }}>
+          {/* Flows chat opens stack over it: chat steps back and dims (SCRIM) behind them. */}
+          <div style={{ position: 'absolute', inset: 0, zIndex: 50, backgroundColor: 'rgba(0,0,0,0.35)', opacity: chatCovered ? 1 : 0, pointerEvents: 'none', transition: 'opacity 0.4s cubic-bezier(0.32, 0.72, 0, 1)' }}/>
+          <ChatScreen sheetMode onAskClinical={(q) => { setAskPrefill(q); setAskOpen(true) }} onClose={() => setChatOpen(false)} context={chatContext} patientState={patientState} timeline={timeline} medications={medications} userName={currentUser?.name} onDeepLink={handleChatDeepLink} onDrilledChange={setChatDrilledTitle} onDrillModeChange={setChatDrilled} backSignal={chatBackSignal} deleteSignal={chatDeleteSignal} menuSignal={chatMenuSignal} newSignal={chatNewSignal} onOverflow={() => setChatOverflowOpen(true)} onMenuOpenChange={setChatMenuOpen} onTabChange={(t) => { setChatOpen(false); switchTab(t) }} kbOpen={kbOpen} onCaptureFlow={openCaptureFlow} captureAck={captureAck} onAckConsumed={() => setCaptureAck(null)}/>
+        </div>
+      )}
+
+      {onboarded && activeTab === 'plan' && (
         <button onClick={() => setSheetOpen(true)} style={{
           position: 'fixed', bottom: 90, right: 20, width: 54, height: 54, borderRadius: 27,
           backgroundColor: C.primary, border: 'none', cursor: 'pointer', display: 'flex',
@@ -8218,27 +9399,20 @@ export default function App() {
       )}
 
       {/* You / Profile overlay — slides up as a full-screen sheet */}
-      <YouOverlay show={showYou} onClose={() => setShowYou(false)} currentUser={currentUser} onLogout={() => { handleLogout(); setShowYou(false) }}/>
+      <YouOverlay show={showYou} fullView={chatOpen} onClose={() => setShowYou(false)} currentUser={currentUser} onLogout={() => { handleLogout(); setShowYou(false) }} onAddPending={() => { setShowYou(false); setTimeout(() => setPendingFlowOpen(true), 340) }} todOverride={todOverride} onSetTod={setTodOverride}/>
 
-      {!onboarded && <OnboardingScreen
+      {!onboarded && !authVisible && <OnboardingScreen
         onComplete={completeOnboarding}
-        onAddMedication={(cb, diagnosisCode) => { onboardingMedCallbackRef.current = cb; setOnboardingMedDiagnosis(diagnosisCode || ''); setOnboardingMedFlow(true) }}
         onExit={() => setAuthVisible(true)}
       />}
-      {onboardingMedFlow && <AddMedicationFlow
-        onClose={() => setOnboardingMedFlow(false)}
-        onComplete={event => {
-          if (onboardingMedCallbackRef.current) {
-            onboardingMedCallbackRef.current({ name: event.name, subtitle: event.subtitle || '', components: event.components || [] })
-            onboardingMedCallbackRef.current = null
-          }
-          setOnboardingMedFlow(false)
-        }}
-        planItems={[]}
-        patientState={{ diagnosisCode: onboardingMedDiagnosis }}
-        shellZIndex={91}
-        skipNotes={true}
-      />}
+      {answerSheet && (
+        <AnswerQuestionSheet
+          questions={answerSheet}
+          answers={patientState.onboardingAnswers || {}}
+          onSave={applyAnswers}
+          onClose={() => setAnswerSheet(null)}
+        />
+      )}
       {authVisible && <AuthScreen onLogin={handleReturningUser} onNewUser={handleNewUser}/>}
       {clinicalEditEvent && (
         <ClinicalEditSheet
@@ -8249,25 +9423,13 @@ export default function App() {
         />
       )}
 
-      {/* Home drill-ins are tied to the Home tab: leaving Home (e.g. "See all" → Treatment › Trials)
-          keeps them mounted with their state and scroll, just hidden; returning to Home shows them
-          exactly as left. visibility (not display) so nothing re-lays out or loses scroll position. */}
-      <div style={{ display: 'contents', visibility: activeTab === 'careplan' ? 'visible' : 'hidden' }}>
-      {detailEvent && (
-        <EventDetailsView key={detailEvent.event.id} event={detailEvent.event} onClose={() => setDetailEvent(null)} onSave={vals => saveEventDetails(detailEvent, vals)}/>
-      )}
-      {treatmentOpt && treatmentOpt.kind === 'ct-suggested' ? (
-        <CTExploreDetail patientState={patientState} onClose={() => setTreatmentOpt(null)} onSeeAll={() => { setTreatmentTab('trials'); switchTab('treatment') }}/>
-      ) : treatmentOpt && (/clinical trial/i.test(treatmentOpt.title || '') || treatmentOpt.phase === 'Clinical trial' || treatmentOpt.subtitle === 'Clinical trial') ? (
-        <ClinicalTrialTreatmentDetail opt={treatmentOpt} patientState={patientState} onClose={() => setTreatmentOpt(null)}/>
-      ) : treatmentOpt && (
+      {treatmentOpt && (
         <TreatmentDetailView
           opt={treatmentOpt}
           onClose={() => setTreatmentOpt(null)}
           addedIds={addedIds}
           patientState={patientState}
           planItems={allPlanItems}
-          onAbandonSignal={signalEngagement}
           onAddToPlan={(event, fromFlow) => {
             if (fromFlow) {
               setTreatmentOpt(null)
@@ -8276,17 +9438,28 @@ export default function App() {
           }}
         />
       )}
-      </div>
       {sheetOpen && <AddEventSheet onClose={() => setSheetOpen(false)} onSelectProcedure={() => openFlow('procedure')} onSelectScan={() => openFlow('scan')} onSelectMedication={() => openFlow('medication')} onSelectAppointment={() => openFlow('appointment')}/>}
+      {/* Add flows open over chat when they're started from it (saving from chat), so lift them above the chat sheet. */}
+      <div style={{ position: 'relative', zIndex: chatOpen ? 130 : 'auto' }}>
       {flow === 'procedure' && <AddProcedureFlow onClose={closeAddFlow} onComplete={handleComplete} preload={flowPreload?.type === 'procedure' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
       {flow === 'scan' && <AddScanFlow onClose={closeAddFlow} onComplete={handleComplete} preload={flowPreload?.type === 'scan' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
+      {flow === 'symptom' && <ChatLogSymptomFlow prefill={flowPreload?.item} onClose={closeAddFlow} onSubmit={(entries, manage) => {
+        // Symptoms save to the symptom tracker only (no timeline event, not the care plan).
+        setSymptoms(prev => [...prev, ...entries]); _pop('symptoms')
+        const cap = pendingCaptureRef.current; pendingCaptureRef.current = null
+        setFlow(null); setFlowPreload(null)
+        const ns = entries.map(e => e.name.toLowerCase())
+        const list = ns.length > 1 ? ns.slice(0, -1).join(', ') + ' and ' + ns[ns.length - 1] : ns[0]
+        if (manage) setToast({ message: 'In the app, this opens recommendations for easing it.' })
+        if (cap) setCaptureAck({ threadId: cap.threadId, id: Date.now(), text: `Your ${list} ${ns.length > 1 ? 'are' : 'is'} saved. ${ns.length > 1 ? "They'll" : "It'll"} show in your symptom tracker.`, msgIndex: cap.msgIndex, answer: cap.answer })
+      }}/>}
       {flow === 'medication' && <AddMedicationFlow onClose={closeAddFlow} onComplete={handleComplete} preload={flowPreload?.type === 'medication' ? flowPreload.item : null} planItems={allPlanItems} patientState={patientState}/>}
       {flow === 'appointment' && <AddAppointmentFlow onClose={closeAddFlow} onComplete={handleComplete}/>}
+      </div>
 
       {/* Engagement nudge (feature-flagged, engagementModal) — connect-records bottom sheet */}
       {engagementModalOpen && <EngagementNudgeSheet onConnect={connectRecordsFromNudge} onDismiss={dismissEngagementNudge}/>}
-      {showConnectRecords && <MedicalRecordsConnectScreen onClose={() => { setShowConnectRecords(false); if (!recordsFlowCompletedRef.current && !areRecordsConnected()) { activateRecordsCard(); setRecordsCardVisible(true) } recordsFlowCompletedRef.current = false }} onConnected={() => { recordsFlowCompletedRef.current = true; markRecordsConnected(); setRecordsCardVisible(false) }}/>}
-      {onboarded && !anyDrillInOpen && activeTab === 'careplan' && (
+      {onboarded && !anyDrillInOpen && activeTab === 'plan' && (
         <div style={{
           position: 'fixed', bottom: 90, left: 0, right: 0, zIndex: 30,
           display: 'flex', justifyContent: 'center', pointerEvents: 'none',
@@ -8308,14 +9481,25 @@ export default function App() {
         </div>
       )}
       {toast && <Toast message={toast.message} subtext={toast.subtext} action={toast.action} onDone={() => setToast(null)}/>}
+      {/* ── redesign-01 overlays ── */}
+      {artifactAppt && <AppointmentArtifactSheet appt={artifactAppt} timeline={timeline} symptoms={symptoms} doseLogs={doseLogs} medications={medications} pending={pending} questions={questions} onSaveQuestions={setQuestions} onClose={() => setArtifactAppt(null)}/>}
+      {symptomFlowOpen && <SymptomLogFlow entry={symptomFlowEntry} onClose={() => { setSymptomFlowOpen(false); setSymptomFlowEntry(null) }} onComplete={logSymptom}/>}
+      {moodFlowOpen && <MoodFlow onClose={() => setMoodFlowOpen(false)} onComplete={logMood}/>}
+      {journalFlowOpen && <JournalFlow entry={journalFlowEntry} onClose={() => { setJournalFlowOpen(false); setJournalFlowEntry(null) }} onComplete={logJournal}/>}
+      {careSummaryOpen && <CareSummarySheet symptoms={symptoms} medications={medications} journal={journal} mood={mood} timeline={timeline} patientState={patientState} accountName={currentUser?.name || ''} onSavePatientDetails={d => setPatientState(ps => ({ ...ps, ...d }))} onClose={() => setCareSummaryOpen(false)}/>}
+      {pendingFlowOpen && <PendingFlow onClose={() => setPendingFlowOpen(false)} onComplete={addPending}/>}
+      {doseLogOpen && <DoseLogSheet medications={medications} onClose={() => setDoseLogOpen(false)} onSave={logDose}/>}
+      {confirmOutcome && <ConfirmOutcomeSheet item={confirmOutcome} onClose={() => setConfirmOutcome(null)} onConfirm={resolveNextStep}/>}
+      {teaserDetail && <TeaserDetailSheet teaser={teaserDetail} onClose={() => setTeaserDetail(null)}/>}
+      {askOpen && <AskO4MSheet fullView={chatOpen} initialQuestion={askPrefill} onClose={() => { setAskOpen(false); setAskPrefill('') }} onSend={() => { setAskPrefill(''); setAskOpen(false); setToast({ message: 'Sent to the O4M clinical team', subtext: "They'll follow up with you" }) }}/>}
 
       {chatOverflowOpen && (
         <>
-          <div onClick={() => setChatOverflowOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 95 }}/>
-          <div style={{ position: 'fixed', top: 54, right: 12, zIndex: 96, minWidth: 168, backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, boxShadow: '0 6px 20px rgba(0,0,0,0.16)', overflow: 'hidden', animation: 'flyoutIn 0.16s ease', transformOrigin: 'top right' }}>
-            <button onClick={() => { setChatOverflowOpen(false); setChatConfirmDelete(true) }} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '13px 16px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 19, color: '#ef4444' }}>delete</span>
-              <span style={{ fontSize: 14.5, fontWeight: 500, color: '#ef4444' }}>Delete</span>
+          <div onClick={() => setChatOverflowOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 125 }}/>
+          <div style={{ position: 'fixed', top: 54, right: 12, zIndex: 126, minWidth: 168, backgroundColor: C.bgCard, border: '1px solid rgba(0,0,0,0.12)', borderRadius: 12, boxShadow: '0 2px 6px rgba(0,0,0,0.06), 0 14px 32px rgba(0,0,0,0.08)', overflow: 'hidden', animation: 'flyoutIn 0.16s ease', transformOrigin: 'top right' }}>
+            <button onClick={() => { setChatOverflowOpen(false); setChatConfirmDelete(true) }} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '12px 16px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 20, color: '#B00020' }}>delete</span>
+              <span style={{ fontSize: 14, lineHeight: '20px', fontWeight: 500, color: '#B00020' }}>Delete</span>
             </button>
           </div>
         </>
@@ -8331,5 +9515,6 @@ export default function App() {
       {selectedCommunity && <CommunityDetailView community={selectedCommunity} onClose={() => setSelectedCommunity(null)}/>}
     </div>
     </>
+    </PatientCopyContext.Provider>
   )
 }

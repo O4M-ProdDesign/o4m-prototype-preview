@@ -1,5 +1,11 @@
 # O4M Prototype — Handoff Document
 
+> **REDESIGN-05 LINE (read first).** This zip is the **redesign-05** exploration, which continues the redesign-04 line (Today surface, check-in, Liquid Glass) with the new onboarding, caregiver model, patient copy system and Ask O4M. It is NOT the clinical-trials baseline. In the GitHub repo, root `/src` is the clinical-trials line (v2.17), so **do not upload this `src/` to the repo root**. To publish the redesign-05 preview, upload only `docs/index.html` to `docs/iterations/redesign-05/index.html` (leave `docs/iterations/redesign-04/` as the earlier checkpoint). See `update-notes.md` for the change log (v2.20 to v2.41 = redesign-04 work; v2.42 = redesign-05 checkpoint). Package a SOURCE commit ("package the commit files") after every meaningful piece of work.
+>
+> **Onboarding (v2.21+):** front door = `AuthScreen` landing → `OnboardingScreen` (promise → cancer_type → extent → treatment_phase → role → account → about) → `completeOnboarding` → Today. Questions live once in `ONB_QUESTIONS` and are reused by `AnswerQuestionSheet` (one-tap gaps from `deriveQuestionGaps`). `patientState.onboardedDate` marks onboarding complete and drives the first-run welcome summary. Fields are STRAWMAN pending the real NCCN essentials list.
+>
+> **Caregiver model + patient copy (v2.29):** Account = the person setting it up (their own name + DOB). Record = always the patient; caregivers give the patient's name-as-they-call-them, relationship (content signal → `CAREGIVER_CONTENT`) and DOB on one screen. **Copy:** write every sentence once using the tokens in `src/services/patientCopy.js` — ask "who is this sentence about?"; about the patient → `{they}/{their}/{they're}/{are|is}…`, about the reader → plain "you". Components use `const t = usePatientCopy()` then `t('How {are|is} {they} feeling today?')`. Phase 1 surfaces converted (see update-notes v2.29); phase 2 is the rest of the app.
+
 This document is for the next Claude conversation picking up this prototype. Read it fully before making any changes.
 
 ---

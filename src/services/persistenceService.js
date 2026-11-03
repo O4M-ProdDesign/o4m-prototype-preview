@@ -11,7 +11,15 @@ const KEYS = {
   userDecisions:  KEY_PREFIX + 'userDecisions',
   medications:    KEY_PREFIX + 'medications',
   chatDrafts:     KEY_PREFIX + 'chatDrafts',
-  undatedEvents:  KEY_PREFIX + 'undatedEvents',
+  // ─── redesign-01 additive keys (never change existing shapes) ───
+  symptoms:       KEY_PREFIX + 'symptoms',        // [{id,name,severity,date,notes}]
+  doseLogs:       KEY_PREFIX + 'doseLogs',        // [{id,medId,medName,date,status,reason}]
+  journal:        KEY_PREFIX + 'journal',         // [{id,date,text}]
+  pending:        KEY_PREFIX + 'pending',         // [{id,kind,label,requestedDate,status,resolvedDate}]
+  questions:      KEY_PREFIX + 'questions',       // [{id,text,createdDate}]
+  aiDismissed:    KEY_PREFIX + 'aiDismissed',     // [actionItemId,...]
+  mood:           KEY_PREFIX + 'mood',            // [{id,date,value,label,note}]
+  symptomNone:    KEY_PREFIX + 'symptomNone',     // [dateStr,...] — "nothing to report" markers
 }
 
 // ─── SCHEMA VERSION GUARD ─────────────────────────────────────────
@@ -19,7 +27,7 @@ const KEYS = {
 // doesn't match, all persisted state is discarded so the app starts fresh (onboarding) instead of
 // hydrating a stale/incompatible timeline — which otherwise renders as a broken home feed. Runs
 // once on import, before any load below.
-const SCHEMA_VERSION = '3'
+const SCHEMA_VERSION = '2'
 const VERSION_KEY = KEY_PREFIX + 'schemaVersion'
 ;(() => {
   try {
@@ -128,6 +136,29 @@ export const loadMedications = () => {
   }
 }
 
+// ─── REDESIGN-01 RECORD WRITERS (additive) ────────────────────────
+// Simple versioned array stores for the new record types. Same try/catch
+// discipline as everything above; malformed data falls back to [].
+const _saveArr = (key, arr) => { try { localStorage.setItem(key, JSON.stringify(arr)) } catch (e) { console.warn('[persistence] save', key, e) } }
+const _loadArr = (key) => { try { const r = localStorage.getItem(key); const p = r ? JSON.parse(r) : []; return Array.isArray(p) ? p : [] } catch (e) { return [] } }
+
+export const saveSymptoms  = (a) => _saveArr(KEYS.symptoms, a)
+export const loadSymptoms  = () => _loadArr(KEYS.symptoms)
+export const saveDoseLogs  = (a) => _saveArr(KEYS.doseLogs, a)
+export const loadDoseLogs  = () => _loadArr(KEYS.doseLogs)
+export const saveJournal   = (a) => _saveArr(KEYS.journal, a)
+export const loadJournal   = () => _loadArr(KEYS.journal)
+export const savePending   = (a) => _saveArr(KEYS.pending, a)
+export const loadPending   = () => _loadArr(KEYS.pending)
+export const saveQuestions = (a) => _saveArr(KEYS.questions, a)
+export const loadQuestions = () => _loadArr(KEYS.questions)
+export const saveAiDismissed = (a) => _saveArr(KEYS.aiDismissed, a)
+export const loadAiDismissed = () => _loadArr(KEYS.aiDismissed)
+export const saveMood        = (a) => _saveArr(KEYS.mood, a)
+export const loadMood        = () => _loadArr(KEYS.mood)
+export const saveSymptomNone = (a) => _saveArr(KEYS.symptomNone, a)
+export const loadSymptomNone = () => _loadArr(KEYS.symptomNone)
+
 // ─── CHAT DRAFTS ──────────────────────────────────────────────────
 // Unsent composer text, kept per conversation (keyed by conversation id) so it survives
 // navigating away and reloads — matching messaging-app behavior. Cleared on send.
@@ -154,21 +185,6 @@ export const saveChatDraft = (id, text) => {
     else delete d[id]
     localStorage.setItem(KEYS.chatDrafts, JSON.stringify(d))
   } catch (e) { console.warn('[persistence] Failed to save chat draft:', e) }
-}
-
-// ─── UNDATED EVENTS ───────────────────────────────────────────────
-// Timeline events with no date yet (shown in the "Date unknown" section). null = never saved.
-export const saveUndatedEvents = (events) => {
-  try { localStorage.setItem(KEYS.undatedEvents, JSON.stringify(events)) }
-  catch (e) { console.warn('[persistence] Failed to save undated events:', e) }
-}
-export const loadUndatedEvents = () => {
-  try {
-    const raw = localStorage.getItem(KEYS.undatedEvents)
-    if (!raw) return null
-    const v = JSON.parse(raw)
-    return Array.isArray(v) ? v : null
-  } catch { return null }
 }
 
 // ─── CLEAR ────────────────────────────────────────────────────────

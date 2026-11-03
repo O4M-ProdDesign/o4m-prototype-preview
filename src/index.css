@@ -14,3 +14,4 @@ input[type="date"] { position: relative; }
   src: url("../node_modules/@material-symbols/font-600/material-symbols-rounded.woff2") format("woff2");
 }
 .msr-600 { font-family: "Material Symbols Rounded 600" !important; }
+
