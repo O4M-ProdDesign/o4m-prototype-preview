@@ -1,5 +1,116 @@
 # Prototype Update Notes
 
+## v3.43: chat links to clinical trials
+
+- Asking chat about clinical trials ("Are there clinical trials for me?", "any trials", "research study") answers with a sentence saying why, then a "Go to Clinical trials" link (chat's secondary), the same pattern as "Go to Community". In the web prototype the trials finder is a stub (toast); in the app it opens Clinical trials.
+
+## v3.42: the heart waits for the AI
+
+- If the daily summary's AI is working (its sparkle pulsing) when a caregiver first lands on Today, the heart holds its two beats until the summary finishes, then beats 0.4 s later. Only one thing moves at a time.
+
+## v3.41: the caregiving heart
+
+- "Caring for {name}" on Today shows its heart in a soft red (#E5484D), the one content icon with its own color: clear of brand orange (tappable) and of DARK_RED (destructive).
+- The first time a caregiver lands on Today, the heart beats twice ("lub-dub", about 12% larger and back, under a second), once; it's still after that, and never moves with Reduce Motion.
+
+## v3.40: header buttons back to 36
+
+- Every floating header button is 36 again (finished size; tap area 44 in the app), keeping v3.39's other changes: icons in the chat's style (Material Symbols Rounded 600, now 20, GRAY_BLUE_900) and the profile's progress ring as its edge (36 across, 2.5 stroke, person icon inside).
+- The Chat pill is 36 with a Label small (14/16) orange label and a 16 sparkle, the same height as the profile.
+
+## v3.39: header buttons are 44
+
+- Every floating header button is 44 (finished size), white with the Level 1 shadow: the profile, back and menu buttons, chat's header buttons, drill-in back, close on full views, and the detail views' share and close.
+- Icons in them use the chat's icon style everywhere: Material Symbols Rounded 600, 24, GRAY_BLUE_900 (the back arrow and the profile's person are now that icon too).
+- The profile always has its progress ring, and the ring is the button's edge: 44 across, 3 stroke, the person icon centered inside.
+- The Chat pill is 44 with a Label medium (16/20) orange label and an 18 sparkle.
+- Buttons' bottom edge is back at y 52, where the care plan's date cross-fade completes.
+
+## v3.38: Today matches the production prototype
+
+- The daily summary's old trend rows are gone; the check-in insight in the summary text replaces them.
+- No sponsored content on Today: the "Sponsored" card in the news row is now a regular Outcomes4Me guide. Sponsored placement on Today waits for the sponsorship team's rules.
+
+## v3.37: cancer type uses production's "Other"
+
+- The cancer type list ends with "Other", as in production. The separate "I'm not sure of the exact type" link is removed; "Other" covers both "not listed" and "not sure" for now, to be addressed intentionally later.
+- With "Other", summaries and the diagnosis event say "cancer" rather than "other".
+
+## v3.36: treatment status matches production's four values
+
+- "Where are you right now?" offers production's four statuses in plain words: "Still getting tests, no diagnosis yet" (waiting-for-diagnosis), "Just diagnosed, haven't started treatment" (just-diagnosed), "In treatment now" (in-treatment), "Finished treatment, no signs of cancer" (in-remission). These are the labels the production prototype's redesigned onboarding already uses.
+- "Not sure" is removed from this question; it stays on cancer type, stage and subtype. Older records answered "Not sure" still get the question offered again as a next step.
+- The welcome summary has a sentence for each, including "still getting tests, and there's no diagnosis yet".
+
+## v3.35: chat greeting
+
+- The chat landing greets with "Hi {first name}, how can I help?" ("Hi, how can I help?" when there's no first name), replacing "ready when you are".
+
+## v3.34: several symptoms and journal entries in a day
+
+- Symptoms, once logged: each symptom is its own row (name, severity and notes underneath, a gray chevron, pressed gray) that opens its editor; below the list, "Add symptom" (36 secondary) opens Log symptoms. Answered None: "No symptoms reported" then "Add symptom"; adding one replaces the None.
+- Journal: before any entry, the primary is "Write an entry". Once there are entries, each is a row truncated to 2 lines that opens the editor (full text, editable, deletable); below them, "Add entry" (secondary).
+- "Edit symptoms" and "Edit note" are gone from the check-in; editing happens by tapping the entry.
+
+## v3.33: delete a symptom or journal entry from its editor
+
+- Editing an existing symptom or journal entry (from Today's check-in or the care plan, any day) now ends with "Delete symptom" or "Delete journal entry" in red, below the source line. It asks first: "Delete this symptom?" with Delete in red first and Cancel below as the primary.
+- Deleting updates everything that reads the record: today's check-in row returns to unanswered when it was the only entry, the care plan's check-in card drops it, and the summary's insights recount.
+
+## v3.32: "None today" answered works like a logged answer
+
+- After tapping "None today", the reopened symptoms row shows the answer as a line item ("No symptoms reported") with "Edit symptoms" (secondary), exactly like a logged symptom. The selected chip with an x (v3.26) is gone.
+- "Edit symptoms" opens Log symptoms. Saving a symptom replaces the None, and from then on "Edit symptoms" edits that symptom.
+
+## v3.31: check-in trends in the daily summary; no dashes
+
+- The daily summary now includes at most one check-in insight, chosen by deterministic rules (AI can phrase it; the rules decide what's significant). It takes the place of the generic "Logging how you're feeling..." line when there's something worth saying; otherwise that line stays. With nothing else to say, the insight is the summary.
+- What it can say grows with the data: 1 to 2 check-ins, a nudge ("1 more check-in and I can start spotting patterns."); 3+, check-in streaks and symptom-free stretches at milestones; 7+, week-over-week mood, a symptom on 4+ of the last 7 days, severity easing or worsening; 14+, low-mood days that come with a symptom, mood dips after tests or procedures.
+- One insight at a time by priority (worsening first, then notable changes, positive stretches, nudges). Each has a 5-day cooldown unless its value changes, so the summary doesn't repeat itself. Some days there's no insight. Observations only: no diagnosis, no "you should".
+- The footer says "from your care plan, check-ins and recent clinical activity" when an insight is shown.
+- No em or en dashes anywhere in the daily summary (including the welcome version).
+- Review helper: open the prototype with #seed-checkins-2, #seed-checkins-7 or #seed-checkins-14 to load sample check-in history for each tier (replaces local check-in data).
+
+## v3.30: "Your care" section on Today
+
+- Your care plan, Ask O4M and Share your full picture are now one section titled "Your care" (Title medium, like "Today's check-in" and "Recommended next steps"), 12 between its cards.
+
+## v3.29: the check-in on the timeline can be edited
+
+- The timeline card's label is now CHECK-IN (it was "Daily log"), a kind label like TEST or PROCEDURE.
+- Every entry on it is tappable (pressed GRAY_100, gray chevron) and opens the same editor used on Today, for that day: mood (the faces, with that day's answer selected), a symptom (its editor), "No symptoms reported" (Log symptoms for that day; logging replaces the None), journal (the note editor). No time limit.
+- Mood is now one answer per day: a new answer replaces that day's, so today's check-in mood can be changed all day by reopening the row and tapping another face.
+- Editors show where and when an entry was first logged, at the bottom in small gray text: "Logged from your check-in · Nov 2, 9:14 PM" (or "from your care plan", "from Tracker"). Edits keep the original source and time. There's no "Edited" marker anywhere.
+- Fix: a day where the only answer was "None today" showed no check-in card on the timeline; it now does.
+
+## v3.28: the check-in's daily log on the timeline, aligned to v2.54
+
+- The care plan's "Daily log" card (that day's mood, symptoms or "No symptoms reported", and journal) now matches the timeline's event cards: same white shell and corners, same eyebrow (11, semibold, caps, BLACK_60).
+- Neutral icon badges (32, GRAY_100, GRAY_BLUE_900 icon). Entries are Paragraph medium (16/24, BLACK_87) with supporting text on its own line in Paragraph small (14/20, BLACK_60), 8 between rows. "No symptoms reported" reads as an entry, not gray filler.
+- Fix: a daily log that existed before the plan finished generating stayed invisible (it waited for a reveal that never came). The daily log now always shows.
+
+## v3.27: "None today" selected matches a selected chip
+
+- The selected "None today" now uses exactly the selected chip style: 1.5 pt orange border, light orange fill, 14 regular BLACK_87 label (selection shows through state, not text), plus the x (18, BLACK_60). It stays 36 tall so the row doesn't jump.
+
+## v3.26: "None today" holds a selected state with an x (exploration)
+
+- Open: "None today" (secondary) and "Log symptoms" (primary), both buttons.
+- Tap "None today": the row completes and moves on, as before. Reopened, it shows "None today" in the selected style (1.5 pt orange border, light orange fill, dark label) with an x; "Log symptoms" steps away rather than showing disabled.
+- Tap the x: the answer clears and the row returns to how it started, both buttons back.
+
+## v3.25: pressed, active and focus states
+
+- Tertiary buttons (orange text) now show a GRAY_100 pill behind the label while pressed. Pressed is never light orange (that means selected) and never an opacity dim (that reads as disabled).
+- Chat's menu button holds its pressed look (GRAY_100) while the history menu is open.
+- Focus ring for keyboard and switch control: 2 pt orange outline, offset 2, on buttons.
+- Already matching: the tab bar's active tab (orange filled icon and label on a light pill) and Tracker's segmented control (white thumb on a gray track).
+
+## v3.24: header buttons are 36
+
+- Every floating header button is 36 (white circle, Level 1 shadow, 20 icon), matching the 36 Chat pill: the profile, back and menu buttons in the main header, chat's header buttons, drill-in back, and close on full views. In the app their tap area extends to 44 (not simulated in the web prototype).
+- The care plan cross-fade keeps its tuned positions (starts at y 68, done at y 52).
+
 ## v3.23: cross-fade timing back to v3.05
 
 - The v3.21 shift made the cross-fade start too soon, so it's back to the timing you approved: it starts when the date is 16 px below the buttons' bottom edge (y 68) and completes at that edge (y 52). The extra space under the header when a day is scrolled to the top (v3.22) stays.

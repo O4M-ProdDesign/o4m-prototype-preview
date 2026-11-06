@@ -44,6 +44,39 @@ const AI_ICON = { color: '#FF7958' }
 // Always use local calendar date (avoids UTC-offset "yesterday" bug from toISOString)
 let _DEV_DAY_OFFSET = 0
 try { _DEV_DAY_OFFSET = parseInt(localStorage.getItem('o4m_dev_day_offset') || '0', 10) || 0 } catch (e) {}
+
+// v3.31 review helper: open the prototype with #seed-checkins-2, #seed-checkins-7 or
+// #seed-checkins-14 to replace the check-in history with sample data that exercises each tier
+// of the summary's insights. Runs once per load, before state is read.
+;(() => {
+  try {
+    const h = (window.location.hash || '').replace('#', '')
+    const m = h.match(/^seed-checkins-(\d+)$/); if (!m) return
+    const N = parseInt(m[1], 10)
+    const ds = (i) => { const x = new Date(); x.setDate(x.getDate() - i); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}` }
+    const mood = [], symptoms = [], none = [], journal = []
+    const stamp = (i) => { const x = new Date(); x.setDate(x.getDate() - i); x.setHours(20, 10, 0, 0); return x.toISOString() }
+    for (let i = N - 1; i >= 0; i--) {
+      const d = ds(i), recent = i < 7
+      const lab = ['', 'Rough', 'Low', 'Okay', 'Good', 'Great']
+      const v = N >= 7 ? (recent ? (i % 3 === 0 ? 3 : 2) : 4) : 3
+      mood.push({ id: 'seed_m' + i, date: d, value: v, label: lab[v], source: 'your check-in', loggedAt: stamp(i) })
+      if (N >= 7 && recent && v <= 2) symptoms.push({ id: 'seed_f' + i, name: 'Fatigue', severity: 'Moderate', date: d, notes: '', source: 'your check-in', loggedAt: stamp(i) })
+      else if (N >= 7 && !recent && i % 2 === 0) symptoms.push({ id: 'seed_n' + i, name: 'Nausea', severity: 'Moderate', date: d, notes: '', source: 'your check-in', loggedAt: stamp(i) })
+      else if (N >= 7 && recent && i % 3 === 0) symptoms.push({ id: 'seed_n' + i, name: 'Nausea', severity: 'Mild', date: d, notes: '', source: 'your check-in', loggedAt: stamp(i) })
+      else none.push(d)
+      if (i % 4 === 0) journal.push({ id: 'seed_j' + i, date: d, text: 'Short walk after lunch.', source: 'your check-in', loggedAt: stamp(i) })
+    }
+    const P = 'careplan_v1_'
+    localStorage.setItem(P + 'mood', JSON.stringify(mood))
+    localStorage.setItem(P + 'symptoms', JSON.stringify(symptoms))
+    localStorage.setItem(P + 'symptomNone', JSON.stringify(none))
+    localStorage.setItem(P + 'journal', JSON.stringify(journal))
+    localStorage.removeItem('o4m_insights_seen')
+    history.replaceState(null, '', window.location.pathname)
+  } catch (e) {}
+})()
+
 const localDateStr = (d) => {
   let base = d
   if (!base) { base = new Date(); if (_DEV_DAY_OFFSET) base.setDate(base.getDate() + _DEV_DAY_OFFSET) }
@@ -2016,6 +2049,11 @@ const EngagementNudgeSheet = ({ onConnect, onDismiss }) => {
   )
 }
 
+// v3.42: a tiny shared signal for "AI is working" (the summary's generating pulse), so other
+// one-time motion (the caregiving heart) can wait for it instead of competing.
+const _aiBusy = { n: 0, subs: new Set() }
+const setAiBusy = (on) => { _aiBusy.n = Math.max(0, _aiBusy.n + (on ? 1 : -1)); _aiBusy.subs.forEach(f => f(_aiBusy.n > 0)) }
+const useAiBusy = () => { const [b, setB] = useState(_aiBusy.n > 0); useEffect(() => { _aiBusy.subs.add(setB); return () => { _aiBusy.subs.delete(setB) } }, []); return b }
 const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true, onReviewRecs, teasers = [], onTeaserAction, narrative = null, onViewTreatments = null, onViewRecord = null, hasTreatments = false }) => {
   const bullets = summary.bullets || []
   // Signature drives the change/generating animation without parsing text (bullet ids + text).
@@ -2025,6 +2063,7 @@ const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true
 
   const [shownBullets, setShownBullets] = useState(bullets)
   const [generating, setGenerating] = useState(false)
+  useEffect(() => { if (!generating) return; setAiBusy(true); return () => setAiBusy(false) }, [generating])
   const [textOpacity, setTextOpacity] = useState(1)
   const [lastUpdated, setLastUpdated] = useState(() => new Date())
   const prevSigRef = useRef(signature)
@@ -2190,7 +2229,7 @@ const DailySummaryCard = ({ summary, isToday, onAddEvent, cancerSupported = true
               <svg width="15" height="15" viewBox="0 0 15 15" fill={vote === 'down' ? C.primary : 'none'}><path d="M13.5 7.5h-2V2h2zM11.5 7.5L9.5 12l-1.5-.5V8H4L5 3h6.5z" stroke={vote === 'down' ? C.primary : C.textSecondary} strokeWidth="1.1" strokeLinejoin="round"/></svg>
             </button>
           </div>
-          <div style={{ fontSize: 12, color: C.textSecondary, lineHeight: 1.4 }}>AI-generated from your care plan and recent clinical activity. Accuracy may vary. Last updated {lastUpdated.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.</div>
+          <div style={{ fontSize: 12, color: C.textSecondary, lineHeight: 1.4 }}>AI-generated from your care plan{narrative && narrative.insight ? ', check-ins' : ''} and recent clinical activity. Accuracy may vary. Last updated {lastUpdated.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.</div>
         </>
       )}
     </div>
@@ -3089,11 +3128,12 @@ const AppointmentArtifactSheet = ({ appt, timeline, symptoms, doseLogs, medicati
 }
 
 // ─── TRACK WRITER: SYMPTOM LOG ──────────────────────────────────────────────
-const SymptomLogFlow = ({ entry, onClose, onComplete }) => {
+const SymptomLogFlow = ({ entry, date: forDate, onClose, onComplete, onDelete }) => {
+  const [askDelete, setAskDelete] = useState(false)
   const [step, setStep] = useState(entry ? 1 : 0)
   const [name, setName] = useState(entry?.name || '')
   const [severity, setSeverity] = useState(entry?.severity || 'Mild')
-  const [date, setDate] = useState(entry?.date || _today())
+  const [date, setDate] = useState(entry?.date || forDate || _today())
   const [notes, setNotes] = useState(entry?.notes || '')
   const [q, setQ] = useState('')
   const list = SYMPTOM_CATALOG.filter(s => s.toLowerCase().includes(q.toLowerCase()))
@@ -3128,7 +3168,10 @@ const SymptomLogFlow = ({ entry, onClose, onComplete }) => {
               <DateInputField label="When" value={date} onChange={setDate} max={_today()}/>
               <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 5 }}>Notes (optional)</div>
               <NotesTextarea value={notes} onChange={setNotes} placeholder="Anything worth remembering…"/>
+              <SourceLine entry={entry}/>
+              {entry && onDelete && <DeleteEntryButton label="Delete symptom" onClick={() => setAskDelete(true)}/>}
             </div>
+            {askDelete && <DeleteEntryDialog what="symptom" onCancel={() => setAskDelete(false)} onDelete={() => { setAskDelete(false); onDelete(entry) }}/>}
             <DockedButton label="Save to record" onClick={() => onComplete({ id: entry?.id || ('sym_' + Date.now()), name, severity, date, notes })}/>
           </div>
         )
@@ -3169,7 +3212,7 @@ const ChatLogSymptomFlow = ({ prefill, onClose, onSubmit }) => {
   return ReactDOM.createPortal(
     <div style={{ position: 'fixed', inset: 0, zIndex: 200, backgroundColor: C.bgCard, display: 'flex', flexDirection: 'column', transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.4s cubic-bezier(0.32,0.72,0,1)', fontFamily: 'Inter,sans-serif' }}>
       <div style={{ padding: 'calc(8px + env(safe-area-inset-top, 0px)) 8px 0' }}>
-        <button onClick={() => close(onClose)} aria-label="Close" style={{ width: 44, height: 44, border: 'none', background: '#fff', borderRadius: 22, boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: '#414652' }}>close</span></button>
+        <button onClick={() => close(onClose)} aria-label="Close" style={{ width: 36, height: 36, border: 'none', background: '#fff', borderRadius: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 20, color: '#414652' }}>close</span></button>
       </div>
       <div style={{ padding: '4px 16px 0' }}>
         <div style={{ fontSize: 22, lineHeight: '28px', fontWeight: 600, color: C.textPrimary, marginBottom: 16 }}>Log a symptom</div>
@@ -3222,7 +3265,39 @@ const ChatLogSymptomFlow = ({ prefill, onClose, onSubmit }) => {
 }
 
 // ─── TRACK WRITER: JOURNAL ──────────────────────────────────────────────────
-const JournalFlow = ({ entry, onClose, onComplete }) => {
+// v3.29: where and when an entry was first logged, shown in its editor (like Apple Health's
+// source and date added). No "edited" marker anywhere.
+const SourceLine = ({ entry }) => {
+  if (!entry) return null
+  const src = entry.source || 'your check-in'
+  let when = ''
+  if (entry.loggedAt) { const d = new Date(entry.loggedAt); when = ' · ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) }
+  return <div style={{ fontSize: 12, lineHeight: '16px', color: C.textSecondary, marginTop: 16 }}>Logged from {src}{when}</div>
+}
+// v3.33: delete from an entry's editor. Red text in the editor; confirming uses the destructive
+// dialog (Delete first in red, Cancel below as the primary).
+const DeleteEntryDialog = ({ what, onCancel, onDelete }) => {
+  const [vis, setVis] = useState(false)
+  useEffect(() => { requestAnimationFrame(() => requestAnimationFrame(() => setVis(true))) }, [])
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div onClick={onCancel} style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.35)', opacity: vis ? 1 : 0, transition: 'opacity 0.2s ease' }}/>
+      <div style={{ position: 'relative', width: '100%', maxWidth: 320, backgroundColor: C.bgCard, borderRadius: 24, padding: '24px 16px 16px', boxShadow: '0 12px 40px rgba(0,0,0,0.25)', opacity: vis ? 1 : 0, transform: vis ? 'scale(1)' : 'scale(0.94)', transition: 'opacity 0.2s ease, transform 0.2s cubic-bezier(0.32, 0.72, 0, 1)' }}>
+        <div style={{ fontSize: 16, fontWeight: 600, color: C.textPrimary, lineHeight: 1.4, marginBottom: 4 }}>Delete this {what}?</div>
+        <div style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.4, marginBottom: 20 }}>It will be removed from your check-in and your care plan.</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <button onClick={onDelete} style={{ width: '100%', height: 44, borderRadius: 9999, backgroundColor: 'transparent', border: 'none', cursor: 'pointer', fontSize: 16, fontWeight: 600, color: '#B00020', fontFamily: 'Inter,sans-serif' }}>Delete</button>
+          <button onClick={onCancel} style={{ width: '100%', height: 44, borderRadius: 9999, backgroundColor: C.primary, border: 'none', cursor: 'pointer', fontSize: 16, fontWeight: 600, color: 'white', fontFamily: 'Inter,sans-serif' }}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+const DeleteEntryButton = ({ label, onClick }) => (
+  <button onClick={onClick} style={{ display: 'inline-flex', alignItems: 'center', height: 44, padding: 0, marginTop: 8, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 16, fontWeight: 600, color: '#B00020', fontFamily: 'Inter,sans-serif' }}>{label}</button>
+)
+const JournalFlow = ({ entry, onClose, onComplete, onDelete }) => {
+  const [askDelete, setAskDelete] = useState(false)
   const [date, setDate] = useState(entry?.date || _today())
   const [text, setText] = useState(entry?.text || '')
   return (
@@ -3234,7 +3309,10 @@ const JournalFlow = ({ entry, onClose, onComplete }) => {
             <DateInputField label="Date" value={date} onChange={setDate} max={_today()}/>
             <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 5 }}>Entry</div>
             <NotesTextarea value={text} onChange={setText} placeholder="How are you doing today?"/>
+            <SourceLine entry={entry}/>
+            {entry && onDelete && <DeleteEntryButton label="Delete journal entry" onClick={() => setAskDelete(true)}/>}
           </div>
+          {askDelete && <DeleteEntryDialog what="journal entry" onCancel={() => setAskDelete(false)} onDelete={() => { setAskDelete(false); onDelete(entry) }}/>}
           <DockedButton label="Save to record" onClick={() => text.trim() && onComplete({ id: entry?.id || ('jrn_' + Date.now()), date, text: text.trim() })} disabled={!text.trim()}/>
         </div>
       )}
@@ -3467,18 +3545,18 @@ const MOOD_SCALE = [
   { v: 4, face: 'sentiment_satisfied', label: 'Good' },
   { v: 5, face: 'sentiment_very_satisfied', label: 'Great' },
 ]
-const MoodFlow = ({ onClose, onComplete }) => {
+const MoodFlow = ({ entry, onClose, onComplete }) => {
   const t = usePatientCopy()
-  const [val, setVal] = useState(null)
-  const [date, setDate] = useState(_today())
-  const [note, setNote] = useState('')
+  const [val, setVal] = useState(entry?.value ?? null)
+  const [date, setDate] = useState(entry?.date || _today())
+  const [note, setNote] = useState(entry?.note || '')
   return (
     <FlowShell onClose={onClose} zIndex={80} confirmClose={val != null}>
       {(dismiss, setNav) => (
         <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 120px' }}>
-            <div style={{ fontSize: 22, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 4 }}>{t('How {are|is} {they} feeling today?')}</div>
-            <div style={{ fontSize: 12.5, color: C.textTertiary, marginBottom: 22, lineHeight: 1.4 }}>Placeholder mood check-in — production uses the full mood tracker.</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 4 }}>{entry ? 'Edit mood' : t('How {are|is} {they} feeling today?')}</div>
+            {!entry && <div style={{ fontSize: 12.5, color: C.textTertiary, marginBottom: 22, lineHeight: 1.4 }}>Placeholder mood check-in — production uses the full mood tracker.</div>}{entry && <div style={{ height: 18 }}/>}
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, marginBottom: 22 }}>
               {MOOD_SCALE.map(m => (
                 <button key={m.v} onClick={() => setVal(m.v)} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, padding: '12px 0', borderRadius: 12, border: `1px solid ${val === m.v ? C.primary : C.border}`, backgroundColor: val === m.v ? C.primaryLight : C.bgCard, cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
@@ -3490,8 +3568,9 @@ const MoodFlow = ({ onClose, onComplete }) => {
             <DateInputField label="When" value={date} onChange={setDate} max={_today()}/>
             <div style={{ fontSize: 12, color: C.textSecondary, marginBottom: 5 }}>Note (optional)</div>
             <NotesTextarea value={note} onChange={setNote} placeholder="Anything about today…"/>
+            <SourceLine entry={entry}/>
           </div>
-          <DockedButton label="Save to record" disabled={val == null} onClick={() => val != null && onComplete({ id: 'mood_' + Date.now(), date, value: val, label: MOOD_SCALE.find(m => m.v === val)?.label, note })}/>
+          <DockedButton label="Save to record" disabled={val == null} onClick={() => val != null && onComplete({ id: entry?.id || ('mood_' + Date.now()), date, value: val, label: MOOD_SCALE.find(m => m.v === val)?.label, note })}/>
         </div>
       )}
     </FlowShell>
@@ -3627,6 +3706,16 @@ const NextStepEyebrow = () => <div style={{ fontSize: 11, fontWeight: 600, color
 // v3.13 (Apple-style tint): orange marks only what you can tap. Primary: orange fill, white label.
 // Secondary: gray fill (GRAY_100), orange label. Tertiary: orange text. Content icons are neutral.
 const Q_DARK = '#162937'
+// v3.34: a logged entry inside the check-in is a tappable row (opens its editor), pressed gray, gray chevron.
+const CiEntryRow = ({ title, detail, clamp = 0, onClick }) => (
+  <button className="dl-row" onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: 12, width: 'calc(100% + 16px)', margin: '0 -8px', padding: '8px', border: 'none', background: 'transparent', borderRadius: 12, textAlign: 'left', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 16, lineHeight: '24px', color: C.textPrimary, ...(clamp ? { display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: clamp, overflow: 'hidden' } : {}) }}>{title}</div>
+      {detail ? <div style={{ fontSize: 14, lineHeight: '20px', color: C.textSecondary }}>{detail}</div> : null}
+    </div>
+    <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textTertiary, flexShrink: 0 }}>chevron_right</span>
+  </button>
+)
 // Inside Today's check-in, the open row's action is its primary (orange, 36) until it's done; "None today"
 // and the edits after (Edit symptoms, Edit note) are secondary (v3.14).
 const _ciPrimary = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, height: 36, padding: '0 14px', boxSizing: 'border-box', border: 'none', borderRadius: 9999, background: C.primary, fontSize: 14, lineHeight: '16px', fontWeight: 600, color: '#fff', cursor: 'pointer', fontFamily: 'Inter,sans-serif', whiteSpace: 'nowrap' }
@@ -3706,38 +3795,47 @@ const ConfirmOutcomeSheet = ({ item, onClose, onConfirm }) => {
 
 // ─── DAILY LOG (read-only past-day record; derived from the stores) ─────────
 const _MOOD_FACE = { 1: 'sentiment_very_dissatisfied', 2: 'sentiment_dissatisfied', 3: 'sentiment_neutral', 4: 'sentiment_satisfied', 5: 'sentiment_very_satisfied' }
-const DailyLogGroup = ({ mood, symptoms = [], journal = [], none = false }) => {
-  const badge = { width: 30, height: 30, borderRadius: 15, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
-  const icon = { fontSize: 17, color: C.textSecondary, fontVariationSettings: "'FILL' 0, 'wght' 400" }
-  const rowStyle = { display: 'flex', alignItems: 'center', gap: 11, padding: '9px 0' }
-  const primary = { fontSize: 14, color: C.textPrimary }
-  const secondary = { fontSize: 12.5, color: C.textTertiary }
+const DailyLogGroup = ({ mood, symptoms = [], journal = [], none = false, date, onEdit }) => {
+  // v3.28: aligned to library v2.54. Same shell and eyebrow as the timeline's event cards;
+  // neutral icon badges (GRAY_100, GRAY_BLUE_900 icon); Paragraph medium entries with
+  // Paragraph small supporting text in BLACK_60; 8 between rows.
+  const badge = { width: 32, height: 32, borderRadius: 16, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
+  const icon = { fontSize: 18, color: C.textIcon, fontVariationSettings: "'FILL' 0, 'wght' 400" }
+  const rowStyle = { display: 'flex', alignItems: 'center', gap: 12, padding: '4px 8px', margin: '0 -8px', width: 'calc(100% + 16px)', border: 'none', background: 'transparent', borderRadius: 12, textAlign: 'left', cursor: onEdit ? 'pointer' : 'default', fontFamily: 'Inter,sans-serif' }
+  const chev = onEdit ? <span className="material-symbols-rounded" style={{ fontSize: 18, color: C.textTertiary, flexShrink: 0 }}>chevron_right</span> : null
+  const go = (kind, entry) => onEdit && onEdit({ kind, entry, date })
+  const primary = { fontSize: 16, lineHeight: '24px', color: C.textPrimary }
+  const secondary = { fontSize: 14, lineHeight: '20px', color: C.textSecondary }
   return (
-    <div style={{ backgroundColor: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '4px 16px 8px' }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.06em', padding: '12px 0 2px' }}>Daily log</div>
+    <div style={{ backgroundColor: C.bgCard, border: '1px solid transparent', borderRadius: 14, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Check-in</div>
       {mood && (
-        <div style={rowStyle}>
+        <button className="dl-row" onClick={() => go('mood', mood)} style={rowStyle}>
           <div style={badge}><span className="material-symbols-rounded" style={{ ...icon, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>{_MOOD_FACE[mood.value] || 'mood'}</span></div>
-          <div style={{ flex: 1, minWidth: 0 }}><span style={primary}>Felt {(mood.label || '').toLowerCase()}</span>{mood.note ? <span style={secondary}> · {mood.note}</span> : null}</div>
-        </div>
+          <div style={{ flex: 1, minWidth: 0 }}><div style={primary}>Felt {(mood.label || '').toLowerCase()}</div>{mood.note ? <div style={secondary}>{mood.note}</div> : null}</div>
+          {chev}
+        </button>
       )}
       {symptoms.map(s => (
-        <div key={s.id} style={rowStyle}>
+        <button className="dl-row" key={s.id} onClick={() => go('symptom', s)} style={rowStyle}>
           <div style={badge}><span className="material-symbols-rounded" style={icon}>vital_signs</span></div>
-          <div style={{ flex: 1, minWidth: 0 }}><span style={primary}>{s.name}</span><span style={secondary}> · {s.severity}{s.notes ? ` · ${s.notes}` : ''}</span></div>
-        </div>
+          <div style={{ flex: 1, minWidth: 0 }}><div style={primary}>{s.name}</div><div style={secondary}>{[s.severity, s.notes].filter(Boolean).join(' · ')}</div></div>
+          {chev}
+        </button>
       ))}
       {(!symptoms.length && none) && (
-        <div style={rowStyle}>
+        <button className="dl-row" onClick={() => go('none', null)} style={rowStyle}>
           <div style={badge}><span className="material-symbols-rounded" style={icon}>vital_signs</span></div>
-          <div style={{ flex: 1, minWidth: 0 }}><span style={secondary}>No symptoms reported</span></div>
-        </div>
+          <div style={{ flex: 1, minWidth: 0 }}><span style={primary}>No symptoms reported</span></div>
+          {chev}
+        </button>
       )}
       {journal.map(j => (
-        <div key={j.id} style={rowStyle}>
+        <button className="dl-row" key={j.id} onClick={() => go('journal', j)} style={rowStyle}>
           <div style={badge}><span className="material-symbols-rounded" style={icon}>edit_note</span></div>
-          <div style={{ flex: 1, minWidth: 0 }}><span style={{ ...primary, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 3, overflow: 'hidden', lineHeight: 1.45 }}>{j.text}</span></div>
-        </div>
+          <div style={{ flex: 1, minWidth: 0 }}><span style={{ ...primary, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 3, overflow: 'hidden' }}>{j.text}</span></div>
+          {chev}
+        </button>
       ))}
     </div>
   )
@@ -3884,16 +3982,17 @@ const buildWelcomeSummaryText = (ps, recs) => {
   const ans = ps.onboardingAnswers || {}
   const t = (tpl) => fillCopy(tpl, careSubject(ps))
   const cancer = CANCER_TYPES.find(c => c.code === ps.diagnosisCode)
-  const dx = (cancer ? cancer.name.toLowerCase() : 'cancer') + (_EXTENT_PHRASE[ans.extent] || '')
+  const dx = (cancer && !cancer.generic ? cancer.name.toLowerCase() : 'cancer') + (_EXTENT_PHRASE[ans.extent] || '')
   const situation = {
     just_diagnosed: `{They} {were|was} recently diagnosed with ${dx}, and treatment hasn't started yet.`,
     in_treatment:   `{They're} in treatment for ${dx}.`,
-    finished:       `{They've} finished treatment for ${dx}.`,
+    finished:       `{They've} finished treatment for ${dx}, with no signs of cancer.`,
+    waiting:        `{They're} still getting tests, and there's no diagnosis yet.`,
   }[ans.treatment_phase] || `{They're} dealing with ${dx}.`
   const gaps = deriveQuestionGaps(ans).map(g => g.kind)
   let plan
   if (recs && recs.length) {
-    plan = 'Your care plan lays out the treatment options guidelines describe for this — a starting point for talking with your care team.'
+    plan = 'Your care plan lays out the treatment options guidelines describe for this, a starting point for talking with your care team.'
     if (gaps.includes('q-drivers')) plan += " Telling us what's driving {their} cancer could open up more."
   } else if (gaps.includes('q-type')) {
     plan = '{Their} diagnosis is on {your|the} care plan; adding the exact type will let it lay out the options guidelines describe.'
@@ -3902,16 +4001,106 @@ const buildWelcomeSummaryText = (ps, recs) => {
   } else {
     plan = '{Their} diagnosis is on {your|the} care plan, and your next steps are below.'
   }
-  return t(`Welcome — here's where things stand. ${situation} ${plan} Checking in below keeps this up to date, day to day.`)
+  return t(`Welcome. Here's where things stand. ${situation} ${plan} Checking in below keeps this up to date, day to day.`)
 }
-const buildSummaryNarrative = (ps, timeline = [], recs = null) => {
+
+// ─── CHECK-IN INSIGHTS (v3.31) ─────────────────────────────────────────────
+// Deterministic rules (no AI needed) that turn check-in history into at most one insight
+// for the daily summary. What can be said grows with the data (2 days: a nudge; 3+: streaks;
+// 7+: week over week; 14+: patterns). Only significant changes count, one insight at a time
+// by priority, and each insight has a cooldown so it doesn't repeat unless its value changes.
+// Observations only: never a diagnosis, never "you should".
+const _SEV = { Mild: 1, Moderate: 2, Severe: 3 }
+const _SEVN = ['', 'mild', 'moderate', 'severe']
+const _addDays = (d, n) => { const x = new Date(d + 'T12:00:00'); x.setDate(x.getDate() + n); return localDateStrOf(x) }
+function localDateStrOf(x) { return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}` }
+const INSIGHT_COOLDOWN_DAYS = 5
+const _seenInsights = () => { try { return JSON.parse(localStorage.getItem('o4m_insights_seen') || '{}') } catch (e) { return {} } }
+const markInsightSeen = (ins) => {
+  if (!ins) return
+  try { const m = _seenInsights(); const today = localDateStr(); if (m[ins.id] && m[ins.id].date === today && m[ins.id].key === ins.key) return; m[ins.id] = { date: today, key: ins.key }; localStorage.setItem('o4m_insights_seen', JSON.stringify(m)) } catch (e) {}
+}
+const buildCheckinInsight = ({ mood = [], symptoms = [], none = [], journal = [], timeline = [] }) => {
+  const today = localDateStr()
+  const last = (n, from = 0) => Array.from({ length: n }, (_, i) => _addDays(today, -(i + from)))
+  const moodBy = {}; mood.forEach(m => { moodBy[m.date] = m.value })
+  const sympBy = {}; symptoms.forEach(sy => { (sympBy[sy.date] = sympBy[sy.date] || []).push(sy) })
+  const noneSet = new Set(none)
+  const jSet = new Set(journal.map(j => j.date))
+  const hasCheckin = d => moodBy[d] != null || sympBy[d] || noneSet.has(d) || jSet.has(d)
+  const days30 = last(30).filter(hasCheckin)
+  const n = days30.length
+  if (!n) return null
+  const out = []
+  const push = (o) => out.push(o)
+  // nudge (1 to 2 check-ins)
+  if (n < 3) push({ id: 'nudge', key: String(n), pri: 1, text: `${3 - n} more check-in${3 - n > 1 ? 's' : ''} and I can start spotting patterns.`, basis: 'your check-ins' })
+  if (n >= 3) {
+    // streak, at milestones only
+    const start = hasCheckin(today) ? 0 : 1
+    let k = 0; while (hasCheckin(_addDays(today, -(start + k)))) k++
+    if ([3, 5, 7, 10, 14, 21, 30].includes(k)) push({ id: 'streak', key: String(k), pri: 2, text: `You've checked in ${k} days running.`, basis: 'your check-ins' })
+    // symptom-free stretch
+    let f = 0; while (noneSet.has(_addDays(today, -(start + f))) && !sympBy[_addDays(today, -(start + f))]) f++
+    if ([4, 7, 10, 14].includes(f)) push({ id: 'symptom_free', key: String(f), pri: 3, text: `No symptoms reported for ${f} days.`, basis: 'your check-ins, last ' + f + ' days' })
+  }
+  const wk = last(7), prev = last(7, 7)
+  const wkDays = wk.filter(hasCheckin).length, prevDays = prev.filter(hasCheckin).length
+  if (n >= 7 && wkDays >= 4) {
+    // mood week over week
+    const avg = ds => { const v = ds.map(d => moodBy[d]).filter(x => x != null); return v.length >= 3 ? v.reduce((a, b) => a + b, 0) / v.length : null }
+    const a = avg(wk), b = avg(prev)
+    if (a != null && b != null && Math.abs(a - b) >= 0.75) push(a < b
+      ? { id: 'mood_week', key: 'down', pri: 5, text: 'Your mood has been lower this week than last.', basis: 'your check-ins, last 14 days' }
+      : { id: 'mood_week', key: 'up', pri: 4, text: 'Your mood has been better this week than last.', basis: 'your check-ins, last 14 days' })
+    // symptom frequency and severity
+    const names = [...new Set(symptoms.map(x => x.name))]
+    names.forEach(nm => {
+      const on = wk.filter(d => (sympBy[d] || []).some(x => x.name === nm)).length
+      if (on >= 4) push({ id: 'freq_' + nm, key: String(on), pri: on >= 5 ? 5 : 4, text: `${nm} on ${on} of the last 7 days.`, basis: 'your check-ins, last 7 days' })
+      if (prevDays >= 3) {
+        const sev = ds => { const v = ds.flatMap(d => (sympBy[d] || []).filter(x => x.name === nm).map(x => _SEV[x.severity] || 1)); return v.length >= 2 ? v.reduce((p, q) => p + q, 0) / v.length : null }
+        const sa = sev(wk), sb = sev(prev)
+        if (sa != null && sb != null && Math.abs(Math.round(sa) - Math.round(sb)) >= 1) push(sa < sb
+          ? { id: 'sev_' + nm, key: 'down', pri: 4, text: `${nm} eased from ${_SEVN[Math.round(sb)]} to ${_SEVN[Math.round(sa)]} this week.`, basis: 'your check-ins, last 14 days' }
+          : { id: 'sev_' + nm, key: 'up', pri: 6, text: `${nm} has been more ${_SEVN[Math.round(sa)]} this week than last.`, basis: 'your check-ins, last 14 days' })
+      }
+    })
+  }
+  if (n >= 14) {
+    // co-occurrence: low mood days and a symptom
+    const lowDays = last(30).filter(d => moodBy[d] != null && moodBy[d] <= 2)
+    if (lowDays.length >= 3) {
+      const names = [...new Set(symptoms.map(x => x.name))]
+      names.forEach(nm => {
+        const both = lowDays.filter(d => (sympBy[d] || []).some(x => x.name === nm)).length
+        if (both / lowDays.length >= 0.7) push({ id: 'co_' + nm, key: String(both), pri: 4, text: `Your low-mood days usually come with ${nm.toLowerCase()}.`, basis: 'your check-ins, last 30 days' })
+      })
+    }
+    // link to the care plan: mood in the 2 days after tests and procedures
+    const evs = (timeline || []).flatMap(day => (day.events || []).filter(e => e.type === 'test' || e.type === 'procedure').map(e => ({ ...e, _date: day.date })))
+    const all = Object.values(moodBy); const base = all.length ? all.reduce((p, q) => p + q, 0) / all.length : null
+    const after = evs.map(e => { const v = [1, 2].map(i => moodBy[_addDays(e._date, i)]).filter(x => x != null); return v.length ? v.reduce((p, q) => p + q, 0) / v.length : null }).filter(x => x != null)
+    if (base != null && after.length >= 2 && after.every(v => v <= base - 1)) push({ id: 'event_dip', key: String(after.length), pri: 4, text: 'Your mood dipped in the days after each test or procedure.', basis: 'your check-ins and care plan' })
+  }
+  if (!out.length) return null
+  const seen = _seenInsights()
+  const ok = out.filter(o => { const m = seen[o.id]; if (!m || m.date === today || m.key !== o.key) return true; return _daysBetweenStr(m.date, today) >= INSIGHT_COOLDOWN_DAYS })
+  if (!ok.length) return null
+  ok.sort((x, y) => y.pri - x.pri)
+  return ok[0]
+}
+// Daily summary text never uses em or en dashes.
+const _noDash = (t) => (t || '').replace(/\s*[—–]\s*/g, ', ').replace(/, ,/g, ',')
+
+const buildSummaryNarrative = (ps, timeline = [], recs = null, checkins = null) => {
   const todayStr = localDateStr()
   // First run: the day's summary, built from what they just told us. Same card and voice
   // as every later day — it demonstrates what the summary does (pulls the situation together
   // and points to what's next) rather than describing it. A light welcome opens it; the
   // closing line hints that it stays current. Normal summary from day two.
   if (ps && ps.onboardedDate && ps.onboardedDate === todayStr) {
-    return { text: buildWelcomeSummaryText(ps, recs), enrich: false }
+    return { text: _noDash(buildWelcomeSummaryText(ps, recs)), enrich: false }
   }
   const monthName = d => { try { return new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'long' }) } catch { return null } }
   const events = (timeline || []).flatMap(day => (day.events || []).map(e => ({ ...e, _date: day.date, _isToday: !!day.isToday })))
@@ -3934,15 +4123,19 @@ const buildSummaryNarrative = (ps, timeline = [], recs = null) => {
     s.push(t(`You've shared {their} diagnosis, and we're building {your|the} care picture.`))
   }
   if (hasRecs) {
-    if (nextAppt) s.push(t(`Based on everything in {their} record, the guidelines map out your next steps — the focus of {your|the} appointment ${relativeApptDate(nextAppt._date)}. You can review them under Suggested treatments below.`))
-    else s.push(t(`Based on everything in {their} record, the guidelines map out your next steps to weigh — see Suggested treatments below.`))
+    if (nextAppt) s.push(t(`Based on everything in {their} record, the guidelines map out your next steps, the focus of {your|the} appointment ${relativeApptDate(nextAppt._date)}. You can review them under Suggested treatments below.`))
+    else s.push(t(`Based on everything in {their} record, the guidelines map out your next steps to weigh. See Suggested treatments below.`))
   } else if (nextAppt) {
     s.push(t(`Your next step is {their} appointment ${relativeApptDate(nextAppt._date)}.`))
   }
-  if (hasRecs || nextAppt) s.push(t(`Logging how {they're} feeling and noting your questions now will help {you understand and|you both} prepare for it.`))
+  const insight = checkins ? buildCheckinInsight({ ...checkins, timeline }) : null
+  // The insight is part of the summary: it takes the place of the generic preparation line
+  // when there's something worth saying, otherwise that line stays.
+  if (insight) s.push(insight.text)
+  else if (hasRecs || nextAppt) s.push(t(`Logging how {they're} feeling and noting your questions now will help {you understand and|you both} prepare for it.`))
 
-  if (s.length === 0) return { text: `We're still building your picture. The more you add — a daily check-in, your events and their details, or connecting your records — the clearer this summary and your next steps become.`, enrich: true }
-  return { text: s.join(' '), enrich: false }
+  if (s.length === 0) return insight ? { text: _noDash(insight.text), enrich: false, insight } : { text: `We're still building your picture. The more you add (a daily check-in, your events and their details, or connecting your records), the clearer this summary and your next steps become.`, enrich: true }
+  return { text: _noDash(s.join(' ')), enrich: false, insight }
 }
 const TeaserDetailSheet = ({ teaser, onClose }) => {
   const [vis, setVis] = useState(false)
@@ -4004,7 +4197,7 @@ const TodayZone = ({ label, children }) => (
   </div>
 )
 // ─── REDESIGN-04: card-less check-in (nodes on a spine) ─────────────────────
-const CheckInSpine = ({ state, justChecked, moodLabel, count = 0, onMood, onMoodSelect, onSymptomsYes, onSymptomsNo, onSymptomsEdit, symptomEntry, onJournal, onJournalEdit, journalEntry }) => {
+const CheckInSpine = ({ state, justChecked, moodLabel, count = 0, onMood, onMoodSelect, onSymptomsYes, onSymptomsNo, onSymptomsClear, onSymptomsEdit, symptomEntries = [], journalEntries = [], onSymptomOpen, onJournalOpen, symptomEntry, onJournal, onJournalEdit, journalEntry }) => {
   const t = usePatientCopy()
   const [openKey, setOpenKey] = useState(() => !state.mood ? 'mood' : !state.symptoms ? 'symptoms' : !state.journal ? 'journal' : null)
   const nodes = [
@@ -4070,11 +4263,20 @@ const CheckInSpine = ({ state, justChecked, moodLabel, count = 0, onMood, onMood
                   )}
 
                   {open && n.key === 'symptoms' && (
-                    state.symptoms === 'logged' && symptomEntry ? (
+                    state.symptoms === 'logged' && (symptomEntries.length || symptomEntry) ? (
+                      <div style={{ marginTop: 8 }}>
+                        {(symptomEntries.length ? symptomEntries : [symptomEntry]).map(e => (
+                          <CiEntryRow key={e.id} title={e.name} detail={[e.severity, e.notes].filter(Boolean).join(' · ')} onClick={() => onSymptomOpen ? onSymptomOpen(e) : (onSymptomsEdit && onSymptomsEdit())}/>
+                        ))}
+                        <button onClick={() => onSymptomsYes && onSymptomsYes()} style={{ ..._qLink, marginTop: 8 }}>Add symptom</button>
+                      </div>
+                    ) : (
+                    state.symptoms === 'none' ? (
+                      // v3.32: "None today" answered reads like a logged answer: the line item, then
+                      // "Edit symptoms" (secondary). Editing opens Log symptoms; saving one replaces the None.
                       <div style={{ marginTop: 12 }}>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary }}>{symptomEntry.name}{symptomEntry.severity ? ` · ${symptomEntry.severity}` : ''}</div>
-                        {symptomEntry.notes ? <div style={{ fontSize: 12.5, color: C.textSecondary, lineHeight: 1.5, marginTop: 3 }}>{symptomEntry.notes}</div> : null}
-                        <button onClick={() => onSymptomsEdit && onSymptomsEdit()} style={{ ..._qLink, marginTop: 10 }}>Edit symptoms</button>
+                        <div style={{ fontSize: 16, lineHeight: '24px', color: C.textPrimary }}>No symptoms reported</div>
+                        <button onClick={() => onSymptomsYes && onSymptomsYes()} style={{ ..._qLink, marginTop: 10 }}>Add symptom</button>
                       </div>
                     ) : (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
@@ -4082,12 +4284,15 @@ const CheckInSpine = ({ state, justChecked, moodLabel, count = 0, onMood, onMood
                       <button onClick={() => { onSymptomsYes && onSymptomsYes() }} style={_ciPrimary}>Log symptoms</button>
                     </div>
                     )
+                    )
                   )}
 
                   {open && n.key === 'journal' && (
-                    <div style={{ marginTop: 12 }}>
-                      {n.done && journalEntry && <div style={{ fontSize: 13.5, color: C.textPrimary, lineHeight: 1.55, whiteSpace: 'pre-wrap', marginBottom: 11 }}>{journalEntry.text}</div>}
-                      <button onClick={() => { (n.done ? onJournalEdit : onJournal) && (n.done ? onJournalEdit() : onJournal()) }} style={n.done ? _qLink : _ciPrimary}>{n.done ? 'Edit note' : 'Write a note'}</button>
+                    <div style={{ marginTop: n.done ? 8 : 12 }}>
+                      {n.done && (journalEntries.length ? journalEntries : (journalEntry ? [journalEntry] : [])).map(e => (
+                        <CiEntryRow key={e.id} title={e.text} clamp={2} onClick={() => onJournalOpen ? onJournalOpen(e) : (onJournalEdit && onJournalEdit())}/>
+                      ))}
+                      <button onClick={() => onJournal && onJournal()} style={n.done ? { ..._qLink, marginTop: 8 } : _ciPrimary}>{n.done ? 'Add entry' : 'Write an entry'}</button>
                     </div>
                   )}
                 </div>
@@ -4128,7 +4333,8 @@ const todayBands = (cancer, relationship = null) => {
 const _baseTodayBands = (cancer) => [
   { id: 'news', title: cancer && cancer !== 'your cancer' ? `New in ${cancer}` : 'New for you', seeAll: 'resources', items: [
     { kind: 'News', image: IMG_FDA_LAB, icon: 'newspaper', tint: '#eef2fb', title: 'FDA expands approval for a kidney cancer combination', sub: 'Reuters Health · 2d ago' },
-    { kind: 'Sponsored', sponsored: true, image: IMG_SPONSORED_THERAPY, icon: 'medication', tint: '#eef7f1', title: 'Understanding a newer targeted therapy', sub: 'From a treatment partner' },
+    // v3.38: no sponsored content on Today until the sponsorship team's placement rules are in (matches the production prototype).
+    { kind: 'Guide', image: IMG_SPONSORED_THERAPY, icon: 'medication', tint: '#eef7f1', title: 'Understanding a newer targeted therapy', sub: 'Outcomes4Me · 5 min read' },
   ]},
   { id: 'webinars', title: 'Expert webinars', seeAll: 'resources', items: [
     { kind: 'Webinar', image: IMG_WEBINAR_FUH, icon: 'smart_display', tint: '#f3eefb', title: 'Ask the Expert with Dr. Fuh', sub: 'Watch the replay' },
@@ -4205,7 +4411,7 @@ const AskO4MSheet = ({ onClose, onSend, initialQuestion = '', fullView = false }
       <div onClick={() => close(onClose)} style={{ position: 'absolute', inset: 0, backgroundColor: vis ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0)', transition: 'background-color 0.3s ease' }}/>
       <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, top: fullView ? 0 : 'auto', maxHeight: fullView ? 'none' : '92%', overflowY: 'auto', backgroundColor: C.bgCard, borderRadius: fullView ? 0 : '22px 22px 0 0', boxShadow: fullView ? 'none' : '0 -6px 28px rgba(0,0,0,0.16)', padding: fullView ? 'calc(8px + env(safe-area-inset-top, 0px)) 20px calc(24px + env(safe-area-inset-bottom, 0px))' : '10px 20px calc(24px + env(safe-area-inset-bottom, 0px))', transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.34s cubic-bezier(0.32,0.72,0,1)', fontFamily: 'Inter,sans-serif' }}>
         {fullView
-          ? <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '0 -8px 8px' }}><button onClick={() => close(onClose)} aria-label="Close" style={{ width: 44, height: 44, border: 'none', background: '#fff', borderRadius: 22, boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 24, color: '#414652' }}>close</span></button></div>
+          ? <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '0 -8px 8px' }}><button onClick={() => close(onClose)} aria-label="Close" style={{ width: 36, height: 36, border: 'none', background: '#fff', borderRadius: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="material-symbols-rounded" style={{ fontSize: 20, color: '#414652' }}>close</span></button></div>
           : <div style={{ width: 38, height: 4, backgroundColor: 'rgba(0,0,0,0.12)', borderRadius: 2, margin: '0 auto 16px' }}/>}
         <div style={{ fontSize: 20, fontWeight: 700, color: C.textPrimary, letterSpacing: '-0.3px', marginBottom: 6 }}>Ask O4M</div>
         <div style={{ fontSize: 14, color: C.textSecondary, marginBottom: 20, lineHeight: 1.55 }}>Send a question to our oncology clinical team. A person reads every question and follows up, usually within a day.</div>
@@ -4238,7 +4444,7 @@ const AskO4MSheet = ({ onClose, onSend, initialQuestion = '', fullView = false }
 // over the content, which scrolls underneath.
 const CANCER_LABELS = { RCC: 'kidney cancer', BREAST: 'breast cancer', CRC: 'colorectal cancer', LUNG: 'lung cancer', PROS: 'prostate cancer', BLAD: 'bladder cancer', OV: 'ovarian cancer' }
 const _shortDate = (iso) => { try { return new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) } catch { return iso } }
-const GLASS_CHIP = { pointerEvents: 'auto', width: 44, height: 44, borderRadius: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', backgroundColor: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', cursor: 'pointer' }  // v3.19: header buttons are white floating
+const GLASS_CHIP = { pointerEvents: 'auto', width: 36, height: 36, borderRadius: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', backgroundColor: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', cursor: 'pointer' }  // v3.19: header buttons are white floating
 const SummarySectionLabel = ({ children }) => <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: '0.04em', textTransform: 'uppercase', color: C.textTertiary, margin: '22px 0 10px' }}>{children}</div>
 const SummaryCard = ({ children }) => <div style={{ backgroundColor: C.bgCard, ...SOFT_CARD, borderRadius: 14, padding: '14px 16px' }}>{children}</div>
 const SummaryEmpty = ({ children }) => <SummaryCard><div style={{ fontSize: 13.5, color: C.textTertiary }}>{children}</div></SummaryCard>
@@ -4289,8 +4495,8 @@ const CareSummarySheet = ({ symptoms = [], medications = [], journal = [], mood 
     <div style={{ position: 'fixed', inset: 0, zIndex: 150, background: 'linear-gradient(180deg, #fbf6f4 0%, #fdfbfb 26%, #ffffff 100%)', transform: vis ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 0.34s cubic-bezier(0.32,0.72,0,1)', display: 'flex', flexDirection: 'column', fontFamily: "'Inter',sans-serif" }}>
       {/* Transparent header — floating glass chips */}
       <div style={{ position: 'absolute', top: 'calc(8px + env(safe-area-inset-top, 0px))', left: 0, right: 0, zIndex: 5, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 9, padding: '0 14px', pointerEvents: 'none' }}>
-        <button onClick={share} aria-label="Share" style={GLASS_CHIP}><span className="material-symbols-rounded" style={{ fontSize: 20, color: C.primary }}>ios_share</span></button>
-        <button onClick={close} aria-label="Close" style={GLASS_CHIP}><span className="material-symbols-rounded" style={{ fontSize: 22, color: C.textIcon }}>close</span></button>
+        <button onClick={share} aria-label="Share" style={GLASS_CHIP}><span className="material-symbols-rounded msr-600" style={{ fontSize: 20, color: C.textIcon }}>ios_share</span></button>
+        <button onClick={close} aria-label="Close" style={GLASS_CHIP}><span className="material-symbols-rounded msr-600" style={{ fontSize: 20, color: C.textIcon }}>close</span></button>
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: 'calc(20px + env(safe-area-inset-top, 0px)) 18px 28px' }}>
         <div style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.5px', color: C.textPrimary, marginBottom: 7, maxWidth: 'calc(100% - 92px)' }}>{t('{Their} full picture')}</div>
@@ -4423,7 +4629,24 @@ const TreatmentOptionsCard = ({ onView }) => (
     </div>
   </button>
 )
-const TodayScreen = ({ userName, summary, narrative, teasers, onTeaserAction, onAddEvent, checkin, checkinJustChecked, checkinMoodLabel, checkinCount, onCheckinMood, onCheckinMoodSelect, onCheckinSymptomsYes, onCheckinSymptomsNo, onCheckinSymptomsEdit, checkinSymptomEntry, onCheckinJournal, onCheckinJournalSave, onCheckinJournalEdit, checkinJournalEntry, todos = [], onTodoAction, onViewTimeline, onViewTreatments, hasTreatments = false, onAsk, onOpenCommunity, onViewCareSummary, cancerLabel = 'your cancer', onViewResources, todOverride = null, onAskClinical }) => {
+// v3.41: the caregiving heart, the one content icon with its own color (CARING_RED, a soft red
+// clear of brand orange and of DARK_RED). It beats twice, once, the first time a caregiver lands
+// on Today; static after that and with Reduce Motion.
+const CARING_RED = '#E5484D'
+const CaringHeart = () => {
+  // Beats once, ever; waits 0.4 s after Today appears, and if AI is pulsing (the summary
+  // generating) it holds until that finishes, then waits another 0.4 s (v3.42).
+  const [due] = useState(() => { try { return !localStorage.getItem('o4m_caring_heart_seen') } catch (e) { return false } })
+  const [beat, setBeat] = useState(false)
+  const aiBusy = useAiBusy()
+  useEffect(() => {
+    if (!due || beat || aiBusy) return
+    const t = setTimeout(() => { setBeat(true); try { localStorage.setItem('o4m_caring_heart_seen', '1') } catch (e) {} }, 400)
+    return () => clearTimeout(t)
+  }, [due, beat, aiBusy])
+  return <span className={'material-symbols-rounded caring-heart' + (beat ? ' beat' : '')} style={{ fontSize: 16, color: CARING_RED, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>favorite</span>
+}
+const TodayScreen = ({ userName, summary, narrative, teasers, onTeaserAction, onAddEvent, checkin, checkinJustChecked, checkinMoodLabel, checkinCount, onCheckinMood, onCheckinMoodSelect, onCheckinSymptomsYes, onCheckinSymptomsNo, onCheckinSymptomsClear, onCheckinSymptomsEdit, checkinSymptomEntries = [], checkinJournalEntries = [], onCheckinSymptomOpen, onCheckinJournalOpen, checkinSymptomEntry, onCheckinJournal, onCheckinJournalSave, onCheckinJournalEdit, checkinJournalEntry, todos = [], onTodoAction, onViewTimeline, onViewTreatments, hasTreatments = false, onAsk, onOpenCommunity, onViewCareSummary, cancerLabel = 'your cancer', onViewResources, todOverride = null, onAskClinical }) => {
   const t = usePatientCopy()
   const subject = t.sub
   const first = (userName || '').trim().split(' ')[0] // may be empty — onboarding doesn't ask a name
@@ -4455,7 +4678,7 @@ const TodayScreen = ({ userName, summary, narrative, teasers, onTeaserAction, on
                   reads as "you two". The one place the typed name appears outside onboarding/sharing. */}
               {subject && !subject.self && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 13.5, fontWeight: 600, color: C.textSecondary }}>
-                  <span className="material-symbols-rounded" style={{ fontSize: 16, color: C.primary, fontVariationSettings: "'FILL' 1, 'wght' 400" }}>favorite</span>
+                  <CaringHeart/>
                   Caring for {subject.name}
                 </div>
               )}
@@ -4479,7 +4702,7 @@ const TodayScreen = ({ userName, summary, narrative, teasers, onTeaserAction, on
 
         {/* The daily habit — check-in, right under the summary it updates */}
         <TodayZone>
-          <CheckInSpine state={checkin} justChecked={checkinJustChecked} moodLabel={checkinMoodLabel} count={checkinCount} onMood={onCheckinMood} onMoodSelect={onCheckinMoodSelect} onSymptomsYes={onCheckinSymptomsYes} onSymptomsNo={onCheckinSymptomsNo} onSymptomsEdit={onCheckinSymptomsEdit} symptomEntry={checkinSymptomEntry} onJournal={onCheckinJournal} onJournalEdit={onCheckinJournalEdit} journalEntry={checkinJournalEntry}/>
+          <CheckInSpine state={checkin} justChecked={checkinJustChecked} moodLabel={checkinMoodLabel} count={checkinCount} onMood={onCheckinMood} onMoodSelect={onCheckinMoodSelect} onSymptomsYes={onCheckinSymptomsYes} onSymptomsNo={onCheckinSymptomsNo} onSymptomsClear={onCheckinSymptomsClear} onSymptomsEdit={onCheckinSymptomsEdit} symptomEntry={checkinSymptomEntry} symptomEntries={checkinSymptomEntries} journalEntries={checkinJournalEntries} onSymptomOpen={onCheckinSymptomOpen} onJournalOpen={onCheckinJournalOpen} onJournal={onCheckinJournal} onJournalEdit={onCheckinJournalEdit} journalEntry={checkinJournalEntry}/>
         </TodayZone>
 
         {/* Act — recommended next steps (hides itself when empty) */}
@@ -4488,10 +4711,12 @@ const TodayScreen = ({ userName, summary, narrative, teasers, onTeaserAction, on
         {/* When something happens — the care plan (results, treatment change, a visit coming up)
             and asking a person. One tap away, below the daily habit (interview synthesis: the
             check-in is the daily job; the care plan is valued most but used on events). */}
-        <TodayZone><TodayCTAs onViewPlan={onViewTimeline} onAskClinical={onAskClinical}/></TodayZone>
-
-        {/* Prepare — standing entry to the on-demand care summary */}
+        {/* v3.30: one titled section for the places and tools around the person's care. */}
         <TodayZone>
+          <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: C.textPrimary, padding: '2px 2px 10px' }}>Your care</div>
+          <TodayCTAs onViewPlan={onViewTimeline} onAskClinical={onAskClinical}/>
+          <div style={{ height: 12 }}/>
+          {/* Prepare — standing entry to the on-demand care summary */}
           <button onClick={onViewCareSummary} style={{ display: 'flex', alignItems: 'center', gap: 13, width: '100%', textAlign: 'left', backgroundColor: C.bgCard, ...SOFT_CARD, padding: '15px 16px', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
             <div style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: C.bgApp, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
               <span className="material-symbols-rounded" style={{ fontSize: 22, color: C.textIcon, fontVariationSettings: "'FILL' 0, 'wght' 400" }}>clinical_notes</span>
@@ -4511,7 +4736,7 @@ const TodayScreen = ({ userName, summary, narrative, teasers, onTeaserAction, on
   )
 }
 
-const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFlash = false, summaryShown = true, onApproachSelect, addedIds = {}, onRemoveEvent, onEditClinical, visibleRecs = [], revealedCards = null, blockGenStates = {}, genText = null, genBlockId = null, generationDone = false, onSummarize = null, onAddEvent = null, cancerSupported = true, onReviewRecs = null, showRecordsCard = false, onOpenSettings = null, onDismissRecordsCard = null, checkin = null, checkinJustChecked = null, checkinMoodLabel = null, checkinCount = 0, onCheckinMood = null, onCheckinSymptomsYes = null, onCheckinSymptomsNo = null, onCheckinJournal = null, todos = [], onTodoAction = null, dailyLog = null, summaryTeasers = [], onTeaserAction = null, treatmentBasis = [] }) => {
+const DaySection = ({ day, onEditCheckin, sentinelRef, isLastDay = false, highlightId, todayFlash = false, summaryShown = true, onApproachSelect, addedIds = {}, onRemoveEvent, onEditClinical, visibleRecs = [], revealedCards = null, blockGenStates = {}, genText = null, genBlockId = null, generationDone = false, onSummarize = null, onAddEvent = null, cancerSupported = true, onReviewRecs = null, showRecordsCard = false, onOpenSettings = null, onDismissRecordsCard = null, checkin = null, checkinJustChecked = null, checkinMoodLabel = null, checkinCount = 0, onCheckinMood = null, onCheckinSymptomsYes = null, onCheckinSymptomsNo = null, onCheckinJournal = null, todos = [], onTodoAction = null, dailyLog = null, summaryTeasers = [], onTeaserAction = null, treatmentBasis = [] }) => {
   const allItems = []
   // The daily summary is absent while the timeline builds; it's inserted at the top of
   // Today right after the scroll-to-Today settles.
@@ -4522,8 +4747,8 @@ const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFla
   // ── redesign-04: the timeline is the medical record. The daily log (mood/symptoms/
   // journal, derived from the stores) shows on every day incl today; the interactive
   // check-in / next steps live on the Today surface, not here. ──
-  if (dailyLog && (dailyLog.mood || (dailyLog.symptoms || []).length || (dailyLog.journal || []).length)) {
-    allItems.push({ key: 'daylog', icon: null, card: <DailyLogGroup mood={dailyLog.mood} symptoms={dailyLog.symptoms} journal={dailyLog.journal} none={dailyLog.none}/> })
+  if (dailyLog && (dailyLog.mood || (dailyLog.symptoms || []).length || (dailyLog.journal || []).length || dailyLog.none)) {  // v3.29: "None" alone is a check-in too
+    allItems.push({ key: 'daylog', icon: null, card: <DailyLogGroup mood={dailyLog.mood} symptoms={dailyLog.symptoms} journal={dailyLog.journal} none={dailyLog.none} date={day.date} onEdit={onEditCheckin}/> })
   }
   day.events.forEach(ev => allItems.push({
     key: ev.id, icon: null,
@@ -4570,7 +4795,11 @@ const DaySection = ({ day, sentinelRef, isLastDay = false, highlightId, todayFla
           const isRevealed = revealedCards.has(cardKey)
           // During generation: cards start invisible until revealed
           // After generation: new cards added by user appear immediately with a fade
-          const animStyle = isRevealed
+          // v3.28: the daily log isn't part of plan generation, so it never waits to be revealed
+          // (before, a check-in logged before generation finished stayed invisible).
+          const animStyle = item.key === 'daylog'
+            ? {}
+            : isRevealed
             ? { animation: 'cardfadein 0.5s ease forwards' }
             : generationDone
               ? { animation: 'cardfadein 0.4s ease forwards' }  // new card added after generation
@@ -5457,6 +5686,8 @@ const CANCER_TYPES = [
   { code: 'LEUK',   name: 'Leukemia',                   subtitle: 'ALL, AML, CLL, CML',          surgery: null },
   { code: 'LYMP',   name: 'Lymphoma',                   subtitle: 'Hodgkin or Non-Hodgkin',      surgery: null },
   { code: 'MM',     name: 'Multiple Myeloma',           subtitle: null,                          surgery: 'Autologous stem cell transplant' },
+  // v3.37: production's "Other", also used for "not sure of the exact type" for now (to be addressed intentionally later).
+  { code: 'OTHER',  name: 'Other',                      subtitle: null,                          surgery: null, generic: true },
 ]
 
 // ─── CLINICAL HELPERS (module-level: shared by onboarding, gap answers, ClinicalEditSheet) ──
@@ -5473,7 +5704,7 @@ const buildSeedEventsFromAnswers = (ans, cancer, stage, hadSurgery, addedDate) =
   const events = []
   events.push({ date: diagDate, event: {
     id: 'seed_diag', type: 'diagnosis', source: 'onboarding',
-    name: cancer ? cancer.name : 'Cancer — type not confirmed yet', date: diagDate,
+    name: cancer && !cancer.generic ? cancer.name : 'Cancer, type not confirmed yet', date: diagDate,
     details: [
       ans.stage && ans.stage !== 'unsure' ? _STAGE_ROMAN_LABEL[stage] : (_EXTENT_DETAIL[ans.extent] || null),
       ans.histology === 'clear_cell' ? 'Clear cell histology' : ans.histology === 'non_clear' ? 'Non-clear cell histology' : null,
@@ -5504,7 +5735,7 @@ const buildPatientStateFromAnswers = (ans, opts = {}) => {
       stage,
       biomarkers: { histology: ans.histology === 'clear_cell' ? 'clear-cell' : ans.histology === 'non_clear' ? 'non-clear-cell' : 'unknown' },
       performanceStatus: 0,
-      cancerName: cancer ? cancer.name : null,
+      cancerName: cancer && !cancer.generic ? cancer.name : null,
       treatmentPhase: ans.treatment_phase || null,
       role: ans.role || 'self',
       patientName: ans.role === 'caregiver' ? (ans.patient_name || null) : null,
@@ -5529,7 +5760,7 @@ const buildPatientStateFromAnswers = (ans, opts = {}) => {
 // Answer keys (stored on patientState.onboardingAnswers):
 //   cancer_type     CANCER_TYPES code | 'unsure'
 //   extent          'one_place' | 'nodes' | 'spread' | 'early' | 'unsure'
-//   treatment_phase 'just_diagnosed' | 'in_treatment' | 'finished' | 'unsure'
+//   treatment_phase 'waiting' | 'just_diagnosed' | 'in_treatment' | 'finished' ('unsure' on older records)
 //   role            'self' | 'caregiver'   (a label — changes copy only)
 //   drivers         'tested' | 'planned' | 'not_tested' | 'unsure'  (asked later, from a gap)
 // Legacy keys (stage, histology, treatment_status) are still honoured — ClinicalEditSheet
@@ -5569,10 +5800,11 @@ const ONB_QUESTIONS = {
     key: 'treatment_phase',
     title: 'Where {are|is} {they} right now?',
     opts: [
+      // v3.36: production's four statuses in plain words; no "Not sure" (people know which of these they're in).
+      { value: 'waiting',        label: 'Still getting tests, no diagnosis yet' },
       { value: 'just_diagnosed', label: "Just diagnosed, {haven't|hasn't} started treatment" },
       { value: 'in_treatment',   label: 'In treatment now' },
-      { value: 'finished',       label: 'Finished treatment' },
-      { value: 'unsure',         label: 'Not sure' },
+      { value: 'finished',       label: 'Finished treatment, no signs of cancer' },
     ],
   },
   role: {
@@ -5680,9 +5912,7 @@ const OnbCancerType = ({ value, onPick, showNote = false }) => {
         })}
         {term && list.length === 0 && <div style={{ fontSize: 14, color: C.textTertiary, padding: '16px 4px' }}>No matches for “{q.trim()}”.</div>}
       </div>
-      <button onClick={() => onPick('unsure')} style={{ alignSelf: 'flex-start', marginTop: 18, padding: '6px 0', background: 'none', border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 600, color: C.primary, fontFamily: 'Inter,sans-serif' }}>
-        I'm not sure of the exact type →
-      </button>
+      {/* v3.37: no separate "not sure" link; "Other" in the list covers it, as in production. */}
     </div>
   )
 }
@@ -5937,8 +6167,8 @@ const OnboardingScreen = ({ onComplete, onExit }) => {
     <div style={{ position: 'fixed', inset: 0, zIndex: 90, backgroundColor: C.bgCard, display: 'flex', flexDirection: 'column', opacity: vis ? 1 : 0, transform: vis ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 0.36s ease, transform 0.36s ease', fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", WebkitFontSmoothing: 'antialiased' }}>
       <div style={{ position: 'relative', flexShrink: 0, paddingTop: 'env(safe-area-inset-top, 0px)' }}>
         <div style={{ display: 'flex', alignItems: 'center', height: 60, padding: '0 8px 0 4px' }}>
-          <button onClick={back} aria-label="Back" style={{ width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff', borderRadius: 22, boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', border: 'none', cursor: 'pointer', flexShrink: 0 }}>
-            <Ico.back/>
+          <button onClick={back} aria-label="Back" style={{ width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff', borderRadius: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', border: 'none', cursor: 'pointer', flexShrink: 0 }}>
+            <span className="material-symbols-rounded msr-600" style={{ fontSize: 20, color: C.textIcon }}>arrow_back</span>
           </button>
         </div>
         {showProgress && (
@@ -6902,7 +7132,8 @@ const routeChat = (raw, ctx) => {
     return { kind:'answer', text:`I don't see any medications in your list yet. If you add them, I can reference them here.` }
   }
   if (has(/clinical trial|\btrial\b|experimental|research study/)) {
-    return { kind:'answer', text:`There may be clinical trials relevant to ${ctx.stageLabel} ${ctx.cancerName}. Trials are matched on your diagnosis details and location — a good one to explore with your care team, who can also flag trials they think fit.` }
+    // v3.43: a trials question always links into the app's clinical trials, with a sentence saying why.
+    return { kind:'answer', text:`There may be clinical trials relevant to ${ctx.stageLabel} ${ctx.cancerName}. Trials are matched on your diagnosis details and location, and they're worth exploring with your care team, who can also flag trials they think fit. You can see the trials that match you in Clinical trials.`, connect:{ label:'Go to Clinical trials', target:'trials' } }
   }
 
   // ── INSUFFICIENT DATA (records-dependent, can't answer) ──
@@ -7533,7 +7764,7 @@ const ChatScreen = ({ onAskClinical, patientState, timeline, medications, userNa
   const [recordsConnected, setRecordsConnected] = useState(false)  // simulated health-records auth (shared with future gating)
 
   const firstName = (userName || '').trim().split(/\s+/)[0] || ''
-  const greeting = firstName ? `Hi ${firstName}, ready when you are.` : 'Hi there, ready when you are.'
+  const greeting = firstName ? `Hi ${firstName}, how can I help?` : 'Hi, how can I help?'  // v3.35
   const cancerName = CHAT_CANCER[patientState?.diagnosisCode] || 'your cancer'
   const histology = patientState?.biomarkers?.histology === 'clear-cell' ? 'clear cell ' : ''
   const stageLabel = patientState?.stage ? `Stage ${patientState.stage}` : ''
@@ -7632,20 +7863,20 @@ const ChatScreen = ({ onAskClinical, patientState, timeline, medications, userNa
   // App-bar state. During a back-pop, treat as home from the start of the slide so the bar transitions with the view.
   const headerDrilled = anim === 'pop' ? false : (currentId !== homeId)
   const headerTitle = current2 ? current2.title : null
-  const abBtn = { width: 44, height: 44, flexShrink: 0, background: '#fff', borderRadius: 22, boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }
+  const abBtn = { width: 36, height: 36, flexShrink: 0, background: '#fff', borderRadius: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }
   // App bar that belongs to a view (home or chat), so it slides in/out with its screen — consistent both ways.
   const renderAppBar = (mode) => (
     <div style={{ flexShrink: 0, height: 60, display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px', backgroundColor: C.bgCard, position: 'relative' }}>
       {mode === 'chat'
-        ? <button onClick={goHome} aria-label="Back" style={abBtn}><span className="material-symbols-rounded msr-600" style={{ fontSize: 26, color: C.textIcon }}>arrow_back</span></button>
-        : <button onClick={() => setMenuOpen(o => !o)} aria-label="Chats menu" style={abBtn}><span className="material-symbols-rounded msr-600" style={{ fontSize: 25, color: C.textIcon, transform: 'scaleX(-1)' }}>segment</span></button>}
+        ? <button onClick={goHome} aria-label="Back" style={abBtn}><span className="material-symbols-rounded msr-600" style={{ fontSize: 20, color: C.textIcon }}>arrow_back</span></button>
+        : <button onClick={() => setMenuOpen(o => !o)} aria-label="Chats menu" aria-expanded={menuOpen} style={{ ...abBtn, background: menuOpen ? '#F5F4F6' : '#fff' }}><span className="material-symbols-rounded msr-600" style={{ fontSize: 20, color: C.textIcon, transform: 'scaleX(-1)' }}>segment</span></button>}
       {mode === 'chat' && headerTitle
         ? <div style={{ flex: 1, minWidth: 0, fontSize: 16, fontWeight: 600, color: C.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: '0 4px' }}>{headerTitle}</div>
         : <div style={{ flex: 1 }}/>}
-      {mode === 'chat' && <button onClick={startNewChat} aria-label="New chat" style={abBtn}><span className="material-symbols-rounded msr-600" style={{ fontSize: 23, color: C.textIcon }}>edit_square</span></button>}
-      {mode === 'chat' && <button onClick={onOverflow} aria-label="More options" style={abBtn}><span className="material-symbols-rounded msr-600" style={{ fontSize: 22, color: C.textIcon }}>more_vert</span></button>}
+      {mode === 'chat' && <button onClick={startNewChat} aria-label="New chat" style={abBtn}><span className="material-symbols-rounded msr-600" style={{ fontSize: 20, color: C.textIcon }}>edit_square</span></button>}
+      {mode === 'chat' && <button onClick={onOverflow} aria-label="More options" style={abBtn}><span className="material-symbols-rounded msr-600" style={{ fontSize: 20, color: C.textIcon }}>more_vert</span></button>}
       {/* Close only on the landing: inside a conversation the header is back, title, new chat and overflow. */}
-      {sheetMode && mode !== 'chat' && <button onClick={() => onClose && onClose()} aria-label="Close" style={abBtn}><span className="material-symbols-rounded msr-600" style={{ fontSize: 24, color: C.textIcon }}>close</span></button>}
+      {sheetMode && mode !== 'chat' && <button onClick={() => onClose && onClose()} aria-label="Close" style={abBtn}><span className="material-symbols-rounded msr-600" style={{ fontSize: 20, color: C.textIcon }}>close</span></button>}
     </div>
   )
   // Footer nav lives inside the home layer so it slides with the home and the menu can run full-height beneath it.
@@ -7900,6 +8131,8 @@ const YouScreen = ({ currentUser, onLogout, onAddPending, todOverride, onSetTod 
 // ─── APP HEADER ───────────────────────────────────────────────────
 // Floating header (v3.02): no bar. Every control is a white floating button with a Level 1
 // shadow. Icon buttons are 44 circles; the Chat pill is 36 (Label small), tap area 44. A short fade in the page color keeps scrolling text clear of them.
+// v3.40: header buttons are 36 (finished size, tap area 44 in the app). Icon circles use the chat's
+// icon style (Material Symbols Rounded 600, 20, GRAY_BLUE_900); the profile's progress ring is its edge.
 const FLOAT_SHADOW = '0 1px 3px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.035)'
 const FADE_RGB = { careplan: '251,246,244', plan: '245,244,246', track: '255,255,255', community: '255,255,255', resources: '255,255,255' }
 // v3.22: when a day is scrolled to the top (Jump to Today), leave its first card 16 below the
@@ -7913,25 +8146,21 @@ const AppHeader = ({ dayFade, activeTab = 'careplan', onProfileTap, onBack, onMe
     <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: 60, padding: '0 16px', background: `linear-gradient(180deg, rgba(${FADE_RGB[activeTab] || '255,255,255'},0.96) 0%, rgba(${FADE_RGB[activeTab] || '255,255,255'},0.82) 62%, rgba(${FADE_RGB[activeTab] || '255,255,255'},0) 100%)`, flexShrink: 0 }}>
       <style>{`@keyframes hdrFade{from{opacity:0}to{opacity:1}}`}</style>
       {onBack ? (
-        <button key="back" onClick={onBack} aria-label="Back" style={{ width: 44, height: 44, borderRadius: 22, marginRight: 12, flexShrink: 0, cursor: 'pointer', border: 'none', backgroundColor: '#fff', boxShadow: FLOAT_SHADOW, display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'hdrFade 0.24s ease' }}>
-          <Ico.back/>
+        <button key="back" onClick={onBack} aria-label="Back" style={{ width: 36, height: 36, borderRadius: 18, marginRight: 12, flexShrink: 0, cursor: 'pointer', border: 'none', backgroundColor: '#fff', boxShadow: FLOAT_SHADOW, display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'hdrFade 0.24s ease' }}>
+          <span className="material-symbols-rounded msr-600" style={{ fontSize: 20, color: C.textIcon }}>arrow_back</span>
         </button>
       ) : onMenu ? (
-        <button key="menu" onClick={onMenu} aria-label="Chats menu" style={{ width: 44, height: 44, borderRadius: 22, marginRight: 12, flexShrink: 0, cursor: 'pointer', border: 'none', backgroundColor: '#fff', boxShadow: FLOAT_SHADOW, display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'hdrFade 0.24s ease' }}>
-          <span className="material-symbols-rounded" style={{ fontSize: 25, color: C.textPrimary, transform: 'scaleX(-1)' }}>segment</span>
+        <button key="menu" onClick={onMenu} aria-label="Chats menu" style={{ width: 36, height: 36, borderRadius: 18, marginRight: 12, flexShrink: 0, cursor: 'pointer', border: 'none', backgroundColor: '#fff', boxShadow: FLOAT_SHADOW, display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'hdrFade 0.24s ease' }}>
+          <span className="material-symbols-rounded msr-600" style={{ fontSize: 20, color: C.textIcon, transform: 'scaleX(-1)' }}>segment</span>
         </button>
       ) : (
-      <div key="avatar" onClick={onProfileTap} role="button" aria-label="Profile" style={{ position: 'relative', width: 44, height: 44, marginRight: 12, flexShrink: 0, cursor: 'pointer', borderRadius: 22, backgroundColor: '#fff', boxShadow: FLOAT_SHADOW }}>
-        <svg width="44" height="44" viewBox="0 0 46 46">
-          <circle cx="23" cy="23" r={r} fill="none" stroke="#e8e8e8" strokeWidth="3"/>
-          <circle cx="23" cy="23" r={r} fill="none" stroke="#4ade80" strokeWidth="3" strokeDasharray={`${dash} ${circ}`} strokeLinecap="round" transform="rotate(-90 23 23)"/>
+      <div key="avatar" onClick={onProfileTap} role="button" aria-label="Profile" style={{ position: 'relative', width: 36, height: 36, marginRight: 12, flexShrink: 0, cursor: 'pointer', borderRadius: 18, backgroundColor: '#fff', boxShadow: FLOAT_SHADOW, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {/* The progress ring is the button's edge: 36 finished, 2.5 stroke. */}
+        <svg width="36" height="36" viewBox="0 0 36 36" style={{ position: 'absolute', inset: 0 }}>
+          <circle cx="18" cy="18" r={16.75} fill="none" stroke="#EEEDEF" strokeWidth="2.5"/>
+          <circle cx="18" cy="18" r={16.75} fill="none" stroke="#4ade80" strokeWidth="2.5" strokeDasharray={`${0.62 * 2 * Math.PI * 16.75} ${2 * Math.PI * 16.75}`} strokeLinecap="round" transform="rotate(-90 18 18)"/>
         </svg>
-        <div style={{ position: 'absolute', inset: 5, borderRadius: '50%', backgroundColor: '#f0f0f0', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-            <circle cx="10" cy="7" r="3.5" stroke="#666" strokeWidth="1.5"/>
-            <path d="M3 18c0-3.9 3.1-7 7-7s7 3.1 7 7" stroke="#666" strokeWidth="1.5" strokeLinecap="round"/>
-          </svg>
-        </div>
+        <span className="material-symbols-rounded msr-600" style={{ fontSize: 20, color: C.textIcon }}>person</span>
       </div>
       )}
       <div style={{ flex: 1 }}/>
@@ -8899,23 +9128,50 @@ export default function App() {
     })
   }
   const _pop = (line) => { setJustCheckedLine(line); setTimeout(() => setJustCheckedLine(l => l === line ? null : l), 500) }
+  // v3.29: entries remember where and when they were first logged; edits keep that.
+  const flowSource = useRef('Tracker')
+  const [moodFlowEntry, setMoodFlowEntry] = useState(null)
+  const [symptomFlowDate, setSymptomFlowDate] = useState(null)
+  const _stamp = (entry, prev) => ({ ...entry, source: prev?.source || entry.source || flowSource.current, loggedAt: prev?.loggedAt || entry.loggedAt || new Date().toISOString() })
+  const editCheckinEntry = ({ kind, entry, date }) => {
+    flowSource.current = 'your care plan'
+    if (kind === 'mood') { setMoodFlowEntry(entry); setMoodFlowOpen(true) }
+    else if (kind === 'symptom') { setSymptomFlowEntry(entry); setSymptomFlowDate(null); setSymptomFlowOpen(true) }
+    else if (kind === 'none') { setSymptomFlowEntry(null); setSymptomFlowDate(date); setSymptomFlowOpen(true) }
+    else if (kind === 'journal') { setJournalFlowEntry(entry); setJournalFlowOpen(true) }
+  }
   const logMood = (entry) => {
-    setMood(prev => [...prev, entry])
+    // One mood per day: a new answer replaces that day's (the check-in's faces can be changed all day).
+    setMood(prev => { const old = [...prev].reverse().find(m => m.date === entry.date); const next = prev.filter(m => m.date !== entry.date); return [...next, _stamp(entry, old)] })
+    setMoodFlowEntry(null); flowSource.current = 'Tracker'
     setMoodFlowOpen(false); _pop('mood'); setToast({ message: 'Mood logged' })
   }
+  // v3.26: clearing "None today" returns the row to unanswered.
+  const symptomNoneClear = () => { const t = localDateStr(); setSymptomNone(prev => prev.filter(d => d !== t)) }
   const symptomNoneToday = () => {
     const t = localDateStr()
     setSymptomNone(prev => prev.includes(t) ? prev : [...prev, t])
     _pop('symptoms'); setToast({ message: 'Noted — nothing to report' })
   }
   const logSymptom = (entry) => {
-    setSymptoms(prev => { const i = prev.findIndex(e => e.id === entry.id); if (i >= 0) { const next = [...prev]; next[i] = entry; return next } return [...prev, entry] })
-    setSymptomFlowOpen(false); setSymptomFlowEntry(null); _pop('symptoms')
+    setSymptoms(prev => { const i = prev.findIndex(e => e.id === entry.id); if (i >= 0) { const next = [...prev]; next[i] = _stamp(entry, prev[i]); return next } return [...prev, _stamp(entry)] })
+    setSymptomNone(prev => prev.filter(d => d !== entry.date))  // a logged symptom replaces "None" for that day
+    setSymptomFlowOpen(false); setSymptomFlowEntry(null); setSymptomFlowDate(null); flowSource.current = 'Tracker'; _pop('symptoms')
     setToast({ message: 'Symptom logged', subtext: 'Added to your record' })
   }
+  const deleteSymptom = (entry) => {
+    setSymptoms(prev => prev.filter(e => e.id !== entry.id))
+    setSymptomFlowOpen(false); setSymptomFlowEntry(null); setSymptomFlowDate(null); flowSource.current = 'Tracker'
+    setToast({ message: 'Symptom deleted' })
+  }
+  const deleteJournal = (entry) => {
+    setJournal(prev => prev.filter(e => e.id !== entry.id))
+    setJournalFlowOpen(false); setJournalFlowEntry(null); flowSource.current = 'Tracker'
+    setToast({ message: 'Journal entry deleted' })
+  }
   const logJournal = (entry) => {
-    setJournal(prev => { const i = prev.findIndex(e => e.id === entry.id); if (i >= 0) { const next = [...prev]; next[i] = entry; return next } return [...prev, entry] })
-    setJournalFlowOpen(false); setJournalFlowEntry(null); _pop('journal')
+    setJournal(prev => { const i = prev.findIndex(e => e.id === entry.id); if (i >= 0) { const next = [...prev]; next[i] = _stamp(entry, prev[i]); return next } return [...prev, _stamp(entry)] })
+    setJournalFlowOpen(false); setJournalFlowEntry(null); flowSource.current = 'Tracker'; _pop('journal')
     setToast({ message: 'Journal entry saved' })
   }
   const logDose = (entry) => {
@@ -8955,6 +9211,8 @@ export default function App() {
     }
   }, [mood, symptoms, symptomNone, journal])
   const checkinSymptomEntry = useMemo(() => { const t = localDateStr(); return symptoms.filter(x => x.date === t).slice(-1)[0] || null }, [symptoms])
+  const checkinSymptomEntries = useMemo(() => { const t = localDateStr(); return symptoms.filter(x => x.date === t) }, [symptoms])
+  const checkinJournalEntries = useMemo(() => { const t = localDateStr(); return journal.filter(j => j.date === t) }, [journal])
   const checkinJournalEntry = useMemo(() => { const t = localDateStr(); return journal.filter(j => j.date === t).slice(-1)[0] || null }, [journal])
   const checkinMoodLabel = useMemo(() => {
     const t = localDateStr()
@@ -8998,7 +9256,8 @@ export default function App() {
   }
   const _recsForSummary = visibleRecs && visibleRecs.length ? visibleRecs : null
   const treatmentBasis = useMemo(() => buildTreatmentBasis(patientState, timeline), [patientState, timeline])
-  const todaySummary = { bullets: buildDailySummary(patientState, timeline, _recsForSummary), narrative: buildSummaryNarrative(patientState, timeline, _recsForSummary) }
+  const todaySummary = { bullets: buildDailySummary(patientState, timeline, _recsForSummary), narrative: buildSummaryNarrative(patientState, timeline, _recsForSummary, { mood, symptoms, none: symptomNone, journal }) }
+  useEffect(() => { markInsightSeen(todaySummary.narrative && todaySummary.narrative.insight) }, [todaySummary.narrative && todaySummary.narrative.insight && (todaySummary.narrative.insight.id + todaySummary.narrative.insight.key)])
   const anyDrillInOpen = !!(treatmentOpt || selectedCommunity || showYou || summarizeBlock || flow || sheetOpen)
   // Drilled into a chat (back button showing) → treat like a drill-in: hide the fixed nav, go full-height.
   const hideNav = anyDrillInOpen || (activeTab === 'chat' && chatDrilled)   // hide the footer nav only when drilled into a chat from the side menu
@@ -9232,23 +9491,23 @@ export default function App() {
             userName={currentUser?.name}
             summary={todaySummary}
             narrative={todaySummary.narrative}
-            teasers={summaryTeasers}
+            teasers={[]}  // v3.38: the insight lives in the summary text; the old trend rows are retired
             onTeaserAction={onTeaserAction}
             onAddEvent={() => setSheetOpen(true)}
             checkin={checkinState}
             checkinJustChecked={justCheckedLine}
             checkinMoodLabel={checkinMoodLabel}
             checkinCount={checkinCount}
-            onCheckinMood={() => setMoodFlowOpen(true)}
-            onCheckinMoodSelect={(v) => logMood({ id: 'mood_' + Date.now(), date: localDateStr(), value: v, label: (MOOD_SCALE.find(m => m.v === v) || {}).label })}
-            onCheckinSymptomsYes={() => { setSymptomFlowEntry(null); setSymptomFlowOpen(true) }}
-            onCheckinSymptomsEdit={() => { setSymptomFlowEntry(checkinSymptomEntry); setSymptomFlowOpen(true) }}
-            checkinSymptomEntry={checkinSymptomEntry}
-            onCheckinSymptomsNo={symptomNoneToday}
-            onCheckinJournal={() => { setJournalFlowEntry(null); setJournalFlowOpen(true) }}
-            onCheckinJournalEdit={() => { setJournalFlowEntry(checkinJournalEntry); setJournalFlowOpen(true) }}
+            onCheckinMood={() => { flowSource.current = 'your check-in'; setMoodFlowEntry(null); setMoodFlowOpen(true) }}
+            onCheckinMoodSelect={(v) => logMood({ source: 'your check-in', id: 'mood_' + Date.now(), date: localDateStr(), value: v, label: (MOOD_SCALE.find(m => m.v === v) || {}).label })}
+            onCheckinSymptomsYes={() => { flowSource.current = 'your check-in'; setSymptomFlowEntry(null); setSymptomFlowOpen(true) }}
+            onCheckinSymptomsEdit={() => { flowSource.current = 'your check-in'; setSymptomFlowEntry(checkinSymptomEntry); setSymptomFlowOpen(true) }}
+            checkinSymptomEntry={checkinSymptomEntry} checkinSymptomEntries={checkinSymptomEntries} checkinJournalEntries={checkinJournalEntries} onCheckinSymptomOpen={(e) => { flowSource.current = 'your check-in'; setSymptomFlowEntry(e); setSymptomFlowOpen(true) }} onCheckinJournalOpen={(e) => { flowSource.current = 'your check-in'; setJournalFlowEntry(e); setJournalFlowOpen(true) }}
+            onCheckinSymptomsNo={symptomNoneToday} onCheckinSymptomsClear={symptomNoneClear}
+            onCheckinJournal={() => { flowSource.current = 'your check-in'; setJournalFlowEntry(null); setJournalFlowOpen(true) }}
+            onCheckinJournalEdit={() => { flowSource.current = 'your check-in'; setJournalFlowEntry(checkinJournalEntry); setJournalFlowOpen(true) }}
             checkinJournalEntry={checkinJournalEntry}
-            onCheckinJournalSave={(text) => logJournal({ id: 'jrn_' + Date.now(), date: localDateStr(), text })}
+            onCheckinJournalSave={(text) => logJournal({ source: 'your check-in', id: 'jrn_' + Date.now(), date: localDateStr(), text })}
             todos={todos}
             onTodoAction={onTodoAction}
             onViewTimeline={() => switchTab('plan')}
@@ -9317,19 +9576,20 @@ export default function App() {
                   checkinJustChecked={justCheckedLine}
                   checkinMoodLabel={checkinMoodLabel}
                   checkinCount={checkinCount}
-                  onCheckinMood={() => setMoodFlowOpen(true)}
-            onCheckinMoodSelect={(v) => logMood({ id: 'mood_' + Date.now(), date: localDateStr(), value: v, label: (MOOD_SCALE.find(m => m.v === v) || {}).label })}
-                  onCheckinSymptomsYes={() => { setSymptomFlowEntry(null); setSymptomFlowOpen(true) }}
-            onCheckinSymptomsEdit={() => { setSymptomFlowEntry(checkinSymptomEntry); setSymptomFlowOpen(true) }}
-            checkinSymptomEntry={checkinSymptomEntry}
-                  onCheckinSymptomsNo={symptomNoneToday}
-                  onCheckinJournal={() => { setJournalFlowEntry(null); setJournalFlowOpen(true) }}
-            onCheckinJournalEdit={() => { setJournalFlowEntry(checkinJournalEntry); setJournalFlowOpen(true) }}
+                  onCheckinMood={() => { flowSource.current = 'your check-in'; setMoodFlowEntry(null); setMoodFlowOpen(true) }}
+            onCheckinMoodSelect={(v) => logMood({ source: 'your check-in', id: 'mood_' + Date.now(), date: localDateStr(), value: v, label: (MOOD_SCALE.find(m => m.v === v) || {}).label })}
+                  onCheckinSymptomsYes={() => { flowSource.current = 'your check-in'; setSymptomFlowEntry(null); setSymptomFlowOpen(true) }}
+            onCheckinSymptomsEdit={() => { flowSource.current = 'your check-in'; setSymptomFlowEntry(checkinSymptomEntry); setSymptomFlowOpen(true) }}
+            checkinSymptomEntry={checkinSymptomEntry} checkinSymptomEntries={checkinSymptomEntries} checkinJournalEntries={checkinJournalEntries} onCheckinSymptomOpen={(e) => { flowSource.current = 'your check-in'; setSymptomFlowEntry(e); setSymptomFlowOpen(true) }} onCheckinJournalOpen={(e) => { flowSource.current = 'your check-in'; setJournalFlowEntry(e); setJournalFlowOpen(true) }}
+                  onCheckinSymptomsNo={symptomNoneToday} onCheckinSymptomsClear={symptomNoneClear}
+                  onCheckinJournal={() => { flowSource.current = 'your check-in'; setJournalFlowEntry(null); setJournalFlowOpen(true) }}
+            onCheckinJournalEdit={() => { flowSource.current = 'your check-in'; setJournalFlowEntry(checkinJournalEntry); setJournalFlowOpen(true) }}
             checkinJournalEntry={checkinJournalEntry}
-            onCheckinJournalSave={(text) => logJournal({ id: 'jrn_' + Date.now(), date: localDateStr(), text })}
+            onCheckinJournalSave={(text) => logJournal({ source: 'your check-in', id: 'jrn_' + Date.now(), date: localDateStr(), text })}
                   todos={todos}
                   onTodoAction={onTodoAction}
                   dailyLog={dl}
+                  onEditCheckin={editCheckinEntry}
                   summaryTeasers={summaryTeasers}
                   onTeaserAction={onTeaserAction}
                   treatmentBasis={treatmentBasis}
@@ -9483,9 +9743,9 @@ export default function App() {
       {toast && <Toast message={toast.message} subtext={toast.subtext} action={toast.action} onDone={() => setToast(null)}/>}
       {/* ── redesign-01 overlays ── */}
       {artifactAppt && <AppointmentArtifactSheet appt={artifactAppt} timeline={timeline} symptoms={symptoms} doseLogs={doseLogs} medications={medications} pending={pending} questions={questions} onSaveQuestions={setQuestions} onClose={() => setArtifactAppt(null)}/>}
-      {symptomFlowOpen && <SymptomLogFlow entry={symptomFlowEntry} onClose={() => { setSymptomFlowOpen(false); setSymptomFlowEntry(null) }} onComplete={logSymptom}/>}
-      {moodFlowOpen && <MoodFlow onClose={() => setMoodFlowOpen(false)} onComplete={logMood}/>}
-      {journalFlowOpen && <JournalFlow entry={journalFlowEntry} onClose={() => { setJournalFlowOpen(false); setJournalFlowEntry(null) }} onComplete={logJournal}/>}
+      {symptomFlowOpen && <SymptomLogFlow entry={symptomFlowEntry} date={symptomFlowDate} onClose={() => { setSymptomFlowOpen(false); setSymptomFlowEntry(null); setSymptomFlowDate(null); flowSource.current = 'Tracker' }} onComplete={logSymptom} onDelete={deleteSymptom}/>}
+      {moodFlowOpen && <MoodFlow entry={moodFlowEntry} onClose={() => { setMoodFlowOpen(false); setMoodFlowEntry(null); flowSource.current = 'Tracker' }} onComplete={logMood}/>}
+      {journalFlowOpen && <JournalFlow entry={journalFlowEntry} onClose={() => { setJournalFlowOpen(false); setJournalFlowEntry(null); flowSource.current = 'Tracker' }} onComplete={logJournal} onDelete={deleteJournal}/>}
       {careSummaryOpen && <CareSummarySheet symptoms={symptoms} medications={medications} journal={journal} mood={mood} timeline={timeline} patientState={patientState} accountName={currentUser?.name || ''} onSavePatientDetails={d => setPatientState(ps => ({ ...ps, ...d }))} onClose={() => setCareSummaryOpen(false)}/>}
       {pendingFlowOpen && <PendingFlow onClose={() => setPendingFlowOpen(false)} onComplete={addPending}/>}
       {doseLogOpen && <DoseLogSheet medications={medications} onClose={() => setDoseLogOpen(false)} onSave={logDose}/>}

@@ -15,3 +15,26 @@ input[type="date"] { position: relative; }
 }
 .msr-600 { font-family: "Material Symbols Rounded 600" !important; }
 
+
+/* v3.25 pressed and focus rules.
+   Tertiary (orange text, no fill): while held, a GRAY_100 pill shows behind the label (never light
+   orange, which means selected; never an opacity dim, which reads as disabled). Drawn with a spread
+   shadow so the layout doesn't move. */
+button[style*="color: rgb(255, 121, 88)"]:not([style*="background-color: rgb("]):not([style*="background: rgb("]):not([style*="background: linear"]):active {
+  background-color: #F5F4F6 !important;
+  box-shadow: 0 0 0 8px #F5F4F6 !important;
+  border-radius: 999px !important;
+}
+/* Focus ring for keyboard and switch control: 2 pt orange, offset 2. */
+button:focus-visible, [role="button"]:focus-visible { outline: 2px solid #FF7958; outline-offset: 2px; }
+
+/* v3.29: check-in entries on the timeline are tappable rows; pressed is GRAY_100. */
+.dl-row:active { background: #F5F4F6 !important; }
+
+/* v3.41: the caregiving heart beats twice ("lub-dub"), once, the first time a caregiver lands on Today. */
+@keyframes caringHeartBeat {
+  0% { transform: scale(1); } 14% { transform: scale(1.12); } 28% { transform: scale(1); }
+  42% { transform: scale(1.12); } 70% { transform: scale(1); } 100% { transform: scale(1); }
+}
+.caring-heart.beat { animation: caringHeartBeat 0.9s ease-in-out 0s 1 both; display: inline-block; }
+@media (prefers-reduced-motion: reduce) { .caring-heart.beat { animation: none; } }
